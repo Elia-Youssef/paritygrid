@@ -16,11 +16,15 @@ from paritygrid.adapters.persistence.repositories.repair_audit_common import (
     encode_effect,
     encode_mismatch_evidence,
     encode_redacted_document,
+    incrementable_int,
     plan_content_fingerprint,
     portable_identity,
     positive_int,
+    require_action_cursor,
     require_exact,
+    require_plan_cursor,
     require_reservation,
+    stored_fingerprint,
     stored_timestamp,
     translate_repair_storage_errors,
 )
@@ -36,6 +40,7 @@ from paritygrid.adapters.persistence.schema import (
     repair_actions,
     repair_approvals,
     repair_plans,
+    runs,
 )
 from paritygrid.application.ports.consistency import RedactedDocument
 from paritygrid.application.ports.repair_audit import (
@@ -68,6 +73,7 @@ from paritygrid.application.ports.repair_audit import (
     RepairStateConflictError,
     validate_repair_page_limit,
 )
+from paritygrid.domain.execution import RunState
 from paritygrid.domain.models import (
     RepairActionId,
     RepairPlanId,
@@ -183,7 +189,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
         self._require_transaction()
         run = require_exact(run_id, RunId, "repair run identifier")
         page_limit = validate_repair_page_limit(limit)
-        cursor = None if after is None else require_exact(after, RepairPlanCursor, "repair cursor")
+        cursor = None if after is None else require_plan_cursor(after)
         statement = select(repair_plans).where(repair_plans.c.run_id == run.value)
         if cursor is not None:
             statement = statement.where(
@@ -233,11 +239,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
         self._require_transaction()
         identity = require_exact(repair_plan_id, RepairPlanId, "repair-plan identifier")
         page_limit = validate_repair_page_limit(limit)
-        cursor = (
-            None
-            if after is None
-            else require_exact(after, RepairActionCursor, "repair action cursor")
-        )
+        cursor = None if after is None else require_action_cursor(after)
         aggregate = self._require_aggregate(identity)
         actions = aggregate.actions
         if cursor is not None:
@@ -459,13 +461,20 @@ class SqlAlchemyRepairRepository(RepairRepository):
         encoded_failure = encode_redacted_document(
             plan_failure, "repair plan failure detail", maximum_bytes=4096
         )
-        aggregate = self._require_aggregate(claim.repair_plan_id)
+        aggregate = self._require_claim(claim)
         current = _find_action(aggregate, action_id)
         if aggregate.plan.status is RepairPlanStatus.FAILED:
             if (
                 aggregate.plan.row_version == claim.row_version + 1
                 and aggregate.plan.failed_at == timestamp
                 and _matches_failed(current, encoded_result.text, timestamp)
+                and aggregate.plan.failure is not None
+                and encode_redacted_document(
+                    aggregate.plan.failure,
+                    "repair plan failure detail",
+                    maximum_bytes=4096,
+                ).text
+                == encoded_failure.text
             ):
                 return aggregate
             raise RepairApplicationConflictError("repair failure differs from durable state")
@@ -508,7 +517,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
         self._require_transaction()
         claim = require_reservation(reservation)
         timestamp = require_exact(applied_at, UtcTimestamp, "repair-plan applied time")
-        aggregate = self._require_aggregate(claim.repair_plan_id)
+        aggregate = self._require_claim(claim)
         if aggregate.plan.status is RepairPlanStatus.APPLIED:
             if (
                 aggregate.plan.row_version == claim.row_version + 1
@@ -553,10 +562,22 @@ class SqlAlchemyRepairRepository(RepairRepository):
                 select(
                     *repair_actions.c,
                     repair_plans.c.reconciliation_fingerprint.label("reconciliation_fingerprint"),
+                    reconciliation_conflicts.c.classification.label("conflict_classification"),
+                    reconciliation_conflicts.c.suggested_resolution.label(
+                        "conflict_suggested_resolution"
+                    ),
                 )
                 .join(
                     repair_plans,
                     repair_plans.c.repair_plan_id == repair_actions.c.repair_plan_id,
+                )
+                .outerjoin(
+                    reconciliation_conflicts,
+                    and_(
+                        reconciliation_conflicts.c.conflict_id == repair_actions.c.conflict_id,
+                        reconciliation_conflicts.c.run_id == repair_actions.c.run_id,
+                        reconciliation_conflicts.c.canonical_key == repair_actions.c.canonical_key,
+                    ),
                 )
                 .where(repair_actions.c.repair_plan_id == identity.value)
                 .order_by(
@@ -597,10 +618,22 @@ class SqlAlchemyRepairRepository(RepairRepository):
                 select(
                     *repair_actions.c,
                     repair_plans.c.reconciliation_fingerprint.label("reconciliation_fingerprint"),
+                    reconciliation_conflicts.c.classification.label("conflict_classification"),
+                    reconciliation_conflicts.c.suggested_resolution.label(
+                        "conflict_suggested_resolution"
+                    ),
                 )
                 .join(
                     repair_plans,
                     repair_plans.c.repair_plan_id == repair_actions.c.repair_plan_id,
+                )
+                .outerjoin(
+                    reconciliation_conflicts,
+                    and_(
+                        reconciliation_conflicts.c.conflict_id == repair_actions.c.conflict_id,
+                        reconciliation_conflicts.c.run_id == repair_actions.c.run_id,
+                        reconciliation_conflicts.c.canonical_key == repair_actions.c.canonical_key,
+                    ),
                 )
                 .where(repair_actions.c.repair_plan_id.in_(identities))
                 .order_by(
@@ -638,10 +671,22 @@ class SqlAlchemyRepairRepository(RepairRepository):
                 select(
                     *repair_actions.c,
                     repair_plans.c.reconciliation_fingerprint.label("reconciliation_fingerprint"),
+                    reconciliation_conflicts.c.classification.label("conflict_classification"),
+                    reconciliation_conflicts.c.suggested_resolution.label(
+                        "conflict_suggested_resolution"
+                    ),
                 )
                 .join(
                     repair_plans,
                     repair_plans.c.repair_plan_id == repair_actions.c.repair_plan_id,
+                )
+                .outerjoin(
+                    reconciliation_conflicts,
+                    and_(
+                        reconciliation_conflicts.c.conflict_id == repair_actions.c.conflict_id,
+                        reconciliation_conflicts.c.run_id == repair_actions.c.run_id,
+                        reconciliation_conflicts.c.canonical_key == repair_actions.c.canonical_key,
+                    ),
                 )
                 .where(repair_actions.c.repair_action_id == identity.value)
             )
@@ -657,14 +702,21 @@ class SqlAlchemyRepairRepository(RepairRepository):
                 select(
                     reconciliation_summaries.c.reconciliation_fingerprint,
                     reconciliation_summaries.c.created_at,
-                ).where(reconciliation_summaries.c.run_id == run.value)
+                    runs.c.state.label("run_state"),
+                    runs.c.final_reconciliation_fingerprint,
+                )
+                .join(runs, runs.c.run_id == reconciliation_summaries.c.run_id)
+                .where(reconciliation_summaries.c.run_id == run.value)
             )
             .mappings()
             .one_or_none()
         )
         if row is None:
             raise RepairRecordNotFoundError("reconciliation summary does not exist")
-        stored = StateFingerprint(cast(str, row["reconciliation_fingerprint"]))
+        stored = stored_fingerprint(
+            row["reconciliation_fingerprint"], "reconciliation summary fingerprint"
+        )
+        self._validate_run_fingerprint(cast(Mapping[str, object], row), stored)
         summary_at = stored_timestamp(row["created_at"], "reconciliation summary time")
         if stored != fingerprint:
             raise RepairStateConflictError("repair plan reconciliation is stale")
@@ -762,18 +814,47 @@ class SqlAlchemyRepairRepository(RepairRepository):
         raise RepairApprovalConflictError("repair approval differs from durable state")
 
     def _require_fresh(self, plan: RepairPlanRecord, current: StateFingerprint) -> None:
-        summary = self._session.execute(
-            select(reconciliation_summaries.c.reconciliation_fingerprint).where(
-                reconciliation_summaries.c.run_id == plan.run_id.value
+        row = (
+            self._session.execute(
+                select(
+                    reconciliation_summaries.c.reconciliation_fingerprint,
+                    runs.c.state.label("run_state"),
+                    runs.c.final_reconciliation_fingerprint,
+                )
+                .join(runs, runs.c.run_id == reconciliation_summaries.c.run_id)
+                .where(reconciliation_summaries.c.run_id == plan.run_id.value)
             )
-        ).scalar_one_or_none()
-        if summary is None:
+            .mappings()
+            .one_or_none()
+        )
+        if row is None:
             raise RepairCorruptionError("repair reconciliation summary is missing")
-        if (
-            summary != plan.reconciliation_fingerprint.value
-            or current != plan.reconciliation_fingerprint
-        ):
+        summary = stored_fingerprint(
+            row["reconciliation_fingerprint"], "reconciliation summary fingerprint"
+        )
+        self._validate_run_fingerprint(cast(Mapping[str, object], row), summary)
+        if summary != plan.reconciliation_fingerprint:
+            raise RepairCorruptionError("repair reconciliation relationship is corrupt")
+        if current != summary:
             raise RepairStateConflictError("repair plan reconciliation is stale")
+
+    @staticmethod
+    def _validate_run_fingerprint(row: Mapping[str, object], summary: StateFingerprint) -> None:
+        state_value = row["run_state"]
+        if type(state_value) is not str:
+            raise RepairCorruptionError("repair run state is corrupt")
+        try:
+            state = RunState(state_value)
+        except ValueError as error:
+            raise RepairCorruptionError("repair run state is corrupt") from error
+        if state not in {RunState.SUCCEEDED, RunState.PARTIALLY_SUCCEEDED}:
+            raise RepairStateConflictError("repair run has not completed reconciliation")
+        fingerprint_value = row["final_reconciliation_fingerprint"]
+        if fingerprint_value is None:
+            raise RepairCorruptionError("repair run final fingerprint is missing")
+        final = stored_fingerprint(fingerprint_value, "repair run final fingerprint")
+        if final != summary:
+            raise RepairCorruptionError("repair run and summary fingerprints diverge")
 
     def _require_transition(
         self, plan: RepairPlanRecord, expected: int, status: RepairPlanStatus
@@ -790,6 +871,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
         old_status: RepairPlanStatus,
         **values: object,
     ) -> None:
+        incrementable_int(expected, "repair-plan row version")
         changed = self._session.execute(
             update(repair_plans)
             .where(

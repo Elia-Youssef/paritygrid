@@ -10,12 +10,16 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
+from threading import Barrier, Lock
+from types import MethodType
+from typing import NoReturn, cast
 
 import pytest
 from sqlalchemy import event as sqlalchemy_event
 from sqlalchemy import insert, select, text
 from sqlalchemy import update as sql_update
 from sqlalchemy.engine import Connection
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from paritygrid.adapters.persistence import SQLiteDatabase, SQLiteDatabaseConfig
@@ -37,13 +41,16 @@ from paritygrid.adapters.persistence.schema import (
     reconciliation_conflicts,
     reconciliation_summaries,
     repair_actions,
+    runs,
 )
 from paritygrid.application.ports import ConfigurationDocument
 from paritygrid.application.ports.consistency import RedactedDocument
 from paritygrid.application.ports.repair_audit import (
+    MAX_PERSISTED_INTEGER,
     AuditCorruptionError,
     AuditSequence,
     AuditSequenceConflictError,
+    AuditStorageError,
     PendingAuditEntry,
     RepairActionCursor,
     RepairActionEffect,
@@ -56,6 +63,7 @@ from paritygrid.application.ports.repair_audit import (
     RepairApprovalConflictError,
     RepairCorruptionError,
     RepairDuplicateError,
+    RepairInvalidRequestError,
     RepairPlanAggregate,
     RepairPlanContentConflictError,
     RepairPlanCursor,
@@ -64,6 +72,7 @@ from paritygrid.application.ports.repair_audit import (
     RepairStaleRowVersionError,
     RepairStateConflictError,
 )
+from paritygrid.domain.execution import RunState
 from paritygrid.domain.models import (
     ConflictId,
     ConnectorId,
@@ -153,7 +162,8 @@ def seed_reconciliation(database: SQLiteDatabase) -> None:
             planner_format_version=1,
             published_at=timestamp(0),
         )
-        SqlAlchemyRunRepository(session).create(
+        run_repository = SqlAlchemyRunRepository(session)
+        run_repository.create(
             run_id=RUN_ID,
             pipeline_id=PIPELINE_ID,
             pipeline_version=PipelineVersion(1),
@@ -162,6 +172,19 @@ def seed_reconciliation(database: SQLiteDatabase) -> None:
             scenario_seed=None,
             node_ids=(NodeId("nod_repair-node"),),
             created_at=timestamp(0),
+        )
+        run_repository.transition(
+            RUN_ID,
+            expected_row_version=1,
+            target_state=RunState.RUNNING,
+            transitioned_at=timestamp(0),
+        )
+        run_repository.transition(
+            RUN_ID,
+            expected_row_version=2,
+            target_state=RunState.SUCCEEDED,
+            transitioned_at=timestamp(1),
+            final_reconciliation_fingerprint=RECONCILIATION,
         )
         session.execute(
             insert(reconciliation_summaries).values(
@@ -421,6 +444,46 @@ def test_fresh_fingerprint_is_required_for_approval(database: SQLiteDatabase) ->
             )
 
 
+def test_repair_creation_rejects_a_nonterminal_run_parent(database: SQLiteDatabase) -> None:
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        session.execute(
+            sql_update(runs)
+            .where(runs.c.run_id == RUN_ID.value)
+            .values(state=RunState.QUEUED.value, final_reconciliation_fingerprint=None)
+        )
+        with pytest.raises(RepairStateConflictError, match="has not completed"):
+            create_plan(SqlAlchemyRepairRepository(session))
+
+
+@pytest.mark.parametrize("operation", ["approve", "begin"])
+def test_freshness_rejects_run_and_summary_fingerprint_divergence(
+    database: SQLiteDatabase, operation: str
+) -> None:
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        repository = SqlAlchemyRepairRepository(session)
+        create_plan(repository)
+        if operation == "begin":
+            approve(repository)
+        session.execute(
+            sql_update(runs)
+            .where(runs.c.run_id == RUN_ID.value)
+            .values(final_reconciliation_fingerprint="9" * 64)
+        )
+        if operation == "approve":
+            with pytest.raises(RepairCorruptionError, match="fingerprints diverge"):
+                approve(repository)
+        else:
+            with pytest.raises(RepairCorruptionError, match="fingerprints diverge"):
+                repository.begin_application(
+                    PLAN_ID,
+                    expected_row_version=2,
+                    current_reconciliation_fingerprint=RECONCILIATION,
+                    applying_at=timestamp(4),
+                )
+
+
 def test_repair_get_and_bounded_list_paths(database: SQLiteDatabase) -> None:
     seed_reconciliation(database)
     with database.transaction() as session:
@@ -461,6 +524,27 @@ def test_repair_get_and_bounded_list_paths(database: SQLiteDatabase) -> None:
             after=RepairActionCursor("ZZZZ", ACTION_ID),
         )
         assert empty.items == ()
+
+
+@pytest.mark.parametrize(
+    ("column", "value"),
+    [("classification", "field_mismatch"), ("suggested_resolution", "update_target")],
+)
+def test_strict_repair_reads_revalidate_the_conflict_relationship(
+    database: SQLiteDatabase, column: str, value: str
+) -> None:
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        repository = SqlAlchemyRepairRepository(session)
+        create_plan(repository)
+        session.execute(text('DROP TRIGGER "trg_reconciliation_conflicts_prohibit_update"'))
+        session.execute(
+            sql_update(reconciliation_conflicts)
+            .where(reconciliation_conflicts.c.conflict_id == CONFLICT_ID.value)
+            .values({column: value})
+        )
+        with pytest.raises(RepairCorruptionError, match="conflict relationship"):
+            repository.get(PLAN_ID)
 
 
 def test_rejection_and_conflicting_replays(database: SQLiteDatabase) -> None:
@@ -855,6 +939,75 @@ def test_reservation_mismatch_stale_and_terminal_conflicts(database: SQLiteDatab
             )
 
 
+def test_every_application_path_validates_the_complete_reservation(
+    database: SQLiteDatabase,
+) -> None:
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        repository = SqlAlchemyRepairRepository(session)
+        create_plan(repository)
+        approve(repository)
+        begun = repository.begin_application(
+            PLAN_ID,
+            expected_row_version=2,
+            current_reconciliation_fingerprint=RECONCILIATION,
+            applying_at=timestamp(4),
+        )
+        assert begun.reservation is not None
+        forged = replace(
+            begun.reservation,
+            content_fingerprint=StateFingerprint("9" * 64),
+        )
+        with pytest.raises(RepairApplicationConflictError, match="does not match"):
+            repository.record_action_failed(
+                forged,
+                ACTION_ID,
+                result=RepairApplicationResult(1, redacted(outcome="failed")),
+                failed_at=timestamp(5),
+                plan_failure=redacted(reason="target_conflict"),
+            )
+        with pytest.raises(RepairApplicationConflictError, match="does not match"):
+            repository.complete_application(forged, applied_at=timestamp(5))
+        malformed = replace(begun.reservation, run_id=cast(RunId, "run_invalid"))
+        with pytest.raises(RepairInvalidRequestError, match="reservation run identifier"):
+            repository.record_action_applied(
+                malformed,
+                ACTION_ID,
+                result=RepairApplicationResult(1, redacted(outcome="applied")),
+                target_version=1,
+                applied_at=timestamp(5),
+            )
+
+
+def test_nested_cursor_values_and_row_version_capacity_fail_before_sql(
+    database: SQLiteDatabase,
+) -> None:
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        repository = SqlAlchemyRepairRepository(session)
+        create_plan(repository)
+        with pytest.raises(RepairInvalidRequestError, match="cursor creation time"):
+            repository.list_for_run(
+                RUN_ID,
+                limit=10,
+                after=RepairPlanCursor(cast(UtcTimestamp, "invalid"), PLAN_ID),
+            )
+        for invalid_key in ("", "lowercase"):
+            with pytest.raises(RepairInvalidRequestError, match="canonical key"):
+                repository.list_actions(
+                    PLAN_ID,
+                    limit=10,
+                    after=RepairActionCursor(invalid_key, ACTION_ID),
+                )
+        with pytest.raises(RepairStateConflictError, match="supported maximum"):
+            repository._advance_plan(
+                PLAN_ID,
+                MAX_PERSISTED_INTEGER,
+                RepairPlanStatus.PROPOSED,
+                status="approved",
+            )
+
+
 def test_divergent_failure_retry_and_missing_plan_list(database: SQLiteDatabase) -> None:
     seed_reconciliation(database)
     with database.transaction() as session:
@@ -886,6 +1039,14 @@ def test_divergent_failure_retry_and_missing_plan_list(database: SQLiteDatabase)
                 failed_at=timestamp(5),
                 plan_failure=redacted(reason="target_conflict"),
             )
+        with pytest.raises(RepairApplicationConflictError, match="differs"):
+            repository.record_action_failed(
+                begun.reservation,
+                ACTION_ID,
+                result=RepairApplicationResult(1, redacted(outcome="failed")),
+                failed_at=timestamp(5),
+                plan_failure=redacted(reason="different_failure"),
+            )
 
 
 @pytest.mark.parametrize(
@@ -909,6 +1070,70 @@ def test_audit_sequence_preflight_rejects_corruption_and_exhaustion(
         SqlAlchemyAuditRepository(session).append(audit(2))
 
 
+def test_audit_capacity_race_has_one_maximum_winner_and_one_typed_loser(
+    database: SQLiteDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with database.transaction() as session:
+        SqlAlchemyAuditRepository(session).append(audit(1))
+        session.execute(
+            text("UPDATE sqlite_sequence SET seq = :seq WHERE name = 'audit_entries'"),
+            {"seq": MAX_PERSISTED_INTEGER - 1},
+        )
+    barrier = Barrier(2)
+    lock = Lock()
+    checked: set[int] = set()
+    original = SqlAlchemyAuditRepository._preflight_sequence
+
+    def synchronize_first_preflight(repository: SqlAlchemyAuditRepository) -> None:
+        original(repository)
+        with lock:
+            first = id(repository) not in checked
+            checked.add(id(repository))
+        if first:
+            barrier.wait(timeout=10)
+
+    monkeypatch.setattr(
+        SqlAlchemyAuditRepository,
+        "_preflight_sequence",
+        synchronize_first_preflight,
+    )
+
+    def append_at_frontier(second: int) -> AuditSequence | type[Exception]:
+        try:
+            with database.transaction() as session:
+                return SqlAlchemyAuditRepository(session).append(audit(second)).sequence
+        except Exception as error:
+            return type(error)
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = {
+            future.result(timeout=15)
+            for future in (
+                executor.submit(append_at_frontier, 2),
+                executor.submit(append_at_frontier, 3),
+            )
+        }
+    assert results == {
+        AuditSequence(MAX_PERSISTED_INTEGER),
+        AuditSequenceConflictError,
+    }
+
+
+def test_noncapacity_audit_integrity_failure_remains_a_storage_failure(
+    database: SQLiteDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    with database.transaction() as session:
+        repository = SqlAlchemyAuditRepository(session)
+        monkeypatch.setattr(repository, "_preflight_sequence", lambda: None)
+
+        def fail_execute(_session: object, _statement: object) -> NoReturn:
+            raise IntegrityError("audit insert", {}, ValueError("constraint"))
+
+        monkeypatch.setattr(session, "execute", MethodType(fail_execute, session))
+        with pytest.raises(AuditStorageError):
+            repository.append(audit(1))
+
+
 def test_defensive_repair_cas_classification_paths(  # pyright: ignore[reportPrivateUsage]
     database: SQLiteDatabase,
 ) -> None:
@@ -930,6 +1155,28 @@ def test_defensive_repair_cas_classification_paths(  # pyright: ignore[reportPri
             repository._require_fresh(
                 replace(aggregate.plan, run_id=RunId("run_missing")), RECONCILIATION
             )
+        with pytest.raises(RepairCorruptionError, match="relationship"):
+            repository._require_fresh(
+                replace(
+                    aggregate.plan,
+                    reconciliation_fingerprint=StateFingerprint("9" * 64),
+                ),
+                RECONCILIATION,
+            )
+        for row in (
+            {"run_state": 1, "final_reconciliation_fingerprint": RECONCILIATION.value},
+            {"run_state": "unknown", "final_reconciliation_fingerprint": RECONCILIATION.value},
+            {"run_state": RunState.SUCCEEDED.value, "final_reconciliation_fingerprint": None},
+        ):
+            with pytest.raises(RepairCorruptionError):
+                repository._validate_run_fingerprint(row, RECONCILIATION)
+        repository._validate_run_fingerprint(
+            {
+                "run_state": RunState.PARTIALLY_SUCCEEDED.value,
+                "final_reconciliation_fingerprint": RECONCILIATION.value,
+            },
+            RECONCILIATION,
+        )
         with pytest.raises(RepairDuplicateError):
             repository._classify_create_replay(
                 RUN_ID,

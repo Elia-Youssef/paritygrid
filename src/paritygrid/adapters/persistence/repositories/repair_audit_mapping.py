@@ -116,6 +116,15 @@ def action_from_row(row: Mapping[str, object]) -> RepairActionRecord:
         raise RepairCorruptionError("create repair action shape is corrupt")
     if kind is RepairActionKind.UPDATE_TARGET and expected is None:
         raise RepairCorruptionError("update repair action shape is corrupt")
+    expected_classification = (
+        "missing_from_target" if kind is RepairActionKind.CREATE_TARGET else "field_mismatch"
+    )
+    suggested = row["conflict_suggested_resolution"]
+    if row["conflict_classification"] != expected_classification or suggested not in {
+        None,
+        kind.value,
+    }:
+        raise RepairCorruptionError("repair action conflict relationship is corrupt")
     effect = RepairActionEffect(
         action_id=stored_identifier(
             row["repair_action_id"], RepairActionId, "repair-action identifier"

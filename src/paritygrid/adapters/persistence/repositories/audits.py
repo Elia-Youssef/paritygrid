@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from typing import cast
 
 from sqlalchemy import insert, select, text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from paritygrid.adapters.persistence.repositories.repair_audit_common import (
@@ -66,24 +67,28 @@ class SqlAlchemyAuditRepository(AuditRepository):
             require_audit_exact(pending.detail, RedactedDocument, "audit detail")
         )
         self._preflight_sequence()
-        row = (
-            self._session.execute(
-                insert(audit_entries)
-                .values(
-                    actor=actor,
-                    operation=operation,
-                    object_kind=object_kind,
-                    object_id=object_id,
-                    correlation_id=correlation,
-                    occurred_at=str(occurred_at),
-                    detail_schema_version=schema_version,
-                    detail_json=detail.text,
+        try:
+            row = (
+                self._session.execute(
+                    insert(audit_entries)
+                    .values(
+                        actor=actor,
+                        operation=operation,
+                        object_kind=object_kind,
+                        object_id=object_id,
+                        correlation_id=correlation,
+                        occurred_at=str(occurred_at),
+                        detail_schema_version=schema_version,
+                        detail_json=detail.text,
+                    )
+                    .returning(*audit_entries.c)
                 )
-                .returning(*audit_entries.c)
+                .mappings()
+                .one()
             )
-            .mappings()
-            .one()
-        )
+        except IntegrityError:
+            self._preflight_sequence()
+            raise
         return audit_from_row(cast(Mapping[str, object], row))
 
     @translate_audit_storage_errors

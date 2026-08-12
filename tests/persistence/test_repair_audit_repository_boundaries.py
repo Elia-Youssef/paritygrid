@@ -169,6 +169,12 @@ def action_row(effect: RepairActionEffect | None = None) -> dict[str, object]:
         "applied_at": None,
         "failed_at": None,
         "reconciliation_fingerprint": FINGERPRINT.value,
+        "conflict_classification": (
+            "missing_from_target"
+            if value.kind is RepairActionKind.CREATE_TARGET
+            else "field_mismatch"
+        ),
+        "conflict_suggested_resolution": value.kind.value,
     }
 
 

@@ -25,11 +25,14 @@ from paritygrid.application.ports.repair_audit import (
     AuditStorageError,
     AuditStorageUnavailableError,
     InventoryEffect,
+    RepairActionCursor,
     RepairActionEffect,
     RepairApplicationReservation,
     RepairApplicationResult,
     RepairCorruptionError,
     RepairInvalidRequestError,
+    RepairPlanCursor,
+    RepairStateConflictError,
     RepairStorageError,
     RepairStorageUnavailableError,
 )
@@ -40,7 +43,9 @@ from paritygrid.domain.models import (
     InventoryAttributes,
     InventoryRecord,
     Money,
+    RepairActionId,
     RepairPlanId,
+    RunId,
     StateFingerprint,
     UtcTimestamp,
 )
@@ -49,6 +54,7 @@ from paritygrid.domain.repair import RepairAction, RepairPlan
 
 _PORTABLE_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*", flags=re.ASCII)
 _SNAKE_CASE_PATTERN = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", flags=re.ASCII)
+_CANONICAL_KEY_PATTERN = re.compile(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", flags=re.ASCII)
 _SYNTHETIC_CONNECTOR = ConnectorId("con_repair-effect")
 _SYNTHETIC_SOURCE_KEY = "repair-effect"
 
@@ -126,6 +132,13 @@ def positive_int(value: object, subject: str) -> int:
     if type(value) is not int or not 1 <= value <= MAX_PERSISTED_INTEGER:
         raise RepairInvalidRequestError(f"{subject} must be an integer within the supported range")
     return value
+
+
+def incrementable_int(value: object, subject: str) -> int:
+    current = positive_int(value, subject)
+    if current >= MAX_PERSISTED_INTEGER:
+        raise RepairStateConflictError(f"{subject} cannot advance beyond the supported maximum")
+    return current
 
 
 def audit_bounded_text(value: object, subject: str, maximum: int) -> str:
@@ -349,7 +362,42 @@ def stored_positive_int(value: object, subject: str) -> int:
 
 
 def require_reservation(value: object) -> RepairApplicationReservation:
-    return require_exact(value, RepairApplicationReservation, "repair application reservation")
+    reservation = require_exact(
+        value, RepairApplicationReservation, "repair application reservation"
+    )
+    require_exact(reservation.repair_plan_id, RepairPlanId, "reservation repair-plan identifier")
+    require_exact(reservation.run_id, RunId, "reservation run identifier")
+    require_exact(
+        reservation.reconciliation_fingerprint,
+        StateFingerprint,
+        "reservation reconciliation fingerprint",
+    )
+    require_exact(
+        reservation.content_fingerprint,
+        StateFingerprint,
+        "reservation content fingerprint",
+    )
+    require_exact(reservation.applying_at, UtcTimestamp, "reservation application time")
+    positive_int(reservation.row_version, "reservation row version")
+    return reservation
+
+
+def require_plan_cursor(value: object) -> RepairPlanCursor:
+    cursor = require_exact(value, RepairPlanCursor, "repair cursor")
+    require_exact(cursor.created_at, UtcTimestamp, "repair cursor creation time")
+    require_exact(cursor.repair_plan_id, RepairPlanId, "repair cursor plan identifier")
+    return cursor
+
+
+def require_action_cursor(value: object) -> RepairActionCursor:
+    cursor = require_exact(value, RepairActionCursor, "repair action cursor")
+    key = bounded_text(cursor.canonical_key, "repair action cursor canonical key", 64)
+    if _CANONICAL_KEY_PATTERN.fullmatch(key) is None:
+        raise RepairInvalidRequestError(
+            "repair action cursor canonical key must use canonical uppercase ASCII"
+        )
+    require_exact(cursor.repair_action_id, RepairActionId, "repair action cursor identifier")
+    return cursor
 
 
 def _effect_primitive(effect: InventoryEffect) -> dict[str, StoragePrimitive]:
