@@ -188,14 +188,14 @@ def _validate_ports(ports: object, *, field_name: str) -> None:
     if not isinstance(ports, tuple):
         raise TypeError(f"{field_name} must be a tuple")
     port_values = cast(tuple[object, ...], ports)
-    if any(not isinstance(port, PortName) for port in port_values):
+    if any(type(port) is not PortName for port in port_values):
         raise TypeError(f"{field_name} must contain only PortName values")
     if len(set(port_values)) != len(port_values):
         raise ValueError(f"{field_name} must not contain duplicate ports")
 
 
 def _require_instance(value: object, expected_type: type[object], *, field_name: str) -> None:
-    if not isinstance(value, expected_type):
+    if type(value) is not expected_type:
         raise TypeError(f"{field_name} must be a {expected_type.__name__}")
 
 

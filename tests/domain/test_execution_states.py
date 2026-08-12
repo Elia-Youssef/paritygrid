@@ -121,6 +121,13 @@ def test_transition_methods_reject_values_from_another_lifecycle() -> None:
         WorkItemState.PENDING.transition_to(RunState.RUNNING)
 
 
+def test_transition_queries_reject_raw_strings_and_other_lifecycles() -> None:
+    assert not RunState.QUEUED.can_transition_to("running")
+    assert not RunState.QUEUED.can_transition_to(WorkItemState.RUNNING)
+    assert not WorkItemState.PENDING.can_transition_to("leased")
+    assert not WorkItemState.PENDING.can_transition_to(RunState.RUNNING)
+
+
 def test_invalid_transition_message_is_stable_and_descriptive() -> None:
     error = InvalidTransitionError(
         lifecycle="run",

@@ -104,7 +104,7 @@ class ReconciliationOutcome:
 
 def differences_between(source: object, target: object) -> tuple[FieldMismatch, ...]:
     """Return deterministic field-level evidence for records with one SKU."""
-    if not isinstance(source, InventoryRecord) or not isinstance(target, InventoryRecord):
+    if type(source) is not InventoryRecord or type(target) is not InventoryRecord:
         raise TypeError("reconciliation comparison requires InventoryRecord values")
     if source.sku != target.sku:
         raise ValueError("reconciliation comparison requires matching SKUs")
@@ -134,7 +134,7 @@ def _canonical_records(value: object, *, side: str) -> tuple[InventoryRecord, ..
             f"{side} records must contain at most "
             f"{ReconciliationOutcome.MAX_RECORDS_PER_SIDE} values"
         )
-    if any(not isinstance(record, InventoryRecord) for record in records):
+    if any(type(record) is not InventoryRecord for record in records):
         raise TypeError(f"{side} records must contain only InventoryRecord values")
     trusted = cast(tuple[InventoryRecord, ...], records)
     return tuple(sorted(trusted, key=_record_order_key))
@@ -177,6 +177,4 @@ def _classify_records(
 
 
 def _is_exact_value_type(value: object, expected_type: _InventoryValueType) -> bool:
-    if expected_type is int:
-        return type(value) is int
-    return isinstance(value, expected_type)
+    return type(value) is expected_type

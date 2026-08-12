@@ -26,9 +26,9 @@ class RunState(StrEnum):
         """Report whether no later state is valid."""
         return not RUN_TRANSITIONS[self]
 
-    def can_transition_to(self, target: RunState) -> bool:
+    def can_transition_to(self, target: object) -> bool:
         """Report whether the requested transition is an exact lifecycle arrow."""
-        return target in RUN_TRANSITIONS[self]
+        return isinstance(target, RunState) and target in RUN_TRANSITIONS[self]
 
     def transition_to(self, target: object) -> RunState:
         """Return the target state or reject an invalid lifecycle move."""
@@ -84,9 +84,9 @@ class WorkItemState(StrEnum):
         """Report whether no later state is valid."""
         return not WORK_ITEM_TRANSITIONS[self]
 
-    def can_transition_to(self, target: WorkItemState) -> bool:
+    def can_transition_to(self, target: object) -> bool:
         """Report whether the requested transition is an exact lifecycle arrow."""
-        return target in WORK_ITEM_TRANSITIONS[self]
+        return isinstance(target, WorkItemState) and target in WORK_ITEM_TRANSITIONS[self]
 
     def transition_to(self, target: object) -> WorkItemState:
         """Return the target state or reject an invalid lifecycle move."""

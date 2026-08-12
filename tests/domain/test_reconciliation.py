@@ -20,6 +20,14 @@ from paritygrid.domain.reconciliation import (
 )
 
 
+class _InventoryRecordSubclass(InventoryRecord):
+    pass
+
+
+class _MoneySubclass(Money):
+    pass
+
+
 def _record(
     *,
     sku: str = "SKU-001",
@@ -157,6 +165,28 @@ def test_outcome_rejects_wrong_containers_records_and_mixed_keys() -> None:
         ReconciliationOutcome((), ("record",))  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="share one SKU"):
         ReconciliationOutcome((_record(), _record(sku="SKU-002")), ())
+
+
+def test_reconciliation_values_reject_registered_value_subclasses() -> None:
+    record = _record()
+    record_subclass = _InventoryRecordSubclass(
+        record.sku,
+        record.name,
+        record.quantity,
+        record.unit_price,
+        record.updated_at,
+        record.connector_id,
+        record.source_record_key,
+        record.attributes,
+    )
+    with pytest.raises(TypeError, match="InventoryRecord"):
+        ReconciliationOutcome((record_subclass,), ())
+    with pytest.raises(TypeError, match="source value"):
+        FieldMismatch(
+            ReconciliationField.UNIT_PRICE,
+            _MoneySubclass.parse("USD 1.00"),
+            Money.parse("USD 2.00"),
+        )
 
 
 def test_outcome_bounds_duplicate_evidence_per_side() -> None:

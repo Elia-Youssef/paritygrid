@@ -335,6 +335,19 @@ def test_iterator_failure_is_translated_to_a_typed_fingerprint_error() -> None:
     assert isinstance(captured.value.__cause__, RuntimeError)
 
 
+def test_iterator_creation_failure_is_translated_to_a_typed_fingerprint_error() -> None:
+    class BrokenIterable:
+        def __iter__(self) -> Iterator[InventoryRecord]:
+            raise RuntimeError("synthetic iterator creation failure")
+
+    with pytest.raises(CanonicalEncodingError) as captured:
+        fingerprint_state(BrokenIterable(), scope=FingerprintScope.INVENTORY_STATE)
+
+    assert captured.value.reason is CanonicalErrorCode.INVALID_CANONICAL_VALUE
+    assert captured.value.subject_type == "fingerprint.values"
+    assert isinstance(captured.value.__cause__, RuntimeError)
+
+
 def test_fingerprint_version_validation_uses_the_canonical_encoder_contract() -> None:
     with pytest.raises(CanonicalEncodingError) as captured:
         fingerprint_state(

@@ -7,6 +7,11 @@ import pytest
 
 from paritygrid.domain.models import CurrencyCode, Money
 
+
+class _CurrencyCodeSubclass(CurrencyCode):
+    pass
+
+
 USD = CurrencyCode.parse("USD")
 
 
@@ -130,6 +135,11 @@ def test_money_rejects_non_currency_value() -> None:
         )
 
 
+def test_money_rejects_a_currency_subclass() -> None:
+    with pytest.raises(TypeError, match="CurrencyCode"):
+        Money(Decimal("1.00"), _CurrencyCodeSubclass("USD"), 2)
+
+
 @pytest.mark.parametrize(
     "value",
     [
@@ -147,6 +157,11 @@ def test_money_rejects_non_currency_value() -> None:
 def test_money_parse_rejects_noncanonical_or_out_of_range_forms(value: str) -> None:
     with pytest.raises(ValueError, match=r"money|minor-unit"):
         Money.parse(value)
+
+
+def test_money_parse_rejects_oversized_text_before_decimal_conversion() -> None:
+    with pytest.raises(ValueError, match="supported size"):
+        Money.parse(f"USD {'9' * 1_000}")
 
 
 def test_money_parse_and_bytes_reject_wrong_runtime_types() -> None:

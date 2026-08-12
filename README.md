@@ -10,7 +10,7 @@ This public repository is an independently designed technical demonstration insp
 
 ## Current status
 
-The repository has completed its architecture baseline and initial toolchain foundation. The Python package, FastAPI operational routes, command-line smoke path, React operations shell, strict static checks, and cross-platform pull-request workflow are implemented. The pure domain foundation is the next delivery phase.
+The repository has completed its architecture baseline, toolchain foundation, and pure domain foundation. Trusted values, exact lifecycle state machines, reconciliation and non-destructive repair rules, versioned canonical encoding, stable state fingerprints, typed domain failures, and import-purity enforcement are implemented. SQLite persistence and migrations are the next delivery phase.
 
 The authoritative instruction set begins at [Documentation index](docs/INDEX.md).
 

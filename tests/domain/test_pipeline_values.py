@@ -8,6 +8,14 @@ from paritygrid.domain.models import NodeId
 from paritygrid.domain.pipeline import NodeKind, PartitionKey, PipelineEdge, PipelineNode, PortName
 
 
+class _NodeIdSubclass(NodeId):
+    pass
+
+
+class _PortNameSubclass(PortName):
+    pass
+
+
 @pytest.mark.parametrize(
     ("value_type", "text"),
     [
@@ -150,6 +158,17 @@ def test_pipeline_node_rejects_untrusted_field_values(field_name: str, replaceme
 
     with pytest.raises((TypeError, ValueError)):
         PipelineNode(**values)  # type: ignore[arg-type]
+
+
+def test_pipeline_values_reject_registered_value_subclasses() -> None:
+    with pytest.raises(TypeError, match="NodeId"):
+        PipelineNode(_NodeIdSubclass("nod_source-01"), NodeKind("source.csv"))
+    with pytest.raises(TypeError, match="PortName"):
+        PipelineNode(
+            NodeId("nod_source-01"),
+            NodeKind("source.csv"),
+            output_ports=(_PortNameSubclass("records"),),
+        )
 
 
 @pytest.mark.parametrize(

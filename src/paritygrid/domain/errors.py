@@ -140,7 +140,7 @@ def _bounded_error_text(value: object, *, field_name: str) -> str:
 
 
 def _require_fingerprint(value: object, *, field_name: str) -> StateFingerprint:
-    if not isinstance(value, StateFingerprint):
+    if type(value) is not StateFingerprint:
         raise TypeError(f"{field_name} fingerprint must be a StateFingerprint")
     return value
 

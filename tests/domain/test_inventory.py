@@ -1,5 +1,6 @@
 """Example-based verification of canonical inventory records."""
 
+from collections.abc import Iterator, Mapping
 from dataclasses import FrozenInstanceError
 from decimal import Decimal
 
@@ -13,6 +14,10 @@ from paritygrid.domain.models import (
     Money,
     UtcTimestamp,
 )
+
+
+class _MoneySubclass(Money):
+    pass
 
 
 def _record(**changes: object) -> InventoryRecord:
@@ -129,6 +134,11 @@ def test_inventory_record_rejects_noncanonical_name_text(value: str) -> None:
         _record(name=value)
 
 
+def test_inventory_record_rejects_unencodable_unicode_as_invalid_text() -> None:
+    with pytest.raises(ValueError, match="unsupported code point"):
+        _record(name="Widget\ud800")
+
+
 def test_inventory_record_rejects_name_character_and_byte_limits() -> None:
     with pytest.raises(ValueError, match="size"):
         _record(name="A" * 161)
@@ -189,6 +199,11 @@ def test_inventory_record_rejects_wrong_composed_value_type(
         _record(**{field: value})
 
 
+def test_inventory_record_rejects_a_registered_value_subclass() -> None:
+    with pytest.raises(TypeError, match="Money"):
+        _record(unit_price=_MoneySubclass.parse("USD 19.95"))
+
+
 def test_inventory_attributes_reject_non_mapping_and_non_tuple_storage() -> None:
     with pytest.raises(TypeError, match="mapping"):
         InventoryAttributes.from_mapping([])  # type: ignore[arg-type]
@@ -222,6 +237,32 @@ def test_inventory_attributes_reject_too_many_items() -> None:
 
     with pytest.raises(ValueError, match="too many"):
         InventoryAttributes(items=values)
+
+
+def test_inventory_attribute_mapping_stops_at_the_item_bound() -> None:
+    class OversizedMapping(Mapping[str, str]):
+        reads = 0
+
+        def __getitem__(self, key: str) -> str:
+            del key
+            self.reads += 1
+            if self.reads > InventoryAttributes.MAX_ITEMS + 1:
+                raise AssertionError("mapping was read beyond the rejection boundary")
+            return "value"
+
+        def __iter__(self) -> Iterator[str]:
+            for index in range(InventoryAttributes.MAX_ITEMS + 2):
+                yield f"key-{index}"
+
+        def __len__(self) -> int:
+            return InventoryAttributes.MAX_ITEMS + 2
+
+    values = OversizedMapping()
+
+    with pytest.raises(ValueError, match="too many"):
+        InventoryAttributes.from_mapping(values)
+
+    assert values.reads == InventoryAttributes.MAX_ITEMS + 1
 
 
 def test_inventory_attributes_reject_total_encoded_size_overflow() -> None:

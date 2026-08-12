@@ -50,7 +50,11 @@ _BUILTIN_CALL_NAMES = frozenset(
         "vars",
     }
 )
-_DANGEROUS_BUILTIN_REFERENCES = _BUILTIN_CALL_NAMES | {"__builtins__"}
+_DANGEROUS_RUNTIME_REFERENCES = _BUILTIN_CALL_NAMES | {
+    "__builtins__",
+    "__loader__",
+    "__spec__",
+}
 _INVALID_PYTHON = "<invalid-python>"
 _MISSING_DOMAIN_ROOT = "<missing-domain-root>"
 _RELATIVE_IMPORT_ESCAPE = "<relative-import-escape>"
@@ -222,9 +226,12 @@ def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolatio
         if (
             isinstance(node, ast.Name)
             and isinstance(node.ctx, ast.Load)
-            and node.id in _DANGEROUS_BUILTIN_REFERENCES
+            and node.id in _DANGEROUS_RUNTIME_REFERENCES
         ):
-            reference_name = "builtins" if node.id == "__builtins__" else f"builtins.{node.id}"
+            if node.id in {"__loader__", "__spec__"}:
+                reference_name = f"runtime.{node.id}"
+            else:
+                reference_name = "builtins" if node.id == "__builtins__" else f"builtins.{node.id}"
             violations.append(
                 ImportViolation(
                     path=path,

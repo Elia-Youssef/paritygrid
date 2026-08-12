@@ -41,7 +41,7 @@ def fingerprint_state(
     leaves: list[bytes] = []
     try:
         iterator = iter(values)
-    except TypeError as error:
+    except Exception as error:
         raise _invalid_state("fingerprint.values") from error
 
     while True:

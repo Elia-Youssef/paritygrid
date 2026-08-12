@@ -56,7 +56,7 @@ class RepairAction:
                 raise ValueError("create action requires the target record to be absent")
             mismatches: tuple[FieldMismatch, ...] = ()
         else:
-            if not isinstance(self.expected_target_record, InventoryRecord):
+            if type(self.expected_target_record) is not InventoryRecord:
                 raise TypeError("update action requires an expected target InventoryRecord")
             mismatches = differences_between(self.proposed_record, self.expected_target_record)
             if not mismatches:
@@ -73,7 +73,7 @@ class RepairAction:
         outcome: object,
     ) -> RepairAction:
         """Build the only safe action for a repairable reconciliation outcome."""
-        if not isinstance(outcome, ReconciliationOutcome):
+        if type(outcome) is not ReconciliationOutcome:
             raise TypeError("repair action outcome must be a ReconciliationOutcome")
         if outcome.classification is ReconciliationClassification.MISSING_FROM_TARGET:
             return cls(
@@ -125,7 +125,7 @@ class RepairPlan:
             raise ValueError(f"repair plan must contain at most {self.MAX_ACTIONS} actions")
         if not action_values:
             raise ValueError("repair plan requires at least one action")
-        if any(not isinstance(action, RepairAction) for action in action_values):
+        if any(type(action) is not RepairAction for action in action_values):
             raise TypeError("repair plan actions must contain only RepairAction values")
         actions = cast(tuple[RepairAction, ...], action_values)
         if any(action.state_fingerprint != self.state_fingerprint for action in actions):
@@ -137,13 +137,13 @@ class RepairPlan:
 
     def is_current(self, current_fingerprint: object) -> bool:
         """Report whether this plan still describes the supplied state."""
-        if not isinstance(current_fingerprint, StateFingerprint):
+        if type(current_fingerprint) is not StateFingerprint:
             raise TypeError("current fingerprint must be a StateFingerprint")
         return self.state_fingerprint == current_fingerprint
 
     def require_current(self, current_fingerprint: object) -> None:
         """Reject use when the current reconciliation state has changed."""
-        if not isinstance(current_fingerprint, StateFingerprint):
+        if type(current_fingerprint) is not StateFingerprint:
             raise TypeError("current fingerprint must be a StateFingerprint")
         if not self.is_current(current_fingerprint):
             raise StaleRepairPlanError(
@@ -153,7 +153,7 @@ class RepairPlan:
 
 
 def _require_type(value: object, expected_type: type[object], *, field_name: str) -> None:
-    if not isinstance(value, expected_type):
+    if type(value) is not expected_type:
         raise TypeError(f"{field_name} must be a {expected_type.__name__}")
 
 
