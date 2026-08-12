@@ -20,6 +20,7 @@ from paritygrid.adapters.persistence.repositories.execution_common import (
 from paritygrid.adapters.persistence.repositories.execution_mapping import (
     run_node_from_row,
     stored_nonnegative_int,
+    stored_timestamp,
 )
 from paritygrid.adapters.persistence.repositories.runs import SqlAlchemyRunRepository
 from paritygrid.adapters.persistence.repositories.work_items import SqlAlchemyWorkItemRepository
@@ -58,6 +59,8 @@ class _NodeSnapshot:
     cancelled: int
     retries: int
     duration_microseconds: int
+    earliest_started_at: UtcTimestamp | None = None
+    latest_finished_at: UtcTimestamp | None = None
 
     def reverse_registration(self) -> _NodeSnapshot:
         return self._replace(total=self.total - 1, pending=self.pending - 1)
@@ -98,7 +101,11 @@ class _NodeSnapshot:
         values.update(changes)
         if any(value < 0 for value in values.values()):
             raise ExecutionCorruptionError("run-node aggregate history underflowed")
-        return _NodeSnapshot(**values)
+        return _NodeSnapshot(
+            **values,
+            earliest_started_at=self.earliest_started_at,
+            latest_finished_at=self.latest_finished_at,
+        )
 
 
 class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
@@ -123,10 +130,10 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
             raise ExecutionStateConflictError("registered work item does not match storage")
         node = self._require_node(installed.run_id, installed.node_id, expected_node_row_version)
         current = self._snapshot(installed.run_id, installed.node_id)
-        prior = current.reverse_registration()
-        self._validate_prior(node, prior)
         if node.status not in {RunNodeStatus.PENDING, RunNodeStatus.RUNNING}:
             raise ExecutionStateConflictError("terminal run node cannot register work")
+        prior = current.reverse_registration()
+        self._validate_prior(node, prior)
         return self._update_node(node, current, status=node.status, started_at=node.started_at)
 
     @translate_execution_storage_errors
@@ -141,11 +148,11 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
         durable = self._require_work(capability.work_item_id)
         _validate_claim(durable, capability)
         node = self._require_node(durable.run_id, durable.node_id, expected_node_row_version)
+        if node.started_at is not None and capability.started_at < node.started_at:
+            raise ExecutionInvalidRequestError("work claim precedes run-node start")
         current = self._snapshot(durable.run_id, durable.node_id)
         prior = current.reverse_claim()
         self._validate_prior(node, prior)
-        if node.started_at is not None and capability.started_at < node.started_at:
-            raise ExecutionInvalidRequestError("work claim precedes run-node start")
         started = capability.started_at if node.started_at is None else node.started_at
         return self._update_node(
             node,
@@ -180,7 +187,8 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
             raise ExecutionStateConflictError("run node is not running")
         metrics_values = _advance_metrics(node, delta)
         status = _status_for(current, started=True)
-        finished = result.attempt.finished_at if status is not RunNodeStatus.RUNNING else None
+        finished = current.latest_finished_at if status is not RunNodeStatus.RUNNING else None
+        _validate_terminal_finish(status, finished, node.started_at)
         return self._update_node(
             node,
             current,
@@ -270,7 +278,11 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
 
     def _snapshot(self, run_id: RunId, node_id: NodeId) -> _NodeSnapshot:
         state_rows = self._session.execute(
-            select(work_items.c.state, func.count())
+            select(
+                work_items.c.state,
+                func.count(),
+                func.min(work_items.c.active_attempt_started_at),
+            )
             .where(
                 work_items.c.run_id == str(run_id),
                 work_items.c.node_id == str(node_id),
@@ -278,7 +290,8 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
             .group_by(work_items.c.state)
         ).all()
         counts = {state: 0 for state in WorkItemState if state is not WorkItemState.LEASED}
-        for raw_state, raw_count in state_rows:
+        active_starts: list[UtcTimestamp] = []
+        for raw_state, raw_count, raw_active_start in state_rows:
             try:
                 state = WorkItemState(raw_state)
             except (TypeError, ValueError) as error:
@@ -286,6 +299,8 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
             if state is WorkItemState.LEASED or state not in counts:
                 raise ExecutionCorruptionError("run-node work state is corrupt")
             counts[state] = stored_nonnegative_int(raw_count, "run-node work count")
+            if raw_active_start is not None:
+                active_starts.append(stored_timestamp(raw_active_start, "active attempt start"))
         total = sum(counts.values())
         if total > MAX_WORK_METRIC:
             raise ExecutionCorruptionError("run-node work total is corrupt")
@@ -294,6 +309,8 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
                 work_attempts.c.outcome,
                 func.count(),
                 func.sum(work_attempts.c.duration_microseconds),
+                func.min(work_attempts.c.started_at),
+                func.max(work_attempts.c.finished_at),
             )
             .join(work_items, work_items.c.work_item_id == work_attempts.c.work_item_id)
             .where(
@@ -304,7 +321,9 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
         ).all()
         retries = 0
         duration = 0
-        for raw_outcome, raw_count, raw_duration in attempt_rows:
+        attempt_starts: list[UtcTimestamp] = []
+        attempt_finishes: list[UtcTimestamp] = []
+        for raw_outcome, raw_count, raw_duration, raw_started, raw_finished in attempt_rows:
             try:
                 outcome = AttemptOutcome(raw_outcome)
             except (TypeError, ValueError) as error:
@@ -314,6 +333,8 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
             if outcome in {AttemptOutcome.RETRY_SCHEDULED, AttemptOutcome.LEASE_EXPIRED}:
                 retries += count
             duration += outcome_duration
+            attempt_starts.append(stored_timestamp(raw_started, "attempt aggregate start"))
+            attempt_finishes.append(stored_timestamp(raw_finished, "attempt aggregate finish"))
         if retries > MAX_WORK_METRIC or duration > Duration.MAX_MICROSECONDS:
             raise ExecutionCorruptionError("run-node attempt aggregate is corrupt")
         return _NodeSnapshot(
@@ -326,6 +347,8 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
             cancelled=counts[WorkItemState.CANCELLED],
             retries=retries,
             duration_microseconds=duration,
+            earliest_started_at=min((*active_starts, *attempt_starts), default=None),
+            latest_finished_at=max(attempt_finishes, default=None),
         )
 
     @staticmethod
@@ -357,6 +380,12 @@ class SqlAlchemyRunNodeAggregateRepository(RunNodeAggregateRepository):
         )
         if stored != derived:
             raise ExecutionCorruptionError("run-node aggregate drift was detected")
+        if (
+            node.started_at is not None
+            and snapshot.earliest_started_at is not None
+            and node.started_at != snapshot.earliest_started_at
+        ):
+            raise ExecutionCorruptionError("run-node start chronology has drifted")
 
     def _update_node(
         self,
@@ -473,6 +502,15 @@ def _status_for(snapshot: _NodeSnapshot, *, started: bool) -> RunNodeStatus:
     if snapshot.quarantined or snapshot.cancelled:
         return RunNodeStatus.PARTIALLY_SUCCEEDED
     return RunNodeStatus.SUCCEEDED
+
+
+def _validate_terminal_finish(
+    status: RunNodeStatus,
+    finished_at: UtcTimestamp | None,
+    started_at: UtcTimestamp,
+) -> None:
+    if status is not RunNodeStatus.RUNNING and (finished_at is None or finished_at < started_at):
+        raise ExecutionCorruptionError("run-node terminal chronology is corrupt")
 
 
 def _validate_claim(work: WorkItemRecord, claim: WorkClaim) -> None:

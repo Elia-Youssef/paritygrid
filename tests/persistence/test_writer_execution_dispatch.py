@@ -40,6 +40,7 @@ from paritygrid.application.ports.consistency import (
     RedactedDocument,
 )
 from paritygrid.application.ports.execution import (
+    ExecutionStateConflictError,
     RunNodeStatus,
     WorkClaim,
     WorkCompletion,
@@ -502,6 +503,291 @@ def test_all_execution_composites_preserve_order_and_advance_revision_once(
         assert session.scalar(select(func.count()).select_from(execution_events)) == 13
 
 
+def test_work_commands_reject_cross_parent_hybrids_before_companions(
+    database: SQLiteDatabase,
+) -> None:
+    seed_pipeline(database)
+    with database.transaction() as session:
+        dispatch_command(session, create_run_command())
+        dispatch_command(
+            session,
+            TransitionRun(
+                RUN_ID,
+                1,
+                RunState.RUNNING,
+                timestamp(2),
+                None,
+                append_request(2, "run_started", RUN_ID, timestamp(2)),
+            ),
+        )
+        dispatch_command(session, bootstrap_command(3, 2, SUCCESS_NODE, SUCCESS_WORK, 2))
+
+    wrong_claims = (
+        replace(claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3), node_id=FAILURE_NODE),
+        replace(
+            claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3),
+            run_id=RunId("run_writerdispatch-other"),
+        ),
+    )
+    for wrong in wrong_claims:
+        with (
+            pytest.raises(WriterInvalidRequestError, match="another run or node"),
+            database.transaction() as session,
+        ):
+            dispatch_command(session, wrong)
+    with database.transaction() as session:
+        row = (
+            session.execute(
+                select(work_items).where(work_items.c.work_item_id == str(SUCCESS_WORK))
+            )
+            .mappings()
+            .one()
+        )
+        assert (row["state"], row["row_version"]) == (WorkItemState.PENDING.value, 1)
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 3
+        claimed = dispatch_command(session, claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3))
+    claim = cast(WorkClaim, claimed.result.claim)  # type: ignore[attr-defined]
+
+    renewal = RenewWorkClaim(
+        RUN_ID,
+        FAILURE_NODE,
+        claim,
+        4,
+        timestamp(4),
+        timestamp(8),
+        append_request(5, "work_claim_renewed", SUCCESS_WORK, timestamp(4)),
+    )
+    with (
+        pytest.raises(WriterInvalidRequestError, match="another run or node"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, renewal)
+    with database.transaction() as session:
+        row = (
+            session.execute(
+                select(work_items).where(work_items.c.work_item_id == str(SUCCESS_WORK))
+            )
+            .mappings()
+            .one()
+        )
+        assert (row["row_version"], row["lease_expires_at"]) == (2, str(timestamp(6)))
+        renewed = dispatch_command(session, replace(renewal, node_id=SUCCESS_NODE))
+    claim = cast(WorkClaim, renewed.result.claim)  # type: ignore[attr-defined]
+
+    completion = CommitWorkWithCheckpoint(
+        RUN_ID,
+        FAILURE_NODE,
+        claim,
+        WorkCompletion(
+            WorkItemState.SUCCEEDED,
+            timestamp(5),
+            None,
+            None,
+            None,
+            document(output="ok"),
+            1,
+            10,
+        ),
+        CheckpointWrite(1, 1, None, None, None, timestamp(5)),
+        WorkMetricDelta(),
+        3,
+        5,
+        append_request(6, "checkpoint_committed", SUCCESS_WORK, timestamp(5)),
+    )
+    with (
+        pytest.raises(WriterInvalidRequestError, match="another run or node"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, completion)
+    with database.transaction() as session:
+        row = (
+            session.execute(
+                select(work_items).where(work_items.c.work_item_id == str(SUCCESS_WORK))
+            )
+            .mappings()
+            .one()
+        )
+        assert (row["state"], row["row_version"], row["completed_attempt_count"]) == (
+            WorkItemState.RUNNING.value,
+            3,
+            0,
+        )
+        assert session.scalar(select(func.count()).select_from(work_attempts)) == 0
+        assert session.scalar(select(func.count()).select_from(checkpoints)) == 0
+        dispatch_command(session, replace(completion, node_id=SUCCESS_NODE))
+
+    with database.transaction() as session:
+        dispatch_command(session, bootstrap_command(7, 6, RECOVERY_NODE, RECOVERY_WORK, 6))
+        recovered_claim = dispatch_command(
+            session, claim_command(8, 7, RECOVERY_NODE, RECOVERY_WORK, 7)
+        )
+    recovery = RecoverExpiredWork(
+        RUN_ID,
+        FAILURE_NODE,
+        RECOVERY_WORK,
+        2,
+        AttemptNumber(1),
+        timestamp(11),
+        timestamp(12),
+        None,
+        3,
+        8,
+        append_request(9, "work_lease_expired", RECOVERY_WORK, timestamp(11)),
+    )
+    assert cast(WorkClaim, recovered_claim.result.claim).lease_expires_at == timestamp(10)  # type: ignore[attr-defined]
+    with (
+        pytest.raises(WriterInvalidRequestError, match="another run or node"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, recovery)
+    with database.transaction() as session:
+        row = (
+            session.execute(
+                select(work_items).where(work_items.c.work_item_id == str(RECOVERY_WORK))
+            )
+            .mappings()
+            .one()
+        )
+        assert (row["state"], row["row_version"], row["completed_attempt_count"]) == (
+            WorkItemState.RUNNING.value,
+            2,
+            0,
+        )
+        dispatch_command(session, replace(recovery, node_id=RECOVERY_NODE))
+
+    with database.transaction() as session:
+        dispatch_command(session, bootstrap_command(10, 9, FAILURE_NODE, FAILURE_WORK, 12))
+        failed_claim = dispatch_command(
+            session, claim_command(11, 10, FAILURE_NODE, FAILURE_WORK, 13)
+        )
+    attempt = CommitWorkAttempt(
+        RUN_ID,
+        SUCCESS_NODE,
+        cast(WorkClaim, failed_claim.result.claim),  # type: ignore[attr-defined]
+        WorkCompletion(
+            WorkItemState.FAILED,
+            timestamp(14),
+            None,
+            FailureClassification.UNKNOWN,
+            "failed safely",
+            None,
+            0,
+            0,
+        ),
+        WorkMetricDelta(),
+        3,
+        11,
+        append_request(12, "work_failed", FAILURE_WORK, timestamp(14)),
+    )
+    with (
+        pytest.raises(WriterInvalidRequestError, match="another run or node"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, attempt)
+    with database.transaction() as session:
+        row = (
+            session.execute(
+                select(work_items).where(work_items.c.work_item_id == str(FAILURE_WORK))
+            )
+            .mappings()
+            .one()
+        )
+        assert (row["state"], row["row_version"], row["completed_attempt_count"]) == (
+            WorkItemState.RUNNING.value,
+            2,
+            0,
+        )
+        dispatch_command(session, replace(attempt, node_id=FAILURE_NODE))
+
+
+def test_writer_rejects_bootstrap_after_empty_terminal_and_continues(
+    database: SQLiteDatabase,
+) -> None:
+    seed_pipeline(database)
+    writer = SQLiteTransactionalWriter(
+        create_session_factory(database.engine),
+        WriterSettings(contention_delay_seconds=0.0),
+    )
+    writer.start()
+    try:
+        writer.submit(create_run_command(), timeout_seconds=1.0).result(timeout_seconds=2.0)
+        writer.submit(
+            TransitionRun(
+                RUN_ID,
+                1,
+                RunState.RUNNING,
+                timestamp(2),
+                None,
+                append_request(2, "run_started", RUN_ID, timestamp(2)),
+            ),
+            timeout_seconds=1.0,
+        ).result(timeout_seconds=2.0)
+        writer.submit(
+            FinalizeEmptyRunNode(
+                RUN_ID,
+                EMPTY_NODE,
+                1,
+                2,
+                timestamp(3),
+                append_request(3, "run_node_succeeded", RUN_ID, timestamp(3)),
+            ),
+            timeout_seconds=1.0,
+        ).result(timeout_seconds=2.0)
+        rejected = writer.submit(
+            replace(
+                bootstrap_command(4, 3, EMPTY_NODE, WorkItemId("wrk_terminal-node"), 3),
+                expected_node_row_version=2,
+            ),
+            timeout_seconds=1.0,
+        )
+        accepted = writer.submit(
+            bootstrap_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3),
+            timeout_seconds=1.0,
+        )
+        with pytest.raises(ExecutionStateConflictError, match="terminal"):
+            rejected.result(timeout_seconds=2.0)
+        assert accepted.result(timeout_seconds=2.0).mutated
+    finally:
+        assert writer.close(timeout_seconds=2.0).drained
+    with database.transaction() as session:
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(work_items)
+                .where(work_items.c.node_id == str(EMPTY_NODE))
+            )
+            == 0
+        )
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 4
+
+
+def test_parent_helpers_reject_missing_or_invalid_work_records(
+    database: SQLiteDatabase, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    claim = WorkClaim(
+        SUCCESS_WORK,
+        AttemptNumber(1),
+        "owner",
+        1,
+        timestamp(1),
+        timestamp(2),
+        "threaded",
+        "worker",
+    )
+
+    def missing(_repository: object, _work_id: WorkItemId) -> None:
+        return None
+
+    monkeypatch.setattr(dispatch_runtime.SqlAlchemyWorkItemRepository, "get", missing)
+    with (
+        pytest.raises(WriterInvalidRequestError, match="does not exist"),
+        database.transaction() as session,
+    ):
+        dispatch_runtime._require_claim_parent(session, claim, RUN_ID, SUCCESS_NODE)
+    with pytest.raises(WriterInvalidRequestError, match="invalid record"):
+        dispatch_runtime._require_work_parent(object(), RUN_ID, SUCCESS_NODE)
+
+
 def test_composite_failure_rolls_back_every_prior_mutation(
     database: SQLiteDatabase,
     monkeypatch: pytest.MonkeyPatch,
@@ -804,7 +1090,9 @@ def test_transactional_writer_commits_to_wal_and_reopens_with_integrity(
             ),
         )
         writer.start()
-        created = writer.submit(create_run_command()).result(timeout_seconds=2.0)
+        created = writer.submit(create_run_command(), timeout_seconds=1.0).result(
+            timeout_seconds=2.0
+        )
         transitioned = writer.submit(
             TransitionRun(
                 RUN_ID,
@@ -813,7 +1101,8 @@ def test_transactional_writer_commits_to_wal_and_reopens_with_integrity(
                 timestamp(2),
                 None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
-            )
+            ),
+            timeout_seconds=1.0,
         ).result(timeout_seconds=2.0)
         assert created.submission_id.number == 1
         assert transitioned.submission_id.number == 2

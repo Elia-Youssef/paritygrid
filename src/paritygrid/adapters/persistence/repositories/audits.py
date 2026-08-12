@@ -105,6 +105,65 @@ class SqlAlchemyAuditRepository(AuditRepository):
         return None if row is None else audit_from_row(cast(Mapping[str, object], row))
 
     @translate_audit_storage_errors
+    def match_exact(self, entry: PendingAuditEntry) -> AuditEntryRecord:
+        """Verify one existing audit fact without allocating another sequence."""
+        self._require_transaction()
+        pending = require_audit_exact(entry, PendingAuditEntry, "audit entry")
+        actor = audit_bounded_text(pending.actor, "audit actor", 128)
+        operation = audit_snake_case(pending.operation, "audit operation", 96)
+        object_kind = audit_snake_case(pending.object_kind, "audit object kind", 48)
+        object_id = (
+            None
+            if pending.object_id is None
+            else audit_portable_identity(pending.object_id, "audit object identifier", 128)
+        )
+        correlation = audit_portable_identity(
+            pending.correlation_id, "audit correlation identifier", 96
+        )
+        occurred_at = require_audit_exact(
+            pending.occurred_at, UtcTimestamp, "audit occurrence time"
+        )
+        schema_version = audit_positive_int(
+            pending.detail_schema_version, "audit detail schema version"
+        )
+        detail = encode_audit_detail(
+            require_audit_exact(pending.detail, RedactedDocument, "audit detail")
+        )
+        rows = tuple(
+            self._session.execute(
+                select(audit_entries)
+                .where(
+                    audit_entries.c.correlation_id == correlation,
+                    audit_entries.c.operation == operation,
+                    audit_entries.c.object_kind == object_kind,
+                    (
+                        audit_entries.c.object_id.is_(None)
+                        if object_id is None
+                        else audit_entries.c.object_id == object_id
+                    ),
+                )
+                .limit(2)
+            ).mappings()
+        )
+        if not rows:
+            raise AuditSequenceConflictError("matching audit fact does not exist")
+        if len(rows) != 1:
+            raise AuditCorruptionError("matching audit fact is ambiguous")
+        record = audit_from_row(cast(Mapping[str, object], rows[0]))
+        if (
+            record.actor != actor
+            or record.operation != operation
+            or record.object_kind != object_kind
+            or record.object_id != object_id
+            or record.correlation_id != correlation
+            or record.occurred_at != occurred_at
+            or record.detail_schema_version != schema_version
+            or encode_audit_detail(record.detail).text != detail.text
+        ):
+            raise AuditSequenceConflictError("matching audit fact differs from the request")
+        return record
+
+    @translate_audit_storage_errors
     def list_after(self, *, after: AuditSequence | None, limit: int) -> AuditPage:
         self._require_transaction()
         page_limit = validate_audit_page_limit(limit)

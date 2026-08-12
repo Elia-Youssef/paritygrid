@@ -10,12 +10,13 @@ from pathlib import Path
 from typing import cast
 
 import pytest
-from sqlalchemy import func, insert, select
+from sqlalchemy import func, insert, select, update
 
 from paritygrid.adapters.persistence import SQLiteDatabase, SQLiteDatabaseConfig
 from paritygrid.adapters.persistence.migration import upgrade_to_head
 from paritygrid.adapters.persistence.repositories import (
     SqlAlchemyPipelineRepository,
+    SqlAlchemyRepairRepository,
     SqlAlchemyRunRepository,
 )
 from paritygrid.adapters.persistence.schema import (
@@ -32,12 +33,15 @@ from paritygrid.adapters.persistence.writer import dispatch as dispatch_runtime
 from paritygrid.adapters.persistence.writer.dispatch import dispatch_command, validate_command
 from paritygrid.application.ports.configuration import ConfigurationDocument
 from paritygrid.application.ports.consistency import (
+    ConsistencyRepositoryError,
     EventSequence,
     EventSubjectKind,
     PendingExecutionEvent,
     RedactedDocument,
 )
 from paritygrid.application.ports.repair_audit import (
+    AuditCorruptionError,
+    AuditSequenceConflictError,
     PendingAuditEntry,
     RepairActionKeyMap,
     RepairApplicationBeginDisposition,
@@ -307,6 +311,12 @@ def test_full_application_and_exact_replays_have_no_duplicate_companions(
     with database.transaction() as session:
         applied = dispatch_command(session, applied_command)
     next_reservation = cast(RepairActionAppliedResult, applied.result).operation.reservation
+    operation = cast(RepairActionAppliedResult, applied.result).operation
+    with pytest.raises(WriterInvalidRequestError, match="another run"):
+        dispatch_runtime._require_repair_action_parent(
+            replace(operation, action=replace(operation.action, run_id=RunId("run_other"))),
+            RUN_ID,
+        )
     with database.transaction() as session:
         replayed_action = dispatch_command(session, applied_command)
     assert not replayed_action.mutated
@@ -328,6 +338,194 @@ def test_full_application_and_exact_replays_have_no_duplicate_companions(
         assert session.scalar(select(runs.c.row_version).where(runs.c.run_id == str(RUN_ID))) == 8
         counter = session.execute(select(run_event_counters)).mappings().one()
         assert (counter["next_sequence_number"], counter["row_version"]) == (6, 6)
+
+
+def test_repair_commands_reject_cross_run_plan_hybrids_and_roll_back(
+    database: SQLiteDatabase,
+) -> None:
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        dispatch_command(session, create_command())
+    other_run = RunId("run_writerrepair-other")
+
+    def for_other_run(value: RepairCompanions) -> RepairCompanions:
+        event = replace(value.event.event, subject_id=other_run)
+        return replace(value, event=replace(value.event, event=event))
+
+    wrong_approval = replace(
+        approve_command(),
+        run_id=other_run,
+        companions=for_other_run(companions(2, "repair_plan_approved", 3)),
+    )
+    wrong_rejection = RejectRepairPlan(
+        other_run,
+        PLAN_ID,
+        1,
+        timestamp(3),
+        for_other_run(companions(2, "repair_plan_rejected", 3)),
+    )
+    for wrong in (wrong_approval, wrong_rejection):
+        with (
+            pytest.raises(WriterInvalidRequestError, match="another run"),
+            database.transaction() as session,
+        ):
+            dispatch_command(session, wrong)
+    with database.transaction() as session:
+        plan = session.execute(select(repair_plans)).mappings().one()
+        assert (plan["status"], plan["row_version"]) == (RepairPlanStatus.PROPOSED.value, 1)
+        assert session.scalar(select(func.count()).select_from(audit_entries)) == 1
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 1
+        dispatch_command(session, approve_command())
+
+    wrong_begin = BeginRepairApplication(
+        other_run,
+        PLAN_ID,
+        2,
+        FINGERPRINT,
+        timestamp(4),
+        for_other_run(companions(3, "repair_application_started", 4)),
+    )
+    with (
+        pytest.raises(WriterInvalidRequestError, match="another run"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, wrong_begin)
+    with database.transaction() as session:
+        plan = session.execute(select(repair_plans)).mappings().one()
+        assert (plan["status"], plan["row_version"]) == (RepairPlanStatus.APPROVED.value, 2)
+        assert session.scalar(select(func.count()).select_from(audit_entries)) == 2
+
+
+def test_repair_replay_requires_byte_exact_immediate_companions(
+    database: SQLiteDatabase,
+) -> None:
+    seed_reconciliation(database)
+    original = create_command()
+    with database.transaction() as session:
+        dispatch_command(session, original)
+
+    altered_audit = replace(
+        original,
+        companions=replace(
+            original.companions,
+            audit=replace(original.companions.audit, detail=redacted(operation="altered")),
+        ),
+    )
+    with (
+        pytest.raises(AuditSequenceConflictError, match="differs"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, altered_audit)
+
+    altered_event = replace(
+        original,
+        companions=replace(
+            original.companions,
+            event=replace(
+                original.companions.event,
+                event=replace(
+                    original.companions.event.event,
+                    payload=redacted(operation="altered"),
+                ),
+            ),
+        ),
+    )
+    with (
+        pytest.raises(ConsistencyRepositoryError),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, altered_event)
+    with database.transaction() as session:
+        replay = dispatch_command(session, original)
+        assert not replay.mutated
+        assert session.scalar(select(func.count()).select_from(audit_entries)) == 1
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 1
+
+
+def test_approval_replay_rejects_a_later_companion_frontier(
+    database: SQLiteDatabase,
+) -> None:
+    seed_reconciliation(database)
+    approval = approve_command()
+    with database.transaction() as session:
+        dispatch_command(session, create_command())
+        dispatch_command(session, approval)
+        immediate = dispatch_command(session, approval)
+        assert not immediate.mutated
+        dispatch_command(
+            session,
+            BeginRepairApplication(
+                RUN_ID,
+                PLAN_ID,
+                2,
+                FINGERPRINT,
+                timestamp(4),
+                companions(3, "repair_application_started", 4),
+            ),
+        )
+    with (
+        pytest.raises(ConsistencyRepositoryError),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, approval)
+
+
+def test_repair_replay_requires_the_preexisting_audit_fact(
+    database: SQLiteDatabase,
+) -> None:
+    seed_reconciliation(database)
+    original = create_command()
+    with database.transaction() as session:
+        SqlAlchemyRepairRepository(session).create_plan(
+            run_id=RUN_ID,
+            plan=original.plan,
+            action_keys=original.action_keys,
+            created_at=original.created_at,
+        )
+    with (
+        pytest.raises(AuditSequenceConflictError, match="does not exist"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, original)
+    with database.transaction() as session:
+        assert session.scalar(select(func.count()).select_from(audit_entries)) == 0
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 0
+
+
+def test_repair_replay_rejects_ambiguous_audit_and_later_run_revision(
+    database: SQLiteDatabase,
+) -> None:
+    seed_reconciliation(database)
+    original = create_command()
+    with database.transaction() as session:
+        dispatch_command(session, original)
+        row = dict(session.execute(select(audit_entries)).mappings().one())
+        row.pop("sequence_number")
+        session.execute(insert(audit_entries).values(**row))
+    with (
+        pytest.raises(AuditCorruptionError, match="ambiguous"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, original)
+
+
+def test_repair_replay_rejects_run_revision_without_matching_companion(
+    database: SQLiteDatabase,
+) -> None:
+    seed_reconciliation(database)
+    original = create_command()
+    with database.transaction() as session:
+        dispatch_command(session, original)
+        session.execute(
+            update(runs)
+            .where(runs.c.run_id == str(RUN_ID), runs.c.row_version == 4)
+            .values(row_version=5)
+        )
+    with (
+        pytest.raises(WriterInvalidRequestError, match="immediate run revision"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, original)
 
 
 def test_reject_and_failed_action_paths_are_atomic(database: SQLiteDatabase) -> None:

@@ -6,7 +6,7 @@ from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
 from enum import Enum, auto
-from threading import Condition, Event, Lock, Thread, current_thread
+from threading import Condition, Lock, Thread, current_thread
 from typing import cast
 
 from sqlalchemy.orm import Session, sessionmaker
@@ -17,13 +17,30 @@ from paritygrid.adapters.persistence.writer.dispatch import dispatch_command, va
 from paritygrid.adapters.persistence.writer.notifications import (
     BoundedCommittedNotificationBuffer,
 )
-from paritygrid.application.ports.consistency import ConsistencyRepositoryError
-from paritygrid.application.ports.execution import ExecutionRepositoryError
+from paritygrid.application.ports.consistency import (
+    ConsistencyInvalidRequestError,
+    ConsistencyRecordNotFoundError,
+    ConsistencyStaleRowVersionError,
+    ConsistencyStateConflictError,
+)
+from paritygrid.application.ports.execution import (
+    ExecutionDuplicateError,
+    ExecutionInvalidRequestError,
+    ExecutionRecordNotFoundError,
+    ExecutionStaleRowVersionError,
+    ExecutionStateConflictError,
+)
 from paritygrid.application.ports.repair_audit import (
-    AuditRepositoryError,
-    RepairRepositoryError,
+    AuditInvalidRequestError,
+    AuditSequenceConflictError,
+    RepairDuplicateError,
+    RepairInvalidRequestError,
+    RepairRecordNotFoundError,
+    RepairStaleRowVersionError,
+    RepairStateConflictError,
 )
 from paritygrid.application.ports.writer import (
+    MAX_WRITER_SUBMISSION_ID,
     CommittedNotification,
     PersistenceContentionError,
     TransactionalWriter,
@@ -82,29 +99,27 @@ class _WriterTicket(WriterTicket):
     def submission_id(self) -> WriterSubmissionId:
         return self._submission_id
 
-    def result(self, timeout_seconds: float | None = None) -> WriterReceipt:
+    def result(self, *, timeout_seconds: float) -> WriterReceipt:
         timeout = _validate_timeout(timeout_seconds, "result timeout")
-        deadline = None if timeout is None else time.monotonic() + timeout
+        deadline = time.monotonic() + timeout
         with self._condition:
             while self._receipt is None and self._error is None:
-                remaining = None if deadline is None else deadline - time.monotonic()
-                if remaining is not None and remaining <= 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     raise WriterResultTimeoutError("Writer result wait timed out.")
                 self._condition.wait(remaining)
             return self._outcome()
 
-    async def result_async(self, timeout_seconds: float | None = None) -> WriterReceipt:
+    async def result_async(self, *, timeout_seconds: float) -> WriterReceipt:
         timeout = _validate_timeout(timeout_seconds, "result timeout")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[WriterReceipt] = loop.create_future()
         with self._condition:
             if self._receipt is not None or self._error is not None:
-                _schedule_ticket_outcome(loop, future, self._receipt, self._error)
+                _try_schedule_ticket_outcome(loop, future, self._receipt, self._error)
             else:
                 self._async_waiters.append((loop, future))
         try:
-            if timeout is None:
-                return await asyncio.shield(future)
             return await asyncio.wait_for(asyncio.shield(future), timeout)
         except TimeoutError:
             self._discard_async_waiter(loop, future)
@@ -129,7 +144,12 @@ class _WriterTicket(WriterTicket):
             self._async_waiters.clear()
             self._condition.notify_all()
         for loop, future in waiters:
-            _schedule_ticket_outcome(loop, future, receipt, error)
+            _try_schedule_ticket_outcome(loop, future, receipt, error)
+
+    @property
+    def resolved(self) -> bool:
+        with self._condition:
+            return self._receipt is not None or self._error is not None
 
     def _discard_async_waiter(
         self,
@@ -177,7 +197,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
         self._completed = 0
         self._in_flight = 0
         self._thread: Thread | None = None
-        self._started = Event()
+        self._active: _QueuedCommand | None = None
 
     @property
     def notifications(self) -> BoundedCommittedNotificationBuffer:
@@ -199,26 +219,32 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                 daemon=False,
             )
             self._thread = thread
-            thread.start()
-        self._started.wait()
+            try:
+                thread.start()
+            except BaseException:
+                self._state = _State.FAILED
+                self._thread = None
+                self._condition.notify_all()
+                raise WriterFailedError("Writer thread could not be started.") from None
 
     def submit(
         self,
         command: WriterCommand,
         *,
-        timeout_seconds: float | None = None,
+        timeout_seconds: float,
     ) -> WriterTicket:
         validated = validate_command(command)
         timeout = _validate_timeout(timeout_seconds, "admission timeout")
-        deadline = None if timeout is None else time.monotonic() + timeout
+        deadline = time.monotonic() + timeout
         waiter = _AdmissionWaiter(validated)
         with self._condition:
             self._require_admission_open()
+            self._require_waiter_capacity()
             self._admissions.append(waiter)
             self._admit_waiters()
             while waiter.ticket is None and waiter.error is None:
-                remaining = None if deadline is None else deadline - time.monotonic()
-                if remaining is not None and remaining <= 0:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     assert waiter in self._admissions
                     self._admissions.remove(waiter)
                     self._condition.notify_all()
@@ -229,31 +255,37 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             assert waiter.ticket is not None
             return waiter.ticket
 
-    async def submit_async(self, command: WriterCommand) -> WriterTicket:
+    async def submit_async(self, command: WriterCommand, *, timeout_seconds: float) -> WriterTicket:
         validated = validate_command(command)
+        timeout = _validate_timeout(timeout_seconds, "admission timeout")
         loop = asyncio.get_running_loop()
         future: asyncio.Future[_WriterTicket] = loop.create_future()
         waiter = _AdmissionWaiter(validated, loop=loop, future=future)
         with self._condition:
             self._require_admission_open()
+            self._require_waiter_capacity()
             self._admissions.append(waiter)
             self._admit_waiters()
             if waiter.ticket is not None:
                 future.cancel()
                 return waiter.ticket
         try:
-            return await future
+            return await asyncio.wait_for(asyncio.shield(future), timeout)
+        except TimeoutError:
+            admitted = self._withdraw_admission(waiter)
+            if admitted is not None:
+                return admitted
+            future.cancel()
+            raise WriterAdmissionTimeoutError(
+                "Writer admission timed out before enqueue."
+            ) from None
         except asyncio.CancelledError:
-            with self._condition:
-                if waiter.ticket is not None:
-                    return waiter.ticket
-                waiter.cancelled = True
-                if waiter in self._admissions:
-                    self._admissions.remove(waiter)
-                    self._condition.notify_all()
+            admitted = self._withdraw_admission(waiter)
+            if admitted is not None:
+                return admitted
             raise
 
-    def close(self, *, timeout_seconds: float | None = None) -> WriterCloseResult:
+    def close(self, *, timeout_seconds: float) -> WriterCloseResult:
         timeout = _validate_timeout(timeout_seconds, "drain timeout")
         with self._condition:
             if self._thread is current_thread():
@@ -279,7 +311,21 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             )
 
     def _run(self) -> None:
-        self._started.set()
+        try:
+            self._run_loop()
+        except BaseException:
+            with self._condition:
+                active = self._active
+                if active is not None and not active.ticket.resolved:
+                    active.ticket.resolve_error(WriterFailedError("Writer lifecycle failed."))
+                self._active = None
+                self._in_flight = 0
+                self._state = _State.FAILED
+                self._fail_queued()
+                self._reject_admissions(WriterClosedError("Writer is closed."))
+                self._condition.notify_all()
+
+    def _run_loop(self) -> None:
         while True:
             with self._condition:
                 while not self._queue and self._state is _State.RUNNING:
@@ -290,12 +336,14 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                     self._condition.notify_all()
                     return
                 queued = self._queue.popleft()
+                self._active = queued
                 self._in_flight = 1
                 self._admit_waiters()
                 self._condition.notify_all()
             fatal = self._execute(queued)
             with self._condition:
                 self._in_flight = 0
+                self._active = None
                 self._completed += 1
                 if fatal is not None:
                     self._state = _State.FAILED
@@ -329,10 +377,22 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                     time.sleep(self._settings.contention_delay_seconds)
                 continue
             except (
-                ExecutionRepositoryError,
-                ConsistencyRepositoryError,
-                RepairRepositoryError,
-                AuditRepositoryError,
+                ExecutionInvalidRequestError,
+                ExecutionDuplicateError,
+                ExecutionRecordNotFoundError,
+                ExecutionStaleRowVersionError,
+                ExecutionStateConflictError,
+                ConsistencyInvalidRequestError,
+                ConsistencyRecordNotFoundError,
+                ConsistencyStaleRowVersionError,
+                ConsistencyStateConflictError,
+                RepairInvalidRequestError,
+                RepairRecordNotFoundError,
+                RepairDuplicateError,
+                RepairStaleRowVersionError,
+                RepairStateConflictError,
+                AuditInvalidRequestError,
+                AuditSequenceConflictError,
                 WriterInvalidRequestError,
             ) as error:
                 cleanup = _rollback_and_close(session, transaction)
@@ -396,8 +456,28 @@ class SQLiteTransactionalWriter(TransactionalWriter):
         if self._state is _State.FAILED:
             raise WriterFailedError("Writer failed and requires recovery.")
 
+    def _require_waiter_capacity(self) -> None:
+        if len(self._admissions) >= self._settings.admission_waiter_capacity:
+            raise WriterAdmissionTimeoutError("Writer admission waiter capacity is exhausted.")
+
+    def _withdraw_admission(self, waiter: _AdmissionWaiter) -> _WriterTicket | None:
+        with self._condition:
+            if waiter.ticket is not None:
+                return waiter.ticket
+            waiter.cancelled = True
+            if waiter in self._admissions:
+                self._admissions.remove(waiter)
+                self._condition.notify_all()
+            return None
+
     def _admit_waiters(self) -> None:
         while self._admissions and len(self._queue) < self._settings.queue_capacity:
+            if self._next_submission > MAX_WRITER_SUBMISSION_ID:
+                self._state = _State.CLOSING
+                self._reject_admissions(
+                    WriterClosedError("Writer submission identities are exhausted.")
+                )
+                return
             waiter = self._admissions.popleft()
             if waiter.cancelled:
                 continue
@@ -408,7 +488,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             self._queue.append(_QueuedCommand(waiter.command, ticket))
             self._accepted += 1
             if waiter.loop is not None and waiter.future is not None:
-                waiter.loop.call_soon_threadsafe(_set_admission_result, waiter.future, ticket)
+                _try_schedule_admission_result(waiter.loop, waiter.future, ticket)
             self._condition.notify_all()
 
     def _reject_admissions(self, error: BaseException) -> None:
@@ -417,7 +497,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
         for waiter in waiters:
             waiter.error = error
             if waiter.loop is not None and waiter.future is not None:
-                waiter.loop.call_soon_threadsafe(_set_admission_error, waiter.future, error)
+                _try_schedule_admission_error(waiter.loop, waiter.future, error)
         self._condition.notify_all()
 
     def _fail_queued(self) -> None:
@@ -454,9 +534,7 @@ def _close_only(session: Session | None) -> BaseException | None:
     return None
 
 
-def _validate_timeout(value: float | None, subject: str) -> float | None:
-    if value is None:
-        return None
+def _validate_timeout(value: float, subject: str) -> float:
     if type(value) is not float or not 0 <= value <= 86_400:
         raise WriterInvalidRequestError(f"{subject} is outside the supported range")
     return value
@@ -472,13 +550,38 @@ def _set_admission_error(future: asyncio.Future[_WriterTicket], error: BaseExcep
         future.set_exception(error)
 
 
-def _schedule_ticket_outcome(
+def _try_schedule_ticket_outcome(
     loop: asyncio.AbstractEventLoop,
     future: asyncio.Future[WriterReceipt],
     receipt: WriterReceipt | None,
     error: BaseException | None,
 ) -> None:
-    loop.call_soon_threadsafe(_set_ticket_outcome, future, receipt, error)
+    try:
+        loop.call_soon_threadsafe(_set_ticket_outcome, future, receipt, error)
+    except RuntimeError:
+        return
+
+
+def _try_schedule_admission_result(
+    loop: asyncio.AbstractEventLoop,
+    future: asyncio.Future[_WriterTicket],
+    ticket: _WriterTicket,
+) -> None:
+    try:
+        loop.call_soon_threadsafe(_set_admission_result, future, ticket)
+    except RuntimeError:
+        return
+
+
+def _try_schedule_admission_error(
+    loop: asyncio.AbstractEventLoop,
+    future: asyncio.Future[_WriterTicket],
+    error: BaseException,
+) -> None:
+    try:
+        loop.call_soon_threadsafe(_set_admission_error, future, error)
+    except RuntimeError:
+        return
 
 
 def _set_ticket_outcome(

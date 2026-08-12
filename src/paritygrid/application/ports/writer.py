@@ -10,6 +10,8 @@ from paritygrid.application.ports.consistency import (
 )
 from paritygrid.domain.models import RunId
 
+MAX_WRITER_SUBMISSION_ID = 9_223_372_036_854_775_807
+
 
 class PersistenceContentionError(Exception):
     """SQLite write contention prevented a confirmed precommit attempt."""
@@ -77,6 +79,7 @@ class WriterSettings:
     """Explicit queue, retry, notification, and thread bounds."""
 
     queue_capacity: int = 64
+    admission_waiter_capacity: int = 64
     notification_capacity: int = 64
     max_contention_attempts: int = 3
     contention_delay_seconds: float = 0.01
@@ -85,6 +88,11 @@ class WriterSettings:
     def __post_init__(self) -> None:
         if type(self.queue_capacity) is not int or not 1 <= self.queue_capacity <= 10_000:
             raise ValueError("writer queue capacity is outside the supported range")
+        if (
+            type(self.admission_waiter_capacity) is not int
+            or not 1 <= self.admission_waiter_capacity <= 10_000
+        ):
+            raise ValueError("writer admission waiter capacity is outside the supported range")
         if (
             type(self.notification_capacity) is not int
             or not 1 <= self.notification_capacity <= 10_000
@@ -115,7 +123,7 @@ class WriterSubmissionId:
     def __post_init__(self) -> None:
         if type(self.number) is not int:
             raise TypeError("writer submission identity must be an integer")
-        if not 1 <= self.number <= 9_223_372_036_854_775_807:
+        if not 1 <= self.number <= MAX_WRITER_SUBMISSION_ID:
             raise ValueError("writer submission identity is outside the supported range")
 
     def __int__(self) -> int:
@@ -197,9 +205,9 @@ class WriterTicket(Protocol):
     @property
     def submission_id(self) -> WriterSubmissionId: ...
 
-    def result(self, timeout_seconds: float | None = None) -> WriterReceipt: ...
+    def result(self, *, timeout_seconds: float) -> WriterReceipt: ...
 
-    async def result_async(self, timeout_seconds: float | None = None) -> WriterReceipt: ...
+    async def result_async(self, *, timeout_seconds: float) -> WriterReceipt: ...
 
 
 class TransactionalWriter(Protocol):
@@ -211,12 +219,14 @@ class TransactionalWriter(Protocol):
         self,
         command: WriterCommand,
         *,
-        timeout_seconds: float | None = None,
+        timeout_seconds: float,
     ) -> WriterTicket: ...
 
-    async def submit_async(self, command: WriterCommand) -> WriterTicket: ...
+    async def submit_async(
+        self, command: WriterCommand, *, timeout_seconds: float
+    ) -> WriterTicket: ...
 
-    def close(self, *, timeout_seconds: float | None = None) -> WriterCloseResult: ...
+    def close(self, *, timeout_seconds: float) -> WriterCloseResult: ...
 
 
 class CommittedNotificationBuffer(Protocol):
@@ -228,6 +238,7 @@ class CommittedNotificationBuffer(Protocol):
 
 
 __all__ = [
+    "MAX_WRITER_SUBMISSION_ID",
     "CommittedNotification",
     "CommittedNotificationBuffer",
     "EventAppendRequest",

@@ -41,6 +41,7 @@ from paritygrid.adapters.persistence.repositories.run_node_aggregates import (
     _status_for,
     _validate_claim,
     _validate_completed_work,
+    _validate_terminal_finish,
 )
 from paritygrid.adapters.persistence.repositories.run_revisions import (
     SqlAlchemyRunRevisionRepository,
@@ -66,6 +67,7 @@ from paritygrid.application.ports.writer import PersistenceContentionError
 from paritygrid.domain.execution import FailureClassification, RunState, WorkItemState
 from paritygrid.domain.models import (
     AttemptNumber,
+    Duration,
     NodeId,
     PipelineId,
     PipelineVersion,
@@ -361,7 +363,7 @@ def test_terminal_precedence_and_mixed_cancellation_are_derived(
             expected_row_version=1,
             lease_owner="writer",
             started_at=timestamp(3),
-            lease_expires_at=timestamp(9),
+            lease_expires_at=timestamp(11),
             runner_kind="threaded",
             worker_identity="one",
         )
@@ -370,7 +372,7 @@ def test_terminal_precedence_and_mixed_cancellation_are_derived(
             first_claim,
             WorkCompletion(
                 WorkItemState.CANCELLED,
-                timestamp(4),
+                timestamp(10),
                 None,
                 FailureClassification.USER_CANCELLATION,
                 None,
@@ -416,6 +418,7 @@ def test_terminal_precedence_and_mixed_cancellation_are_derived(
             metrics=WorkMetricDelta(),
         )
         assert node.status is RunNodeStatus.PARTIALLY_SUCCEEDED
+        assert node.finished_at == timestamp(10)
 
 
 def test_empty_finalization_and_raw_drift_or_stale_revision_fail_closed(
@@ -525,19 +528,8 @@ def test_every_writer_repository_translates_only_confirmed_contention(
 
 
 def snapshot(**changes: int) -> _NodeSnapshot:
-    values = {
-        "total": 1,
-        "pending": 0,
-        "running": 0,
-        "succeeded": 1,
-        "quarantined": 0,
-        "failed": 0,
-        "cancelled": 0,
-        "retries": 0,
-        "duration_microseconds": 0,
-    }
-    values.update(changes)
-    return _NodeSnapshot(**values)
+    base = _NodeSnapshot(1, 0, 0, 1, 0, 0, 0, 0, 0)
+    return base._replace(**changes)
 
 
 def test_aggregate_bucket_and_terminal_precedence_matrix_is_closed() -> None:
@@ -563,6 +555,37 @@ def test_aggregate_bucket_and_terminal_precedence_matrix_is_closed() -> None:
     assert _status_for(snapshot(), started=True) is RunNodeStatus.SUCCEEDED
     with pytest.raises(ExecutionCorruptionError, match="underflow"):
         snapshot(total=0, succeeded=0).reverse_registration()
+    drifted = RunNodeRecord(
+        run_id=RUN_ID,
+        node_id=NODE_ID,
+        status=RunNodeStatus.RUNNING,
+        row_version=2,
+        work_total=1,
+        work_pending=0,
+        work_running=1,
+        work_succeeded=0,
+        work_quarantined=0,
+        work_failed=0,
+        work_cancelled=0,
+        records_read=0,
+        records_written=0,
+        records_quarantined=0,
+        bytes_read=0,
+        bytes_written=0,
+        retry_count=0,
+        duration=Duration(0),
+        started_at=timestamp(4),
+        finished_at=None,
+    )
+    temporal = snapshot(running=1, succeeded=0)
+    temporal = replace(temporal, earliest_started_at=timestamp(3))
+    with pytest.raises(ExecutionCorruptionError, match="chronology"):
+        SqlAlchemyRunNodeAggregateRepository._validate_prior(drifted, temporal)
+    with pytest.raises(ExecutionCorruptionError, match="terminal chronology"):
+        _validate_terminal_finish(RunNodeStatus.SUCCEEDED, None, timestamp(3))
+    with pytest.raises(ExecutionCorruptionError, match="terminal chronology"):
+        _validate_terminal_finish(RunNodeStatus.FAILED, timestamp(2), timestamp(3))
+    _validate_terminal_finish(RunNodeStatus.RUNNING, None, timestamp(3))
 
 
 def test_aggregate_contract_mismatch_and_capacity_helpers_fail_closed(
@@ -719,23 +742,38 @@ class _SnapshotSession:
 
 def test_snapshot_rejects_every_grouped_corruption_shape() -> None:
     cases: tuple[tuple[list[tuple[object, ...]], list[tuple[object, ...]] | None, str], ...] = (
-        ([("unknown", 1)], None, "work state"),
-        ([(WorkItemState.LEASED.value, 1)], None, "work state"),
+        ([("unknown", 1, None)], None, "work state"),
+        ([(WorkItemState.LEASED.value, 1, None)], None, "work state"),
         (
             [
-                (WorkItemState.PENDING.value, MAX_WORK_METRIC),
-                (WorkItemState.RUNNING.value, MAX_WORK_METRIC),
+                (WorkItemState.PENDING.value, MAX_WORK_METRIC, None),
+                (WorkItemState.RUNNING.value, MAX_WORK_METRIC, None),
             ],
             None,
             "work total",
         ),
-        ([], [("unknown", 1, 1)], "attempt outcome"),
+        ([], [("unknown", 1, 1, None, None)], "attempt outcome"),
         (
             [],
-            [("lease_expired", MAX_WORK_METRIC, 0), ("retry_scheduled", MAX_WORK_METRIC, 0)],
+            [
+                ("lease_expired", MAX_WORK_METRIC, 0, str(timestamp(1)), str(timestamp(2))),
+                ("retry_scheduled", MAX_WORK_METRIC, 0, str(timestamp(1)), str(timestamp(2))),
+            ],
             "attempt aggregate",
         ),
-        ([], [("succeeded", 1, 9_223_372_036_854_775_807)], "attempt aggregate"),
+        (
+            [],
+            [
+                (
+                    "succeeded",
+                    1,
+                    9_223_372_036_854_775_807,
+                    str(timestamp(1)),
+                    str(timestamp(2)),
+                )
+            ],
+            "attempt aggregate",
+        ),
     )
     for states, attempts, message in cases:
         repository = SqlAlchemyRunNodeAggregateRepository(

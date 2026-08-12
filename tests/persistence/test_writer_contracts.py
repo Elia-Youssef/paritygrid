@@ -53,6 +53,9 @@ def test_writer_settings_reject_every_invalid_bound() -> None:
     invalid: tuple[dict[str, object], ...] = (
         {"queue_capacity": 0},
         {"queue_capacity": True},
+        {"admission_waiter_capacity": 0},
+        {"admission_waiter_capacity": 10_001},
+        {"admission_waiter_capacity": False},
         {"notification_capacity": 10_001},
         {"notification_capacity": 1.0},
         {"max_contention_attempts": 0},

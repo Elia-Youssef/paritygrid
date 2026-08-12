@@ -3,6 +3,7 @@
 # pyright: reportPrivateUsage=false
 
 import asyncio
+import inspect
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,8 +26,26 @@ from paritygrid.adapters.persistence.writer.dispatch import DispatchOutcome
 from paritygrid.adapters.persistence.writer.notifications import (
     BoundedCommittedNotificationBuffer,
 )
-from paritygrid.application.ports.execution import ExecutionStateConflictError
+from paritygrid.application.ports.consistency import (
+    ConsistencyCorruptionError,
+    ConsistencyStateConflictError,
+    ConsistencyStorageUnavailableError,
+)
+from paritygrid.application.ports.execution import (
+    ExecutionCorruptionError,
+    ExecutionStateConflictError,
+    ExecutionStorageUnavailableError,
+)
+from paritygrid.application.ports.repair_audit import (
+    AuditCorruptionError,
+    AuditSequenceConflictError,
+    AuditStorageUnavailableError,
+    RepairCorruptionError,
+    RepairStateConflictError,
+    RepairStorageUnavailableError,
+)
 from paritygrid.application.ports.writer import (
+    MAX_WRITER_SUBMISSION_ID,
     CommittedNotification,
     PersistenceContentionError,
     WriterAdmissionTimeoutError,
@@ -71,6 +90,17 @@ class _FatalSignal(BaseException):
 
 class _CloseFailSession(Session):
     def close(self) -> None:
+        super().close()
+        raise RuntimeError("close failure")
+
+
+class _BlockingCloseFailSession(Session):
+    close_entered = Event()
+    close_release = Event()
+
+    def close(self) -> None:
+        self.close_entered.set()
+        assert self.close_release.wait(2)
         super().close()
         raise RuntimeError("close failure")
 
@@ -141,7 +171,7 @@ def test_start_is_explicit_single_use_and_close_before_start_is_final(
     monkeypatch.setattr(core, "dispatch_command", successful_dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings())
     with pytest.raises(WriterNotStartedError, match="started"):
-        writer.submit(command("not-started"))
+        writer.submit(command("not-started"), timeout_seconds=1.0)
 
     writer.start()
     assert writer.thread is not None
@@ -154,7 +184,7 @@ def test_start_is_explicit_single_use_and_close_before_start_is_final(
     never_started = SQLiteTransactionalWriter(sessions, settings())
     assert never_started.close(timeout_seconds=0.0).drained
     with pytest.raises(WriterClosedError, match="closed"):
-        never_started.submit(command("closed"))
+        never_started.submit(command("closed"), timeout_seconds=1.0)
     with pytest.raises(WriterInvalidRequestError, match="single-use"):
         never_started.start()
 
@@ -187,7 +217,7 @@ def test_commit_receipt_and_notification_follow_session_close(
         cast(SessionFactory, observed_sessions), settings(), notifications=notifications
     )
     writer.start()
-    ticket = writer.submit(command("committed"))
+    ticket = writer.submit(command("committed"), timeout_seconds=1.0)
     receipt = ticket.result(timeout_seconds=1.0)
     observations.append(("receipt", receipt))
     assert receipt.submission_id.number == 1
@@ -222,9 +252,9 @@ def test_waiting_capacity_excludes_in_flight_and_admission_timeout_is_not_queued
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
     writer.start()
-    first = writer.submit(command("first"))
+    first = writer.submit(command("first"), timeout_seconds=1.0)
     assert entered.wait(1)
-    second = writer.submit(command("second"))
+    second = writer.submit(command("second"), timeout_seconds=1.0)
     with pytest.raises(WriterAdmissionTimeoutError, match="before enqueue"):
         writer.submit(command("third"), timeout_seconds=0.01)
     release.set()
@@ -248,7 +278,7 @@ def test_result_timeout_keeps_ticket_reusable(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings())
     writer.start()
-    ticket = writer.submit(command("slow"))
+    ticket = writer.submit(command("slow"), timeout_seconds=1.0)
     with pytest.raises(WriterResultTimeoutError, match="timed out"):
         ticket.result(timeout_seconds=0.01)
     release.set()
@@ -271,7 +301,7 @@ def test_contention_retries_whole_command_with_fresh_sessions(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings(max_contention_attempts=3))
     writer.start()
-    receipt = writer.submit(command("retry")).result(timeout_seconds=1.0)
+    receipt = writer.submit(command("retry"), timeout_seconds=1.0).result(timeout_seconds=1.0)
     assert receipt.contention_attempts == 2
     assert len({id(session) for session in attempts}) == 3
     assert all(not session.in_transaction() for session in attempts[:2])
@@ -293,16 +323,16 @@ def test_contention_exhaustion_fails_closed_and_rejects_queued_ticket(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings(max_contention_attempts=1))
     writer.start()
-    first = writer.submit(command("first"))
+    first = writer.submit(command("first"), timeout_seconds=1.0)
     assert entered.wait(1)
-    queued = writer.submit(command("queued"))
+    queued = writer.submit(command("queued"), timeout_seconds=1.0)
     release.set()
     with pytest.raises(WriterFailedError, match="retry limit"):
         first.result(timeout_seconds=1.0)
     with pytest.raises(WriterDefinitelyNotExecutedError, match="not executed"):
         queued.result(timeout_seconds=1.0)
     with pytest.raises(WriterFailedError, match="requires recovery"):
-        writer.submit(command("later"))
+        writer.submit(command("later"), timeout_seconds=1.0)
     assert writer.close(timeout_seconds=1.0).drained
 
 
@@ -318,8 +348,8 @@ def test_stable_repository_conflict_only_fails_current_ticket(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings())
     writer.start()
-    failed = writer.submit(command("conflict"))
-    succeeded = writer.submit(command("next"))
+    failed = writer.submit(command("conflict"), timeout_seconds=1.0)
+    succeeded = writer.submit(command("next"), timeout_seconds=1.0)
     with pytest.raises(ExecutionStateConflictError, match="does not allow"):
         failed.result(timeout_seconds=1.0)
     assert cast(_Result, succeeded.result(timeout_seconds=1.0).result).label == "next"
@@ -343,9 +373,9 @@ def test_precommit_base_exception_fails_closed_and_rolls_back(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings())
     writer.start()
-    first = writer.submit(command("fatal"))
+    first = writer.submit(command("fatal"), timeout_seconds=1.0)
     assert entered.wait(1)
-    queued = writer.submit(command("queued"))
+    queued = writer.submit(command("queued"), timeout_seconds=1.0)
     release.set()
     with pytest.raises(WriterFailedError, match="before commit"):
         first.result(timeout_seconds=1.0)
@@ -378,7 +408,7 @@ def test_commit_exception_is_unknown_not_retried_or_notified(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings())
     writer.start()
-    ticket = writer.submit(command("ambiguous"))
+    ticket = writer.submit(command("ambiguous"), timeout_seconds=1.0)
     with pytest.raises(WriterCommitOutcomeUnknownError, match="unknown") as captured:
         ticket.result(timeout_seconds=1.0)
     assert captured.value.__cause__ is None
@@ -406,12 +436,34 @@ def test_close_failure_after_commit_preserves_receipt_then_fails_writer(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(cast(SessionFactory, close_fail_sessions), settings())
     writer.start()
-    committed = writer.submit(command("committed"))
+    committed = writer.submit(command("committed"), timeout_seconds=1.0)
     assert entered.wait(1)
-    queued = writer.submit(command("queued"))
+    queued = writer.submit(command("queued"), timeout_seconds=1.0)
     release.set()
     receipt = committed.result(timeout_seconds=1.0)
     assert cast(_Result, receipt.result).label == "committed"
+    with pytest.raises(WriterDefinitelyNotExecutedError):
+        queued.result(timeout_seconds=1.0)
+    assert writer.notifications.take() is None
+    assert writer.close(timeout_seconds=1.0).drained
+
+
+def test_postcommit_receipt_is_not_visible_until_close_attempt_finishes(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _BlockingCloseFailSession.close_entered.clear()
+    _BlockingCloseFailSession.close_release.clear()
+    close_fail_sessions = sessionmaker(bind=sessions.kw["bind"], class_=_BlockingCloseFailSession)
+    monkeypatch.setattr(core, "dispatch_command", successful_dispatch)
+    writer = SQLiteTransactionalWriter(cast(SessionFactory, close_fail_sessions), settings())
+    writer.start()
+    committed = writer.submit(command("committed"), timeout_seconds=1.0)
+    queued = writer.submit(command("queued"), timeout_seconds=1.0)
+    assert _BlockingCloseFailSession.close_entered.wait(1)
+    with pytest.raises(WriterResultTimeoutError):
+        committed.result(timeout_seconds=0.0)
+    _BlockingCloseFailSession.close_release.set()
+    assert cast(_Result, committed.result(timeout_seconds=1.0).result).label == "committed"
     with pytest.raises(WriterDefinitelyNotExecutedError):
         queued.result(timeout_seconds=1.0)
     assert writer.notifications.take() is None
@@ -426,18 +478,18 @@ def test_notifications_are_bounded_and_exceptionally_isolated(
     bounded = BoundedCommittedNotificationBuffer(1)
     writer = SQLiteTransactionalWriter(sessions, settings(), notifications=bounded)
     writer.start()
-    assert writer.submit(command("one")).result(timeout_seconds=1.0).mutated
-    assert writer.submit(command("two")).result(timeout_seconds=1.0).mutated
+    assert writer.submit(command("one"), timeout_seconds=1.0).result(timeout_seconds=1.0).mutated
+    assert writer.submit(command("two"), timeout_seconds=1.0).result(timeout_seconds=1.0).mutated
     assert bounded.stats().dropped == 1
     bounded.reject_new()
-    assert writer.submit(command("three")).result(timeout_seconds=1.0).mutated
+    assert writer.submit(command("three"), timeout_seconds=1.0).result(timeout_seconds=1.0).mutated
     assert bounded.stats().rejected == 1
     assert writer.close(timeout_seconds=1.0).drained
 
     exceptional = _ExceptionalNotifications(1)
     second = SQLiteTransactionalWriter(sessions, settings(), notifications=exceptional)
     second.start()
-    assert second.submit(command("safe")).result(timeout_seconds=1.0).mutated
+    assert second.submit(command("safe"), timeout_seconds=1.0).result(timeout_seconds=1.0).mutated
     assert exceptional.stats().failures == 1
     assert second.close(timeout_seconds=1.0).drained
 
@@ -452,7 +504,7 @@ def test_read_only_replay_has_no_notification(
     monkeypatch.setattr(core, "dispatch_command", replay)
     writer = SQLiteTransactionalWriter(sessions, settings())
     writer.start()
-    receipt = writer.submit(command("replay")).result(timeout_seconds=1.0)
+    receipt = writer.submit(command("replay"), timeout_seconds=1.0).result(timeout_seconds=1.0)
     assert not receipt.mutated
     assert writer.notifications.stats().offered == 0
     assert writer.close(timeout_seconds=1.0).drained
@@ -475,10 +527,12 @@ def test_async_admission_cancellation_never_blocks_loop_or_enqueues(
         monkeypatch.setattr(core, "dispatch_command", dispatch)
         writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
         writer.start()
-        first = writer.submit(command("first"))
+        first = writer.submit(command("first"), timeout_seconds=1.0)
         assert await asyncio.to_thread(entered.wait, 1)
-        second = writer.submit(command("second"))
-        pending = asyncio.create_task(writer.submit_async(command("cancelled")))
+        second = writer.submit(command("second"), timeout_seconds=1.0)
+        pending = asyncio.create_task(
+            writer.submit_async(command("cancelled"), timeout_seconds=1.0)
+        )
         heartbeat = 0
         for _ in range(5):
             await asyncio.sleep(0)
@@ -488,8 +542,8 @@ def test_async_admission_cancellation_never_blocks_loop_or_enqueues(
         with pytest.raises(asyncio.CancelledError):
             await pending
         release.set()
-        await first.result_async(1.0)
-        await second.result_async(1.0)
+        await first.result_async(timeout_seconds=1.0)
+        await second.result_async(timeout_seconds=1.0)
         close = await asyncio.to_thread(writer.close, timeout_seconds=1.0)
         assert close.accepted == 2
 
@@ -510,14 +564,14 @@ def test_async_result_cancellation_does_not_retract_and_ticket_is_reusable(
         monkeypatch.setattr(core, "dispatch_command", dispatch)
         writer = SQLiteTransactionalWriter(sessions, settings())
         writer.start()
-        ticket = await writer.submit_async(command("admitted"))
-        waiting = asyncio.create_task(ticket.result_async())
+        ticket = await writer.submit_async(command("admitted"), timeout_seconds=1.0)
+        waiting = asyncio.create_task(ticket.result_async(timeout_seconds=1.0))
         await asyncio.sleep(0)
         waiting.cancel()
         with pytest.raises(asyncio.CancelledError):
             await waiting
         release.set()
-        receipt = await ticket.result_async(1.0)
+        receipt = await ticket.result_async(timeout_seconds=1.0)
         assert cast(_Result, receipt.result).label == "admitted"
         assert (await asyncio.to_thread(writer.close, timeout_seconds=1.0)).drained
 
@@ -539,13 +593,13 @@ def test_drain_timeout_never_cancels_accepted_work(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings())
     writer.start()
-    ticket = writer.submit(command("drain"))
+    ticket = writer.submit(command("drain"), timeout_seconds=1.0)
     assert entered.wait(1)
     first_close = writer.close(timeout_seconds=0.0)
     assert not first_close.drained
     assert (first_close.queued, first_close.in_flight) == (0, 1)
     with pytest.raises(WriterClosedError):
-        writer.submit(command("rejected"))
+        writer.submit(command("rejected"), timeout_seconds=1.0)
     release.set()
     assert ticket.result(timeout_seconds=1.0).mutated
     assert writer.close(timeout_seconds=1.0).drained
@@ -577,7 +631,7 @@ def test_concurrent_submissions_receive_fifo_identities_without_gaps(
     lock = Lock()
 
     def submit(index: int) -> None:
-        ticket = writer.submit(command(f"command-{index}"))
+        ticket = writer.submit(command(f"command-{index}"), timeout_seconds=1.0)
         with lock:
             tickets.append(ticket)
 
@@ -596,12 +650,12 @@ def test_async_ticket_timeout_completed_error_and_duplicate_resolution() -> None
     async def scenario() -> None:
         ticket = core._WriterTicket(core.WriterSubmissionId(1))
         with pytest.raises(WriterResultTimeoutError):
-            await ticket.result_async(0.0)
+            await ticket.result_async(timeout_seconds=0.0)
         error = WriterFailedError("closed")
         ticket.resolve_error(error)
         ticket.resolve_receipt(cast(core.WriterReceipt, object()))
         with pytest.raises(WriterFailedError, match="closed"):
-            await ticket.result_async()
+            await ticket.result_async(timeout_seconds=1.0)
 
         completed = core._WriterTicket(core.WriterSubmissionId(2))
         receipt = core.WriterReceipt(
@@ -613,7 +667,7 @@ def test_async_ticket_timeout_completed_error_and_duplicate_resolution() -> None
             cast(WriterCommandResult, _Result("done")),
         )
         completed.resolve_receipt(receipt)
-        assert await completed.result_async() is receipt
+        assert await completed.result_async(timeout_seconds=1.0) is receipt
 
     asyncio.run(scenario())
 
@@ -654,7 +708,7 @@ def test_cleanup_failure_during_contention_and_stable_conflict_is_fatal(
     writer = SQLiteTransactionalWriter(cast(SessionFactory, broken_sessions), settings())
     writer.start()
     with pytest.raises(WriterFailedError, match="cleanup"):
-        writer.submit(command("busy")).result(timeout_seconds=1.0)
+        writer.submit(command("busy"), timeout_seconds=1.0).result(timeout_seconds=1.0)
     assert writer.close(timeout_seconds=1.0).drained
 
     def conflict(_session: Session, _submitted: WriterCommand) -> DispatchOutcome:
@@ -664,7 +718,7 @@ def test_cleanup_failure_during_contention_and_stable_conflict_is_fatal(
     second = SQLiteTransactionalWriter(cast(SessionFactory, broken_sessions), settings())
     second.start()
     with pytest.raises(WriterFailedError, match="cleanup"):
-        second.submit(command("conflict")).result(timeout_seconds=1.0)
+        second.submit(command("conflict"), timeout_seconds=1.0).result(timeout_seconds=1.0)
     assert second.close(timeout_seconds=1.0).drained
 
 
@@ -684,7 +738,12 @@ def test_contention_delay_and_writer_thread_close_guard(
     monkeypatch.setattr(core, "dispatch_command", once)
     writer = SQLiteTransactionalWriter(sessions, settings(contention_delay_seconds=0.001))
     writer.start()
-    assert writer.submit(command("delayed")).result(timeout_seconds=1.0).contention_attempts == 1
+    assert (
+        writer.submit(command("delayed"), timeout_seconds=1.0)
+        .result(timeout_seconds=1.0)
+        .contention_attempts
+        == 1
+    )
     assert writer.close(timeout_seconds=1.0).drained
 
     guarded: SQLiteTransactionalWriter
@@ -697,7 +756,7 @@ def test_contention_delay_and_writer_thread_close_guard(
     guarded = SQLiteTransactionalWriter(sessions, settings())
     guarded.start()
     with pytest.raises(WriterInvalidRequestError, match="join itself"):
-        guarded.submit(command("self-close")).result(timeout_seconds=1.0)
+        guarded.submit(command("self-close"), timeout_seconds=1.0).result(timeout_seconds=1.0)
     assert guarded.close(timeout_seconds=1.0).drained
 
 
@@ -724,17 +783,17 @@ def test_invalid_settings_subclass_and_async_waiter_rejected_by_close(
         monkeypatch.setattr(core, "dispatch_command", dispatch)
         writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
         writer.start()
-        first = writer.submit(command("first"))
+        first = writer.submit(command("first"), timeout_seconds=1.0)
         assert await asyncio.to_thread(entered.wait, 1)
-        writer.submit(command("second"))
-        waiting = asyncio.create_task(writer.submit_async(command("waiting")))
+        writer.submit(command("second"), timeout_seconds=1.0)
+        waiting = asyncio.create_task(writer.submit_async(command("waiting"), timeout_seconds=1.0))
         await asyncio.sleep(0)
         close = await asyncio.to_thread(writer.close, timeout_seconds=0.0)
         assert not close.drained
         with pytest.raises(WriterClosedError):
             await waiting
         release.set()
-        await first.result_async(1.0)
+        await first.result_async(timeout_seconds=1.0)
         assert (await asyncio.to_thread(writer.close, timeout_seconds=1.0)).drained
 
     asyncio.run(scenario())
@@ -756,14 +815,14 @@ def test_sync_waiter_is_rejected_by_close_before_admission(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
     writer.start()
-    first = writer.submit(command("first"))
+    first = writer.submit(command("first"), timeout_seconds=1.0)
     assert entered.wait(1)
-    second = writer.submit(command("second"))
+    second = writer.submit(command("second"), timeout_seconds=1.0)
     failure: list[BaseException] = []
 
     def wait_for_admission() -> None:
         try:
-            writer.submit(command("waiting"))
+            writer.submit(command("waiting"), timeout_seconds=1.0)
         except BaseException as error:
             failure.append(error)
 
@@ -798,10 +857,10 @@ def test_pending_async_admission_is_woken_on_capacity_and_cancelled_waiters_are_
         monkeypatch.setattr(core, "dispatch_command", dispatch)
         writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
         writer.start()
-        first = writer.submit(command("first"))
+        first = writer.submit(command("first"), timeout_seconds=1.0)
         assert await asyncio.to_thread(entered.wait, 1)
-        second = writer.submit(command("second"))
-        pending = asyncio.create_task(writer.submit_async(command("third")))
+        second = writer.submit(command("second"), timeout_seconds=1.0)
+        pending = asyncio.create_task(writer.submit_async(command("third"), timeout_seconds=1.0))
         await asyncio.sleep(0)
         with writer._condition:
             writer._admissions.appendleft(
@@ -809,9 +868,11 @@ def test_pending_async_admission_is_woken_on_capacity_and_cancelled_waiters_are_
             )
         release.set()
         third = await pending
-        await first.result_async(1.0)
-        await second.result_async(1.0)
-        assert cast(_Result, (await third.result_async(1.0)).result).label == "third"
+        await first.result_async(timeout_seconds=1.0)
+        await second.result_async(timeout_seconds=1.0)
+        assert (
+            cast(_Result, (await third.result_async(timeout_seconds=1.0)).result).label == "third"
+        )
         assert (await asyncio.to_thread(writer.close, timeout_seconds=1.0)).drained
 
     asyncio.run(scenario())
@@ -844,17 +905,17 @@ def test_async_cancellation_races_are_classified_by_admission_state(
         monkeypatch.setattr(core, "dispatch_command", dispatch)
         writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
         writer.start()
-        first = writer.submit(command("first"))
+        first = writer.submit(command("first"), timeout_seconds=1.0)
         assert await asyncio.to_thread(entered.wait, 1)
-        writer.submit(command("second"))
-        removed = asyncio.create_task(writer.submit_async(command("removed")))
+        writer.submit(command("second"), timeout_seconds=1.0)
+        removed = asyncio.create_task(writer.submit_async(command("removed"), timeout_seconds=1.0))
         await asyncio.sleep(0)
         writer.close(timeout_seconds=0.0)
         removed.cancel()
         with pytest.raises(asyncio.CancelledError):
             await removed
         release.set()
-        await first.result_async(1.0)
+        await first.result_async(timeout_seconds=1.0)
         assert (await asyncio.to_thread(writer.close, timeout_seconds=1.0)).drained
 
         second_entered = Event()
@@ -869,10 +930,12 @@ def test_async_cancellation_races_are_classified_by_admission_state(
         monkeypatch.setattr(core, "dispatch_command", second_dispatch)
         second_writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
         second_writer.start()
-        blocking = second_writer.submit(command("first"))
+        blocking = second_writer.submit(command("first"), timeout_seconds=1.0)
         assert await asyncio.to_thread(second_entered.wait, 1)
-        second_writer.submit(command("second"))
-        admitted = asyncio.create_task(second_writer.submit_async(command("race")))
+        second_writer.submit(command("second"), timeout_seconds=1.0)
+        admitted = asyncio.create_task(
+            second_writer.submit_async(command("race"), timeout_seconds=1.0)
+        )
         await asyncio.sleep(0)
         with second_writer._condition:
             waiter = second_writer._admissions[0]
@@ -882,9 +945,310 @@ def test_async_cancellation_races_are_classified_by_admission_state(
         raced_ticket = cast(core._WriterTicket, await admitted)
         raced_ticket.resolve_error(WriterDefinitelyNotExecutedError("test race completed"))
         with pytest.raises(WriterDefinitelyNotExecutedError):
-            raced_ticket.result()
+            raced_ticket.result(timeout_seconds=1.0)
         second_release.set()
-        await blocking.result_async(1.0)
+        await blocking.result_async(timeout_seconds=1.0)
         assert (await asyncio.to_thread(second_writer.close, timeout_seconds=1.0)).drained
 
     asyncio.run(scenario())
+
+
+def test_start_failure_is_typed_and_permanently_fail_closed(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def fail_start(_thread: Thread) -> None:
+        raise RuntimeError("thread unavailable")
+
+    monkeypatch.setattr(Thread, "start", fail_start)
+    writer = SQLiteTransactionalWriter(sessions, settings())
+    with pytest.raises(WriterFailedError, match="could not be started"):
+        writer.start()
+    with pytest.raises(WriterFailedError, match="requires recovery"):
+        writer.submit(command("never"), timeout_seconds=0.0)
+    assert writer.thread is None
+    assert writer.close(timeout_seconds=0.0).drained
+
+
+def test_public_waits_require_finite_explicit_timeouts() -> None:
+    methods = (
+        SQLiteTransactionalWriter.submit,
+        SQLiteTransactionalWriter.submit_async,
+        SQLiteTransactionalWriter.close,
+        core._WriterTicket.result,
+        core._WriterTicket.result_async,
+    )
+    for method in methods:
+        timeout = inspect.signature(method).parameters["timeout_seconds"]
+        assert timeout.default is inspect.Parameter.empty
+        assert timeout.kind is inspect.Parameter.KEYWORD_ONLY
+
+
+def test_admission_waiters_are_bounded_and_async_timeout_cleans_up(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = Event()
+    release = Event()
+
+    def dispatch(session: Session, submitted: WriterCommand) -> DispatchOutcome:
+        if cast(_Command, submitted).label == "first":
+            entered.set()
+            assert release.wait(2)
+        return successful_dispatch(session, submitted)
+
+    monkeypatch.setattr(core, "dispatch_command", dispatch)
+    writer = SQLiteTransactionalWriter(
+        sessions,
+        settings(queue_capacity=1, admission_waiter_capacity=1),
+    )
+    writer.start()
+    first = writer.submit(command("first"), timeout_seconds=1.0)
+    assert entered.wait(1)
+    second = writer.submit(command("second"), timeout_seconds=1.0)
+
+    async def scenario() -> None:
+        waiting = asyncio.create_task(
+            writer.submit_async(command("timed-out"), timeout_seconds=0.01)
+        )
+        await asyncio.sleep(0)
+        with pytest.raises(WriterAdmissionTimeoutError, match="capacity"):
+            await writer.submit_async(command("excess"), timeout_seconds=1.0)
+        with pytest.raises(WriterAdmissionTimeoutError, match="timed out"):
+            await waiting
+        for _ in range(5):
+            await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+    with writer._condition:
+        assert not writer._admissions
+    release.set()
+    assert first.result(timeout_seconds=1.0).mutated
+    assert second.result(timeout_seconds=1.0).mutated
+    assert writer.close(timeout_seconds=1.0).drained
+
+
+def test_submission_identity_exhaustion_drains_accepted_fifo(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = Event()
+    release = Event()
+
+    def dispatch(session: Session, submitted: WriterCommand) -> DispatchOutcome:
+        if cast(_Command, submitted).label == "first":
+            entered.set()
+            assert release.wait(2)
+        return successful_dispatch(session, submitted)
+
+    monkeypatch.setattr(core, "dispatch_command", dispatch)
+    writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
+    writer._next_submission = MAX_WRITER_SUBMISSION_ID - 1
+    writer.start()
+    first = writer.submit(command("first"), timeout_seconds=1.0)
+    assert entered.wait(1)
+    last = writer.submit(command("last"), timeout_seconds=1.0)
+    failure: list[BaseException] = []
+
+    def wait_for_exhausted_admission() -> None:
+        try:
+            writer.submit(command("overflow"), timeout_seconds=1.0)
+        except BaseException as error:
+            failure.append(error)
+
+    producer = Thread(target=wait_for_exhausted_admission)
+    producer.start()
+    release.set()
+    producer.join(2)
+    assert not producer.is_alive()
+    assert len(failure) == 1
+    assert isinstance(failure[0], WriterClosedError)
+    assert first.result(timeout_seconds=1.0).submission_id.number == MAX_WRITER_SUBMISSION_ID - 1
+    assert last.result(timeout_seconds=1.0).submission_id.number == MAX_WRITER_SUBMISSION_ID
+    close = writer.close(timeout_seconds=1.0)
+    assert close.drained
+    assert close.accepted == close.completed == 2
+
+
+@pytest.mark.parametrize(
+    "fatal_error",
+    [
+        ExecutionCorruptionError("corrupt"),
+        ExecutionStorageUnavailableError("unavailable"),
+        ConsistencyCorruptionError("corrupt"),
+        ConsistencyStorageUnavailableError("unavailable"),
+        RepairCorruptionError("corrupt"),
+        RepairStorageUnavailableError("unavailable"),
+        AuditCorruptionError("corrupt"),
+        AuditStorageUnavailableError("unavailable"),
+    ],
+)
+def test_repository_corruption_and_noncontention_storage_are_fatal(
+    sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    fatal_error: BaseException,
+) -> None:
+    entered = Event()
+    release = Event()
+
+    def dispatch(session: Session, submitted: WriterCommand) -> DispatchOutcome:
+        del session
+        if cast(_Command, submitted).label == "fatal":
+            entered.set()
+            assert release.wait(2)
+            raise fatal_error
+        return DispatchOutcome(_Result("unexpected"))
+
+    monkeypatch.setattr(core, "dispatch_command", dispatch)
+    writer = SQLiteTransactionalWriter(sessions, settings())
+    writer.start()
+    fatal = writer.submit(command("fatal"), timeout_seconds=1.0)
+    assert entered.wait(1)
+    queued = writer.submit(command("queued"), timeout_seconds=1.0)
+    release.set()
+    with pytest.raises(WriterFailedError, match="before commit"):
+        fatal.result(timeout_seconds=1.0)
+    with pytest.raises(WriterDefinitelyNotExecutedError):
+        queued.result(timeout_seconds=1.0)
+    with pytest.raises(WriterFailedError, match="requires recovery"):
+        writer.submit(command("later"), timeout_seconds=0.0)
+    assert writer.close(timeout_seconds=1.0).drained
+
+
+@pytest.mark.parametrize(
+    "recoverable",
+    [
+        ConsistencyStateConflictError("conflict"),
+        RepairStateConflictError("conflict"),
+        AuditSequenceConflictError("conflict"),
+    ],
+)
+def test_stable_conflicts_from_each_repository_only_fail_the_current_ticket(
+    sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    recoverable: BaseException,
+) -> None:
+    def dispatch(session: Session, submitted: WriterCommand) -> DispatchOutcome:
+        if cast(_Command, submitted).label == "conflict":
+            raise recoverable
+        return successful_dispatch(session, submitted)
+
+    monkeypatch.setattr(core, "dispatch_command", dispatch)
+    writer = SQLiteTransactionalWriter(sessions, settings())
+    writer.start()
+    conflict = writer.submit(command("conflict"), timeout_seconds=1.0)
+    following = writer.submit(command("following"), timeout_seconds=1.0)
+    with pytest.raises(type(recoverable)):
+        conflict.result(timeout_seconds=1.0)
+    assert following.result(timeout_seconds=1.0).mutated
+    assert writer.close(timeout_seconds=1.0).drained
+
+
+def test_closed_observer_loops_never_escape_writer_scheduling() -> None:
+    loop = asyncio.new_event_loop()
+    admission: asyncio.Future[core._WriterTicket] = loop.create_future()
+    outcome: asyncio.Future[core.WriterReceipt] = loop.create_future()
+    loop.close()
+    ticket = core._WriterTicket(core.WriterSubmissionId(1))
+    receipt = core.WriterReceipt(
+        ticket.submission_id,
+        WriterCommandKind.FINALIZE_EMPTY_RUN_NODE,
+        RunId("run_closed-loop"),
+        0,
+        True,
+        _Result("done"),
+    )
+    core._try_schedule_admission_result(loop, admission, ticket)
+    core._try_schedule_admission_error(loop, admission, WriterClosedError("closed"))
+    core._try_schedule_ticket_outcome(loop, outcome, receipt, None)
+    ticket._async_waiters.append((loop, outcome))
+    ticket.resolve_receipt(receipt)
+    assert ticket.result(timeout_seconds=0.0) is receipt
+
+
+def test_admission_withdrawal_returns_a_winning_ticket_or_removes_waiter(
+    sessions: sessionmaker[Session],
+) -> None:
+    writer = SQLiteTransactionalWriter(sessions, settings())
+    admitted = core._AdmissionWaiter(command("admitted"))
+    admitted.ticket = core._WriterTicket(core.WriterSubmissionId(1))
+    assert writer._withdraw_admission(admitted) is admitted.ticket
+    pending = core._AdmissionWaiter(command("pending"))
+    with writer._condition:
+        writer._admissions.append(pending)
+    assert writer._withdraw_admission(pending) is None
+    assert pending.cancelled
+    with writer._condition:
+        assert pending not in writer._admissions
+
+
+def test_async_admission_timeout_race_returns_the_winning_ticket(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=1))
+    with writer._condition:
+        writer._state = core._State.RUNNING
+        occupied = core._WriterTicket(core.WriterSubmissionId(99))
+        writer._queue.append(core._QueuedCommand(command("occupied"), occupied))
+
+    async def race() -> None:
+        async def timeout_after_admission(_future: object, _timeout: float) -> core._WriterTicket:
+            with writer._condition:
+                writer._queue.clear()
+                writer._admit_waiters()
+            raise TimeoutError
+
+        monkeypatch.setattr(asyncio, "wait_for", timeout_after_admission)
+        ticket = await writer.submit_async(command("winner"), timeout_seconds=0.01)
+        assert ticket.submission_id == core.WriterSubmissionId(1)
+
+    asyncio.run(race())
+    with writer._condition:
+        writer._queue.clear()
+        writer._state = core._State.CLOSED
+
+
+def test_last_resort_thread_guard_resolves_every_ticket(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    entered = Event()
+    release = Event()
+
+    def escape(_writer: SQLiteTransactionalWriter, _queued: object) -> None:
+        entered.set()
+        assert release.wait(2)
+        raise _FatalSignal
+
+    monkeypatch.setattr(SQLiteTransactionalWriter, "_execute", escape)
+    writer = SQLiteTransactionalWriter(sessions, settings())
+    writer.start()
+    active = writer.submit(command("active"), timeout_seconds=1.0)
+    assert entered.wait(1)
+    queued = writer.submit(command("queued"), timeout_seconds=1.0)
+    release.set()
+    with pytest.raises(WriterFailedError, match="lifecycle"):
+        active.result(timeout_seconds=1.0)
+    with pytest.raises(WriterDefinitelyNotExecutedError):
+        queued.result(timeout_seconds=1.0)
+    assert writer.close(timeout_seconds=1.0).drained
+
+
+def test_last_resort_guard_never_overwrites_a_known_receipt(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writer = SQLiteTransactionalWriter(sessions, settings())
+    ticket = core._WriterTicket(core.WriterSubmissionId(1))
+    receipt = core.WriterReceipt(
+        ticket.submission_id,
+        WriterCommandKind.FINALIZE_EMPTY_RUN_NODE,
+        RunId("run_known-receipt"),
+        0,
+        True,
+        _Result("committed"),
+    )
+    ticket.resolve_receipt(receipt)
+    writer._active = core._QueuedCommand(command("known"), ticket)
+
+    def fail_loop(_writer: SQLiteTransactionalWriter) -> None:
+        raise _FatalSignal
+
+    monkeypatch.setattr(SQLiteTransactionalWriter, "_run_loop", fail_loop)
+    writer._run()
+    assert ticket.result(timeout_seconds=0.0) is receipt

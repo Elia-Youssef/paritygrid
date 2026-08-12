@@ -154,6 +154,7 @@ from paritygrid.application.ports.run_aggregates import (
     WorkMetricDelta,
 )
 from paritygrid.application.ports.writer import (
+    MAX_WRITER_SUBMISSION_ID,
     CommittedNotification,
     CommittedNotificationBuffer,
     EventAppendRequest,
@@ -188,6 +189,7 @@ __all__ = [
     "MAX_PIPELINE_DESCRIPTION_LENGTH",
     "MAX_REPAIR_PAGE_SIZE",
     "MAX_WORK_METRIC",
+    "MAX_WRITER_SUBMISSION_ID",
     "AppliedRepairAction",
     "AttemptOutcome",
     "AuditCorruptionError",

@@ -32,8 +32,14 @@ from paritygrid.application.ports.consistency import (
     PendingExecutionEvent,
     RedactedDocument,
 )
-from paritygrid.application.ports.execution import RunRecord, WorkClaim, WorkCompletion
+from paritygrid.application.ports.execution import (
+    RunRecord,
+    WorkClaim,
+    WorkCompletion,
+    WorkItemRecord,
+)
 from paritygrid.application.ports.repair_audit import (
+    AppliedRepairAction,
     AuditEntryRecord,
     PendingAuditEntry,
     RepairActionKeyMap,
@@ -270,6 +276,7 @@ def _bootstrap_work(session: Session, command: BootstrapWork) -> DispatchOutcome
         input_reference=command.input_reference,
         created_at=command.created_at,
     )
+    _require_work_parent(work, command.run_id, command.node_id)
     events = _append_event(session, command.run_id, command.event)
     node = SqlAlchemyRunNodeAggregateRepository(session).register_work(
         work, expected_node_row_version=command.expected_node_row_version
@@ -288,6 +295,7 @@ def _claim_work(session: Session, command: ClaimWork) -> DispatchOutcome:
         runner_kind=command.runner_kind,
         worker_identity=command.worker_identity,
     )
+    _require_claim_parent(session, claim, command.run_id, command.node_id)
     events = _append_event(session, command.run_id, command.event)
     node = SqlAlchemyRunNodeAggregateRepository(session).apply_claim(
         claim, expected_node_row_version=command.expected_node_row_version
@@ -302,6 +310,7 @@ def _renew_claim(session: Session, command: RenewWorkClaim) -> DispatchOutcome:
         renewed_at=command.renewed_at,
         lease_expires_at=command.lease_expires_at,
     )
+    _require_claim_parent(session, claim, command.run_id, command.node_id)
     events = _append_event(session, command.run_id, command.event)
     run = _advance_run(session, command.run_id, command.expected_run_row_version)
     return DispatchOutcome(RenewWorkClaimResult(claim, events, run))
@@ -311,6 +320,7 @@ def _commit_without_checkpoint(session: Session, command: CommitWorkAttempt) -> 
     completed = SqlAlchemyWorkItemRepository(session).complete_claim(
         command.claim, command.completion
     )
+    _require_work_parent(completed.work_item, command.run_id, command.node_id)
     events = _append_event(session, command.run_id, command.event)
     node = SqlAlchemyRunNodeAggregateRepository(session).apply_completion(
         completed,
@@ -326,6 +336,7 @@ def _commit_with_checkpoint(session: Session, command: CommitWorkWithCheckpoint)
     completed = SqlAlchemyWorkItemRepository(session).complete_claim(
         command.claim, command.completion
     )
+    _require_work_parent(completed.work_item, command.run_id, command.node_id)
     checkpoint = SqlAlchemyCheckpointRepository(session).append(
         command.run_id,
         command.node_id,
@@ -359,6 +370,7 @@ def _recover_work(session: Session, command: RecoverExpiredWork) -> DispatchOutc
         retry_available_at=command.retry_available_at,
         redacted_detail=command.redacted_detail,
     )
+    _require_work_parent(completed.work_item, command.run_id, command.node_id)
     events = _append_event(session, command.run_id, command.event)
     node = SqlAlchemyRunNodeAggregateRepository(session).apply_recovery(
         completed, expected_node_row_version=command.expected_node_row_version
@@ -389,6 +401,7 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
             action_keys=command.action_keys,
             created_at=command.created_at,
         )
+        _require_repair_parent(aggregate, command.run_id)
         return _repair_mutation(session, command, aggregate, replay=replay)
     if isinstance(command, ApproveRepairPlan):
         prior = repairs.get(command.repair_plan_id)
@@ -403,6 +416,7 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
             schema_version=command.schema_version,
             detail=command.detail,
         )
+        _require_repair_parent(aggregate, command.run_id)
         return _repair_mutation(session, command, aggregate, replay=replay)
     if isinstance(command, RejectRepairPlan):
         prior = repairs.get(command.repair_plan_id)
@@ -412,6 +426,7 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
             expected_row_version=command.expected_plan_row_version,
             rejected_at=command.rejected_at,
         )
+        _require_repair_parent(aggregate, command.run_id)
         return _repair_mutation(session, command, aggregate, replay=replay)
     if isinstance(command, BeginRepairApplication):
         operation = repairs.begin_application(
@@ -420,7 +435,9 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
             current_reconciliation_fingerprint=command.current_reconciliation_fingerprint,
             applying_at=command.applying_at,
         )
+        _require_repair_parent(operation.aggregate, command.run_id)
         if operation.disposition is not RepairApplicationBeginDisposition.STARTED:
+            _verify_repair_replay(session, command.run_id, command.companions)
             return DispatchOutcome(
                 BeginRepairApplicationResult(operation, None, None, None), mutated=False
             )
@@ -436,7 +453,9 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
             target_version=command.target_version,
             applied_at=command.applied_at,
         )
+        _require_repair_action_parent(operation, command.run_id)
         if replay:
+            _verify_repair_replay(session, command.run_id, command.companions)
             return DispatchOutcome(RepairActionAppliedResult(operation, None, None, None), False)
         audit, events, run = _repair_companions(session, command.run_id, command.companions)
         return DispatchOutcome(RepairActionAppliedResult(operation, audit, events, run))
@@ -450,11 +469,13 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
             failed_at=command.failed_at,
             plan_failure=command.plan_failure,
         )
+        _require_repair_parent(aggregate, command.run_id)
         return _repair_mutation(session, command, aggregate, replay=replay)
     assert isinstance(command, CompleteRepairApplication)
     prior = repairs.get(command.reservation.repair_plan_id)
     replay = prior is not None and prior.plan.status is RepairPlanStatus.APPLIED
     aggregate = repairs.complete_application(command.reservation, applied_at=command.applied_at)
+    _require_repair_parent(aggregate, command.run_id)
     return _repair_mutation(session, command, aggregate, replay=replay)
 
 
@@ -466,6 +487,7 @@ def _repair_mutation(
     replay: bool,
 ) -> DispatchOutcome:
     if replay:
+        _verify_repair_replay(session, command.run_id, command.companions)
         return DispatchOutcome(
             RepairMutationResult(command.kind, aggregate, None, None, None), False
         )
@@ -484,6 +506,14 @@ def _repair_companions(
     return audit, events, run
 
 
+def _verify_repair_replay(session: Session, run_id: RunId, companions: RepairCompanions) -> None:
+    SqlAlchemyAuditRepository(session).match_exact(companions.audit)
+    _append_event(session, run_id, companions.event)
+    run = SqlAlchemyRunRepository(session).get(run_id)
+    if run is None or run.row_version != companions.expected_run_row_version + 1:
+        raise WriterInvalidRequestError("repair replay is not at its immediate run revision")
+
+
 def _append_event(
     session: Session, run_id: RunId, request: EventAppendRequest
 ) -> ExecutionEventBatch:
@@ -497,6 +527,35 @@ def _append_event(
 
 def _advance_run(session: Session, run_id: RunId, expected: int) -> RunRecord:
     return SqlAlchemyRunRevisionRepository(session).advance(run_id, expected_row_version=expected)
+
+
+def _require_claim_parent(
+    session: Session, claim: WorkClaim, run_id: RunId, node_id: NodeId
+) -> None:
+    work = SqlAlchemyWorkItemRepository(session).get(claim.work_item_id)
+    if work is None:
+        raise WriterInvalidRequestError("work claim parent does not exist")
+    _require_work_parent(work, run_id, node_id)
+
+
+def _require_work_parent(work: object, run_id: RunId, node_id: NodeId) -> None:
+    if type(work) is not WorkItemRecord:
+        raise WriterInvalidRequestError("work mutation returned an invalid record")
+    record = work
+    if record.run_id != run_id or record.node_id != node_id:
+        raise WriterInvalidRequestError("work item belongs to another run or node")
+
+
+def _require_repair_parent(aggregate: RepairPlanAggregate, run_id: RunId) -> None:
+    if aggregate.plan.run_id != run_id or any(
+        action.run_id != run_id for action in aggregate.actions
+    ):
+        raise WriterInvalidRequestError("repair plan belongs to another run")
+
+
+def _require_repair_action_parent(operation: AppliedRepairAction, run_id: RunId) -> None:
+    if operation.action.run_id != run_id or operation.reservation.run_id != run_id:
+        raise WriterInvalidRequestError("repair action belongs to another run")
 
 
 def _validate_run_command(command: CreateCapturedRun | TransitionRun) -> None:
@@ -729,7 +788,7 @@ def _validate_work_event(
     work_item_id: WorkItemId,
     event_kind: str,
 ) -> None:
-    del run_id
+    _exact(run_id, RunId, "event run identity")
     event = _validate_event_request(request, event_kind)
     if (
         event.subject_kind is not EventSubjectKind.WORK_ITEM
