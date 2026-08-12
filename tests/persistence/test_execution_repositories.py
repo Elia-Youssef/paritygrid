@@ -39,11 +39,11 @@ from paritygrid.application.ports.execution import (
     ExecutionRecordNotFoundError,
     ExecutionStaleRowVersionError,
     ExecutionStateConflictError,
-    ExecutionStorageUnavailableError,
     RunNodeStatus,
     WorkClaim,
     WorkCompletion,
 )
+from paritygrid.application.ports.writer import PersistenceContentionError
 from paritygrid.domain.errors import InvalidTransitionError
 from paritygrid.domain.execution import FailureClassification, RunState, WorkItemState
 from paritygrid.domain.models import (
@@ -1604,7 +1604,7 @@ def test_wal_snapshot_claim_race_has_one_winner_and_reopens(
                 runner_kind="threaded",
                 worker_identity="worker-winner",
             )
-        with pytest.raises(ExecutionStorageUnavailableError):
+        with pytest.raises(PersistenceContentionError):
             losing_repository.claim(
                 WORK_ID,
                 expected_row_version=1,

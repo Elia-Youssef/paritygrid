@@ -14,6 +14,7 @@ from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 
 from paritygrid.adapters.persistence.repositories.common import MAX_CANONICAL_DOCUMENT_BYTES
 from paritygrid.adapters.persistence.values import CanonicalStorageJson, StoragePrimitive
+from paritygrid.adapters.persistence.writer.contention import is_sqlite_contention
 from paritygrid.application.ports.consistency import (
     ConsistencyInvalidRequestError,
     RedactedDocument,
@@ -36,6 +37,7 @@ from paritygrid.application.ports.repair_audit import (
     RepairStorageError,
     RepairStorageUnavailableError,
 )
+from paritygrid.application.ports.writer import PersistenceContentionError
 from paritygrid.domain.canonical import FingerprintScope, fingerprint_state
 from paritygrid.domain.models import (
     ConnectorId,
@@ -64,13 +66,19 @@ def translate_repair_storage_errors[**P, R](operation: Callable[P, R]) -> Callab
 
     @wraps(operation)
     def translated(*args: P.args, **kwargs: P.kwargs) -> R:
+        contention = False
         unavailable = False
         try:
             return operation(*args, **kwargs)
-        except InterfaceError, OperationalError:
+        except OperationalError as error:
+            contention = is_sqlite_contention(error)
+            unavailable = not contention
+        except InterfaceError:
             unavailable = True
         except SQLAlchemyError:
             pass
+        if contention:
+            raise PersistenceContentionError("Persistence is temporarily contended.") from None
         if unavailable:
             raise RepairStorageUnavailableError("Repair storage is unavailable.") from None
         raise RepairStorageError("Repair storage operation failed.") from None
@@ -83,13 +91,19 @@ def translate_audit_storage_errors[**P, R](operation: Callable[P, R]) -> Callabl
 
     @wraps(operation)
     def translated(*args: P.args, **kwargs: P.kwargs) -> R:
+        contention = False
         unavailable = False
         try:
             return operation(*args, **kwargs)
-        except InterfaceError, OperationalError:
+        except OperationalError as error:
+            contention = is_sqlite_contention(error)
+            unavailable = not contention
+        except InterfaceError:
             unavailable = True
         except SQLAlchemyError:
             pass
+        if contention:
+            raise PersistenceContentionError("Persistence is temporarily contended.") from None
         if unavailable:
             raise AuditStorageUnavailableError("Audit storage is unavailable.") from None
         raise AuditStorageError("Audit storage operation failed.") from None

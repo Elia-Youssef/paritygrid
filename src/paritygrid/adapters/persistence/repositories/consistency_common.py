@@ -11,6 +11,7 @@ from sqlalchemy.exc import InterfaceError, OperationalError, SQLAlchemyError
 
 from paritygrid.adapters.persistence.repositories.common import MAX_CANONICAL_DOCUMENT_BYTES
 from paritygrid.adapters.persistence.values import CanonicalStorageJson, StoragePrimitive
+from paritygrid.adapters.persistence.writer.contention import is_sqlite_contention
 from paritygrid.application.ports.configuration import ConfigurationDocument
 from paritygrid.application.ports.consistency import (
     MAX_CONSISTENCY_SEQUENCE,
@@ -27,6 +28,7 @@ from paritygrid.application.ports.consistency import (
     PendingExecutionEvent,
     RedactedDocument,
 )
+from paritygrid.application.ports.writer import PersistenceContentionError
 from paritygrid.domain.models import ArtifactId, NodeId, RunId, UtcTimestamp, WorkItemId
 from paritygrid.domain.pipeline import PartitionKey
 
@@ -45,13 +47,19 @@ def translate_consistency_storage_errors[**P, R](
 
     @wraps(operation)
     def translated(*args: P.args, **kwargs: P.kwargs) -> R:
+        contention = False
         unavailable = False
         try:
             return operation(*args, **kwargs)
-        except InterfaceError, OperationalError:
+        except OperationalError as error:
+            contention = is_sqlite_contention(error)
+            unavailable = not contention
+        except InterfaceError:
             unavailable = True
         except SQLAlchemyError:
             pass
+        if contention:
+            raise PersistenceContentionError("Persistence is temporarily contended.") from None
         if unavailable:
             raise ConsistencyStorageUnavailableError(
                 "Consistency storage is unavailable."
