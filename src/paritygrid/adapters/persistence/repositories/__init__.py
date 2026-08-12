@@ -3,8 +3,15 @@
 from paritygrid.adapters.persistence.repositories import common as _common
 from paritygrid.adapters.persistence.repositories import connectors as _connectors
 from paritygrid.adapters.persistence.repositories import mapping as _mapping
+from paritygrid.adapters.persistence.repositories.checkpoints import SqlAlchemyCheckpointRepository
 from paritygrid.adapters.persistence.repositories.common import MAX_CANONICAL_DOCUMENT_BYTES
 from paritygrid.adapters.persistence.repositories.connectors import SqlAlchemyConnectorRepository
+from paritygrid.adapters.persistence.repositories.execution_events import (
+    SqlAlchemyExecutionEventRepository,
+)
+from paritygrid.adapters.persistence.repositories.idempotency import (
+    SqlAlchemyIdempotencyRepository,
+)
 from paritygrid.adapters.persistence.repositories.pipelines import (
     SqlAlchemyPipelineRepository,
 )
@@ -34,7 +41,10 @@ _secret_reference_from_row = _mapping.secret_reference_from_row
 
 __all__ = [
     "MAX_CANONICAL_DOCUMENT_BYTES",
+    "SqlAlchemyCheckpointRepository",
     "SqlAlchemyConnectorRepository",
+    "SqlAlchemyExecutionEventRepository",
+    "SqlAlchemyIdempotencyRepository",
     "SqlAlchemyPipelineRepository",
     "SqlAlchemyRunRepository",
     "SqlAlchemyWorkAttemptRepository",
