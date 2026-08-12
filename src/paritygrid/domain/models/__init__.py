@@ -13,17 +13,26 @@ from paritygrid.domain.models.identifiers import (
     RunId,
     WorkItemId,
 )
+from paritygrid.domain.models.inventory import InventoryAttributes, InventoryRecord
+from paritygrid.domain.models.money import CurrencyCode, Money
+from paritygrid.domain.models.temporal import Duration, UtcTimestamp
 
 __all__ = [
     "ArtifactId",
     "AttemptNumber",
     "ConflictId",
     "ConnectorId",
+    "CurrencyCode",
+    "Duration",
     "EntityId",
+    "InventoryAttributes",
+    "InventoryRecord",
+    "Money",
     "NodeId",
     "PipelineId",
     "PipelineVersion",
     "RepairPlanId",
     "RunId",
+    "UtcTimestamp",
     "WorkItemId",
 ]
