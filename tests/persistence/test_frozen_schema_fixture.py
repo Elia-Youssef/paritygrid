@@ -3,6 +3,7 @@
 import hashlib
 import json
 import sqlite3
+import unicodedata
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -26,11 +27,21 @@ SEED_PATH = FIXTURE_DIRECTORY / "seed.sql"
 MANIFEST_PATH = FIXTURE_DIRECTORY / "manifest.json"
 
 EXPECTED_FILE_HASHES = {
-    "manifest.json": "c083345f23a186498b1dca69140b7fed0fb21c5dbf82c837a7f3e3f7e1d2861a",
+    "manifest.json": "74495cba7d7ce973d5544a0a2acd363acc4ca56b38eb3f5707a81064427dbce0",
     "schema.sql": "50ff2626553f6e5250e217b79f06fc3a957a59ab2ffc3341fbd23b52fdcc243c",
-    "seed.sql": "56fef2edb296c419058fa36665cd9852d344283586f63991a7ddb48eb6d1831a",
+    "seed.sql": "4d8d9221c63c2a38dd85c5b68807a993ca8962a9193fc4d883c901d9374f10d2",
 }
-EXPECTED_LOGICAL_ROWS_HASH = "a1bb59a4b818111fbdef0e97591496302da51a32919b7646f7008ad633aee05c"
+EXPECTED_LOGICAL_ROWS_HASH = "a63ab101fb3efbb0d09d6a8e9685ec0d96ff2333c17bb35ffde664d295e37d81"
+EXPECTED_SCHEMA_INVENTORY = {
+    "check_constraint_count": 209,
+    "column_count": 211,
+    "explicit_index_count": 27,
+    "foreign_key_count": 18,
+    "primary_key_count": 21,
+    "table_count": 21,
+    "trigger_count": 47,
+    "unique_constraint_count": 11,
+}
 EXPECTED_ROW_COUNTS = {
     "artifact_manifests": 1,
     "audit_entries": 1,
@@ -39,21 +50,103 @@ EXPECTED_ROW_COUNTS = {
     "connector_secret_references": 1,
     "connectors": 2,
     "execution_events": 4,
-    "idempotency_records": 1,
+    "idempotency_records": 2,
     "pipeline_versions": 1,
     "pipelines": 1,
     "reconciliation_conflicts": 1,
     "reconciliation_summaries": 1,
-    "repair_actions": 1,
+    "repair_actions": 2,
     "repair_approvals": 1,
-    "repair_plans": 1,
+    "repair_plans": 2,
     "run_event_counters": 2,
     "run_nodes": 2,
     "runs": 2,
-    "system_metadata": 2,
+    "system_metadata": 4,
     "work_attempts": 2,
     "work_items": 2,
 }
+V0001_REVISION = "0001_operational"
+
+WHOLE_TABLE_UPDATE_ATTACKS = (
+    (
+        "UPDATE artifact_manifests SET artifact_id=artifact_id "
+        "WHERE artifact_id='art_inventory-output'"
+    ),
+    "UPDATE audit_entries SET actor=actor WHERE sequence_number=1",
+    "UPDATE checkpoints SET version=version WHERE run_id='run_completed-demo' AND version=1",
+    (
+        "UPDATE connector_secret_references SET reference_name=reference_name "
+        "WHERE connector_id='con_async-source' AND reference_name='api_token'"
+    ),
+    (
+        "UPDATE execution_events SET event_kind=event_kind "
+        "WHERE run_id='run_completed-demo' AND sequence_number=1"
+    ),
+    (
+        "UPDATE pipeline_versions SET version_number=version_number "
+        "WHERE pipeline_id='pip_inventory-demo' AND version_number=1"
+    ),
+    (
+        "UPDATE reconciliation_conflicts SET canonical_key=canonical_key "
+        "WHERE conflict_id='cnf_missing-widget'"
+    ),
+    (
+        "UPDATE reconciliation_summaries SET total_count=total_count "
+        "WHERE run_id='run_completed-demo'"
+    ),
+    (
+        "UPDATE repair_approvals SET approved_by=approved_by "
+        "WHERE repair_plan_id='rpl_harbor-repair'"
+    ),
+    (
+        "UPDATE work_attempts SET worker_identity=worker_identity "
+        "WHERE work_item_id='wrk_completed-partition' AND attempt_number=1"
+    ),
+)
+
+IMMUTABLE_COLUMN_ATTACKS = (
+    (
+        "UPDATE checkpoint_heads SET partition_key='catalog-page-9999' "
+        "WHERE run_id='run_active-demo' AND node_id='nod_inventory-live'"
+    ),
+    "UPDATE connectors SET connector_id='con_changed' WHERE connector_id='con_async-source'",
+    (
+        "UPDATE idempotency_records SET request_sha256='c' || substr(request_sha256,2) "
+        "WHERE scope='run:create' AND idempotency_key='fixture-run-active'"
+    ),
+    "UPDATE pipelines SET pipeline_id='pip_changed' WHERE pipeline_id='pip_inventory-demo'",
+    (
+        "UPDATE repair_actions SET action_kind='update_target' "
+        "WHERE repair_action_id='rac_pending-harbor-lamp'"
+    ),
+    (
+        "UPDATE repair_plans SET content_fingerprint='c' || substr(content_fingerprint,2) "
+        "WHERE repair_plan_id='rpl_pending-repair'"
+    ),
+    (
+        "UPDATE run_event_counters SET run_id='run_changed', next_sequence_number=5 "
+        "WHERE run_id='run_active-demo'"
+    ),
+    "UPDATE run_nodes SET node_id='nod_changed' WHERE run_id='run_active-demo'",
+    "UPDATE runs SET runner_kind='asyncio' WHERE run_id='run_completed-demo'",
+    "UPDATE system_metadata SET key='changed_key' WHERE key='fixture_revision'",
+    (
+        "UPDATE work_items SET partition_key='catalog-page-9999' "
+        "WHERE work_item_id='wrk_active-partition'"
+    ),
+)
+
+TERMINAL_UPDATE_ATTACKS = (
+    (
+        "UPDATE idempotency_records SET status=status WHERE scope='run:create' "
+        "AND idempotency_key='fixture-run-completed'"
+    ),
+    (
+        "UPDATE repair_actions SET application_status=application_status "
+        "WHERE repair_action_id='rac_create-harbor-lamp'"
+    ),
+    "UPDATE repair_plans SET status=status WHERE repair_plan_id='rpl_harbor-repair'",
+)
 
 
 def _fixture_bytes() -> dict[str, bytes]:
@@ -65,17 +158,20 @@ def _reconstruct(connection: sqlite3.Connection) -> None:
 
 
 def _snapshot(connection: Connection) -> tuple[tuple[str, tuple[tuple[object, ...], ...]], ...]:
-    tables = sorted(EXPECTED_ROW_COUNTS)
+    manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     result: list[tuple[str, tuple[tuple[object, ...], ...]]] = []
-    for table in tables:
-        info = connection.exec_driver_sql(f'PRAGMA table_info("{table}")').all()
-        columns = [str(row[1]) for row in info]
-        primary_key = [str(row[1]) for row in sorted(info, key=lambda row: int(row[5])) if row[5]]
+    for table in sorted(EXPECTED_ROW_COUNTS):
+        description = manifest["tables"][table]
+        columns = [str(column) for column in description["columns"]]
+        primary_key = [str(column) for column in description["primary_key_columns"]]
         order = primary_key or columns
+        columns_sql = ", ".join(f'"{column}"' for column in columns)
         order_sql = ", ".join(f'"{column}"' for column in order)
         rows = tuple(
             tuple(row)
-            for row in connection.exec_driver_sql(f'SELECT * FROM "{table}" ORDER BY {order_sql}')
+            for row in connection.exec_driver_sql(
+                f'SELECT {columns_sql} FROM "{table}" ORDER BY {order_sql}'
+            )
         )
         result.append((table, rows))
     return tuple(result)
@@ -104,6 +200,7 @@ def test_committed_files_match_independently_reviewed_hashes_and_manifest() -> N
     } == EXPECTED_FILE_HASHES
     assert manifest["revision"] == "0001_operational"
     assert manifest["table_count"] == 21
+    assert manifest["schema_inventory"] == EXPECTED_SCHEMA_INVENTORY
     assert manifest["logical_rows_sha256"] == EXPECTED_LOGICAL_ROWS_HASH
     assert manifest["invariants"] == {
         "checkpoint_head_matches_history": True,
@@ -112,12 +209,25 @@ def test_committed_files_match_independently_reviewed_hashes_and_manifest() -> N
     }
     assert len(manifest["foreign_key_witnesses"]) == 18
     assert all(witness["non_null_rows"] >= 1 for witness in manifest["foreign_key_witnesses"])
+    assert all(
+        witness["matching_rows"] == witness["non_null_rows"]
+        and len(witness["columns"]) == len(witness["referenced_columns"])
+        and len(witness["witness_values"]) == len(witness["columns"])
+        and witness["referenced_table"] in EXPECTED_ROW_COUNTS
+        for witness in manifest["foreign_key_witnesses"]
+    )
     assert {
         table: description["row_count"] for table, description in manifest["tables"].items()
     } == EXPECTED_ROW_COUNTS
     assert manifest["files"] == {
         "schema.sql": {"bytes": 99010, "sha256": EXPECTED_FILE_HASHES["schema.sql"]},
-        "seed.sql": {"bytes": 12282, "sha256": EXPECTED_FILE_HASHES["seed.sql"]},
+        "seed.sql": {"bytes": 13866, "sha256": EXPECTED_FILE_HASHES["seed.sql"]},
+    }
+    assert manifest["sentinel_projections"] == {
+        "active_attempt": ["running", 1, "worker-01"],
+        "applied_repair": ["applied", "fixture-operator", "applied", 1],
+        "secret_environment_name": "PARITYGRID_DEMO_API_TOKEN",
+        "unicode_vectors": [["Café — ميناء"], ["Cafe\u0301 — مرسى"]],
     }
 
 
@@ -158,6 +268,18 @@ def test_reconstruction_integrity_counts_and_sentinel_projections(
         assert connection.exec_driver_sql(
             "SELECT status, applied_at FROM repair_plans WHERE repair_plan_id = 'rpl_harbor-repair'"
         ).one() == ("applied", "2026-08-12T12:10:00.000000Z")
+        unicode_rows = {
+            cast(str, row[0]): cast(str, row[1])
+            for row in connection.exec_driver_sql(
+                "SELECT key,value FROM system_metadata WHERE key LIKE 'unicode_%' ORDER BY key"
+            ).all()
+        }
+        assert unicode_rows == {
+            "unicode_nfc": "Café — ميناء",
+            "unicode_nfd": "Cafe\u0301 — مرسى",
+        }
+        assert unicodedata.is_normalized("NFC", unicode_rows["unicode_nfc"])
+        assert unicodedata.is_normalized("NFD", unicode_rows["unicode_nfd"])
         connection.rollback()
 
 
@@ -218,22 +340,37 @@ def test_upgrade_repeat_and_reopen_preserve_every_logical_row(
         connection.rollback()
         first_report = upgrade_to_head(connection)
         after_first = _snapshot(connection)
+        assert connection.exec_driver_sql("PRAGMA quick_check").all() == [("ok",)]
+        assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
         connection.rollback()
         second_report = upgrade_to_head(connection)
         after_second = _snapshot(connection)
+        assert connection.exec_driver_sql("PRAGMA quick_check").all() == [("ok",)]
+        assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
         connection.rollback()
 
     reconstructed_engine.dispose()
     with reconstructed_engine.connect() as reopened:
+        reopen_report = upgrade_to_head(reopened)
         after_reopen = _snapshot(reopened)
         assert reopened.exec_driver_sql("PRAGMA quick_check").all() == [("ok",)]
         assert reopened.exec_driver_sql("PRAGMA foreign_key_check").all() == []
         reopened.rollback()
 
-    expected_report = MigrationReport(HEAD_REVISION, HEAD_REVISION, HEAD_REVISION)
-    assert first_report == expected_report
-    assert second_report == expected_report
+    assert first_report == MigrationReport(V0001_REVISION, HEAD_REVISION, HEAD_REVISION)
+    assert second_report == MigrationReport(HEAD_REVISION, HEAD_REVISION, HEAD_REVISION)
+    assert reopen_report == MigrationReport(HEAD_REVISION, HEAD_REVISION, HEAD_REVISION)
     assert before == after_first == after_second == after_reopen
+
+
+def test_v0001_snapshot_ignores_additive_future_columns(reconstructed_engine: Engine) -> None:
+    with reconstructed_engine.connect() as connection:
+        before = _snapshot(connection)
+        connection.exec_driver_sql("ALTER TABLE pipelines ADD COLUMN future_optional_detail TEXT")
+        after = _snapshot(connection)
+        connection.rollback()
+
+    assert after == before
 
 
 def test_released_constraints_and_trigger_guards_remain_active(
@@ -265,6 +402,34 @@ def test_released_constraints_and_trigger_guards_remain_active(
         connection.rollback()
 
 
+@pytest.mark.parametrize("statement", WHOLE_TABLE_UPDATE_ATTACKS)
+def test_every_whole_table_update_guard_is_active(
+    reconstructed_engine: Engine, statement: str
+) -> None:
+    with reconstructed_engine.connect() as connection:
+        with pytest.raises(IntegrityError, match="does not permit update"):
+            connection.exec_driver_sql(statement)
+        connection.rollback()
+
+
+@pytest.mark.parametrize("statement", IMMUTABLE_COLUMN_ATTACKS)
+def test_every_immutable_column_guard_is_active(
+    reconstructed_engine: Engine, statement: str
+) -> None:
+    with reconstructed_engine.connect() as connection:
+        with pytest.raises(IntegrityError, match="immutable columns cannot change"):
+            connection.exec_driver_sql(statement)
+        connection.rollback()
+
+
+@pytest.mark.parametrize("statement", TERMINAL_UPDATE_ATTACKS)
+def test_every_terminal_guard_is_active(reconstructed_engine: Engine, statement: str) -> None:
+    with reconstructed_engine.connect() as connection:
+        with pytest.raises(IntegrityError, match="terminal rows cannot change"):
+            connection.exec_driver_sql(statement)
+        connection.rollback()
+
+
 def test_every_operational_table_delete_guard_is_active(reconstructed_engine: Engine) -> None:
     with reconstructed_engine.connect() as connection:
         trigger_count = connection.exec_driver_sql(
@@ -291,4 +456,109 @@ def test_monotonic_trigger_guards_remain_active(reconstructed_engine: Engine) ->
                 "UPDATE run_event_counters SET row_version=row_version+1 "
                 "WHERE run_id='run_completed-demo'"
             )
+        connection.rollback()
+
+        connection.exec_driver_sql(
+            "UPDATE checkpoint_heads SET current_version=3,row_version=row_version+1 "
+            "WHERE run_id='run_completed-demo' AND node_id='nod_inventory-sync' "
+            "AND partition_key='catalog-page-0001'"
+        )
+        assert (
+            connection.exec_driver_sql(
+                "SELECT current_version FROM checkpoint_heads WHERE run_id='run_completed-demo' "
+                "AND node_id='nod_inventory-sync' AND partition_key='catalog-page-0001'"
+            ).scalar_one()
+            == 3
+        )
+        connection.rollback()
+
+        connection.exec_driver_sql(
+            "UPDATE run_event_counters SET next_sequence_number=5,row_version=row_version+1 "
+            "WHERE run_id='run_completed-demo'"
+        )
+        assert (
+            connection.exec_driver_sql(
+                "SELECT next_sequence_number FROM run_event_counters "
+                "WHERE run_id='run_completed-demo'"
+            ).scalar_one()
+            == 5
+        )
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        (
+            "INSERT INTO work_items "
+            "(work_item_id,run_id,node_id,partition_key,state,row_version,"
+            "completed_attempt_count,expected_checkpoint_version,input_reference_json,"
+            "created_at,updated_at) VALUES "
+            "('wrk_hybrid-node','run_completed-demo','nod_inventory-live','hybrid','pending',"
+            "1,0,0,'{}','2026-08-12T12:00:00.000000Z','2026-08-12T12:00:00.000000Z')"
+        ),
+        (
+            "INSERT INTO checkpoints "
+            "(run_id,node_id,partition_key,version,payload_schema_version,artifact_id,"
+            "committed_at) "
+            "VALUES ('run_active-demo','nod_inventory-live','catalog-page-0002',1,1,"
+            "'art_inventory-output','2026-08-12T12:10:00.000000Z')"
+        ),
+        (
+            "INSERT INTO repair_actions "
+            "(repair_action_id,repair_plan_id,run_id,conflict_id,canonical_key,action_kind,"
+            "external_idempotency_key,before_sha256,proposed_after_sha256,"
+            "proposed_record_json,expected_target_record_json,mismatch_evidence_json,"
+            "application_status) VALUES "
+            "('rac_hybrid','rpl_harbor-repair','run_active-demo','cnf_missing-widget',"
+            "'sku-harbor-lamp','update_target','hybrid-repair-v1',"
+            "'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',"
+            "'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',"
+            "'{}','{}','[]','pending')"
+        ),
+    ],
+)
+def test_composite_hybrid_parent_attacks_are_rejected(
+    reconstructed_engine: Engine, statement: str
+) -> None:
+    with reconstructed_engine.connect() as connection:
+        with pytest.raises(IntegrityError, match="FOREIGN KEY constraint failed"):
+            connection.exec_driver_sql(statement)
+        connection.rollback()
+
+
+@pytest.mark.parametrize(
+    "statement",
+    [
+        (
+            "INSERT INTO connectors "
+            "(connector_id,kind,display_name,configuration_json,capabilities_json,revision,"
+            "created_at,updated_at,row_version) VALUES "
+            "('con_bad-json','synthetic','Bad JSON','[]','{}',1,"
+            "'2026-08-12T12:00:00.000000Z','2026-08-12T12:00:00.000000Z',1)"
+        ),
+        (
+            "INSERT INTO audit_entries "
+            "(actor,operation,object_kind,correlation_id,occurred_at,detail_schema_version,"
+            "detail_json) VALUES ('fixture','invalid','run','corr-invalid',"
+            "'2026-08-12 12:00:00Z',1,'{}')"
+        ),
+        (
+            "INSERT INTO audit_entries "
+            "(actor,operation,object_kind,correlation_id,occurred_at,detail_schema_version,"
+            "detail_json) VALUES ('fixture','invalid','run','corr-invalid',"
+            "'2026-08-12T12:00:00.000000Z',x'31','{}')"
+        ),
+        (
+            "INSERT INTO pipelines (pipeline_id,display_name,created_at,row_version) VALUES "
+            "('pip_bad-','Bad identifier','2026-08-12T12:00:00.000000Z',1)"
+        ),
+    ],
+)
+def test_representative_storage_and_shape_constraints_are_active(
+    reconstructed_engine: Engine, statement: str
+) -> None:
+    with reconstructed_engine.connect() as connection:
+        with pytest.raises(IntegrityError, match="CHECK constraint failed"):
+            connection.exec_driver_sql(statement)
         connection.rollback()

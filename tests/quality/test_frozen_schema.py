@@ -17,7 +17,17 @@ from paritygrid.quality import frozen_schema
 from paritygrid.quality.frozen_schema import FrozenFixtureError
 
 EXPECTED_SCHEMA_HASH = "50ff2626553f6e5250e217b79f06fc3a957a59ab2ffc3341fbd23b52fdcc243c"
-EXPECTED_SEED_HASH = "56fef2edb296c419058fa36665cd9852d344283586f63991a7ddb48eb6d1831a"
+EXPECTED_SEED_HASH = "4d8d9221c63c2a38dd85c5b68807a993ca8962a9193fc4d883c901d9374f10d2"
+EXPECTED_SCHEMA_INVENTORY = {
+    "check_constraint_count": 209,
+    "column_count": 211,
+    "explicit_index_count": 27,
+    "foreign_key_count": 18,
+    "primary_key_count": 21,
+    "table_count": 21,
+    "trigger_count": 47,
+    "unique_constraint_count": 11,
+}
 FIXTURE_DIRECTORY = Path(__file__).parents[1] / "fixtures/persistence/v0001"
 ROOT = Path(__file__).parents[2]
 
@@ -34,11 +44,14 @@ def _state(directory: Path) -> dict[str, bytes]:
 
 def test_build_is_pinned_to_reviewed_revision_and_exact_hashes() -> None:
     fixture = frozen_schema.build_fixture()
+    manifest = json.loads(fixture.manifest)
 
     assert frozen_schema.TARGET_REVISION == "0001_operational"
+    assert frozen_schema.REVISION_RESOURCE == "0001_operational.py"
     assert hashlib.sha256(fixture.schema).hexdigest() == EXPECTED_SCHEMA_HASH
     assert hashlib.sha256(fixture.seed).hexdigest() == EXPECTED_SEED_HASH
     assert b"0001_operational" in fixture.schema
+    assert manifest["schema_inventory"] == EXPECTED_SCHEMA_INVENTORY
 
 
 def test_generator_imports_only_the_pinned_revision_resource() -> None:
@@ -67,6 +80,8 @@ def test_generator_imports_only_the_pinned_revision_resource() -> None:
     assert "paritygrid.adapters.persistence.schema" not in imports
     assert "paritygrid.adapters.persistence.migration" not in imports
     assert resource_names == {"paritygrid.adapters.persistence.migrations.versions"}
+    assert "HEAD_REVISION" not in source
+    assert "metadata.create_all" not in source
 
 
 @pytest.mark.parametrize(
@@ -240,6 +255,82 @@ def test_write_rejects_preexisting_backup_without_touching_fixture(tmp_path: Pat
     assert _state(fixture_directory) == before
 
 
+def test_write_candidate_base_exception_leaves_previous_fixture_untouched(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixture_directory = tmp_path / "v0001"
+    _copy_fixture(fixture_directory)
+    before = _state(fixture_directory)
+
+    def interrupt_candidate(directory: Path, fixture: frozen_schema.FrozenFixture) -> None:
+        (directory / "schema.sql").write_bytes(fixture.schema)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(frozen_schema, "_write_candidate", interrupt_candidate)
+
+    with pytest.raises(KeyboardInterrupt):
+        frozen_schema.write_fixture(fixture_directory)
+
+    assert _state(fixture_directory) == before
+    assert not tuple(tmp_path.glob(".v0001-*"))
+
+
+@pytest.mark.parametrize("interrupt_call", [1, 2])
+def test_write_recovers_whole_directory_when_rename_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, interrupt_call: int
+) -> None:
+    fixture_directory = tmp_path / "v0001"
+    _copy_fixture(fixture_directory)
+    (fixture_directory / "previous-release-marker.txt").write_text(
+        "previous\n", encoding="utf-8", newline="\n"
+    )
+    previous = _state(fixture_directory)
+    expected = frozen_schema.build_fixture().files()
+    original_replace = os.replace
+    calls = 0
+
+    def interrupt_after_replace(source: Path, destination: Path) -> None:
+        nonlocal calls
+        calls += 1
+        original_replace(source, destination)
+        if calls == interrupt_call:
+            raise KeyboardInterrupt
+
+    monkeypatch.setattr(frozen_schema.os, "replace", interrupt_after_replace)
+
+    with pytest.raises(KeyboardInterrupt):
+        frozen_schema.write_fixture(fixture_directory)
+
+    assert _state(fixture_directory) in (previous, expected)
+    assert not (tmp_path / ".v0001-backup").exists()
+    assert not tuple(path for path in tmp_path.glob(".v0001-*") if path.exists())
+
+
+def test_write_keeps_complete_new_fixture_when_backup_cleanup_is_interrupted(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    fixture_directory = tmp_path / "v0001"
+    _copy_fixture(fixture_directory)
+    original_rmtree = frozen_schema.shutil.rmtree
+    calls = 0
+
+    def interrupt_cleanup(directory: Path) -> None:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise KeyboardInterrupt
+        original_rmtree(directory)
+
+    monkeypatch.setattr(frozen_schema.shutil, "rmtree", interrupt_cleanup)
+
+    with pytest.raises(KeyboardInterrupt):
+        frozen_schema.write_fixture(fixture_directory)
+
+    assert _state(fixture_directory) == frozen_schema.build_fixture().files()
+    assert not (tmp_path / ".v0001-backup").exists()
+    assert not tuple(path for path in tmp_path.glob(".v0001-*") if path.exists())
+
+
 @pytest.mark.parametrize("failure_stage", ["early", "middle", "late"])
 def test_reconstruction_failure_leaves_no_schema_residue(failure_stage: str) -> None:
     fixture = frozen_schema.build_fixture()
@@ -374,6 +465,26 @@ def test_manifest_generation_rejects_cross_row_drift(
         frozen_schema.build_fixture()
 
 
+def test_manifest_generation_rejects_schema_inventory_drift(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(frozen_schema, "_EXPECTED_SCHEMA_INVENTORY", {})
+
+    with pytest.raises(FrozenFixtureError, match="reviewed v0001 schema inventory"):
+        frozen_schema.build_fixture()
+
+
+def test_schema_inventory_rejects_missing_table_sql() -> None:
+    connection = sqlite3.connect(":memory:")
+    try:
+        with pytest.raises(FrozenFixtureError, match="missing table SQL"):
+            frozen_schema._schema_inventory(  # pyright: ignore[reportPrivateUsage]
+                connection, ["missing_table"]
+            )
+    finally:
+        connection.close()
+
+
 def test_manifest_generation_maps_sqlite_failure(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -386,29 +497,64 @@ def test_manifest_generation_maps_sqlite_failure(
         frozen_schema.build_fixture()
 
 
+def test_cleanup_propagates_interruption_after_directory_was_removed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    directory = tmp_path / "cleanup"
+    directory.mkdir()
+    original_rmtree = frozen_schema.shutil.rmtree
+
+    def remove_then_interrupt(path: Path) -> None:
+        original_rmtree(path)
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(frozen_schema.shutil, "rmtree", remove_then_interrupt)
+
+    with pytest.raises(KeyboardInterrupt):
+        frozen_schema._remove_tree(directory)  # pyright: ignore[reportPrivateUsage]
+
+    assert not directory.exists()
+
+
 def test_command_generates_and_checks_from_arbitrary_unicode_directory(
     tmp_path: Path,
 ) -> None:
-    external = tmp_path / "outside checkout 100%-é"
+    external = tmp_path / "outside 100%-Café-Cafe\u0301-عربي"
     external.mkdir()
-    fixture_directory = external / "released fixture"
-    command = [
-        sys.executable,
-        "-c",
-        "from paritygrid.quality.frozen_schema import main; raise SystemExit(main())",
-        "--fixture-directory",
-        str(fixture_directory),
-    ]
+    generated: list[dict[str, bytes]] = []
+    for index, hash_seed in enumerate(("1", "8675309"), start=1):
+        fixture_directory = external / f"released fixture {index}"
+        command = [
+            sys.executable,
+            "-c",
+            "from paritygrid.quality.frozen_schema import main; raise SystemExit(main())",
+            "--fixture-directory",
+            str(fixture_directory),
+        ]
+        environment = {**os.environ, "PYTHONHASHSEED": hash_seed}
+        write = subprocess.run(
+            [*command, "--write"],
+            cwd=external,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        check = subprocess.run(
+            command,
+            cwd=external,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=environment,
+        )
+        assert write.returncode == 0, write.stderr
+        assert check.returncode == 0, check.stderr
+        assert EXPECTED_SCHEMA_HASH in check.stdout
+        generated.append(_state(fixture_directory))
 
-    write = subprocess.run(
-        [*command, "--write"], cwd=external, check=False, capture_output=True, text=True
-    )
-    check = subprocess.run(command, cwd=external, check=False, capture_output=True, text=True)
-
-    assert write.returncode == 0, write.stderr
-    assert check.returncode == 0, check.stderr
-    assert EXPECTED_SCHEMA_HASH in check.stdout
-    assert {path.name for path in fixture_directory.iterdir()} == {
+    assert generated[0] == generated[1] == _state(FIXTURE_DIRECTORY)
+    assert set(generated[0]) == {
         "manifest.json",
         "schema.sql",
         "seed.sql",
@@ -431,7 +577,7 @@ def test_wheel_command_uses_explicit_external_fixture_directory(tmp_path: Path) 
     assert "paritygrid/quality/frozen_schema.py" in names
     assert not any("fixtures/persistence/v0001" in name for name in names)
 
-    external = tmp_path / "installed command 100%-é"
+    external = tmp_path / "installed command 100%-Café-عربي"
     external.mkdir()
     missing = external / "missing"
     generated = external / "generated"

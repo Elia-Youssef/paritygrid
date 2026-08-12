@@ -23,6 +23,18 @@ _SCHEMA_GROUPS = ("_TABLE_STATEMENTS", "_INDEX_STATEMENTS", "_TRIGGER_STATEMENTS
 _TIMESTAMP = "2026-08-12T12:00:00.000000Z"
 _TIMESTAMP_LATER = "2026-08-12T12:05:00.000000Z"
 _TIMESTAMP_LATEST = "2026-08-12T12:10:00.000000Z"
+_UNICODE_NFC = "Café — ميناء"
+_UNICODE_NFD = "Cafe\u0301 — مرسى"
+_EXPECTED_SCHEMA_INVENTORY = {
+    "check_constraint_count": 209,
+    "column_count": 211,
+    "explicit_index_count": 27,
+    "foreign_key_count": 18,
+    "primary_key_count": 21,
+    "table_count": 21,
+    "trigger_count": 47,
+    "unique_constraint_count": 11,
+}
 
 Scalar = str | int | None
 SeedValues = Mapping[str, Scalar]
@@ -57,6 +69,14 @@ _SEED_ROWS: tuple[tuple[str, SeedValues], ...] = (
     (
         "system_metadata",
         {"key": "instance_identity", "value": "fixture-instance-v0001", "updated_at": _TIMESTAMP},
+    ),
+    (
+        "system_metadata",
+        {"key": "unicode_nfc", "value": _UNICODE_NFC, "updated_at": _TIMESTAMP},
+    ),
+    (
+        "system_metadata",
+        {"key": "unicode_nfd", "value": _UNICODE_NFD, "updated_at": _TIMESTAMP},
     ),
     (
         "pipelines",
@@ -189,7 +209,7 @@ _SEED_ROWS: tuple[tuple[str, SeedValues], ...] = (
         "run_nodes",
         {
             "run_id": "run_active-demo",
-            "node_id": "nod_inventory-sync",
+            "node_id": "nod_inventory-live",
             "state": "running",
             "row_version": 2,
             "work_total": 1,
@@ -218,7 +238,7 @@ _SEED_ROWS: tuple[tuple[str, SeedValues], ...] = (
         {
             "work_item_id": "wrk_active-partition",
             "run_id": "run_active-demo",
-            "node_id": "nod_inventory-sync",
+            "node_id": "nod_inventory-live",
             "partition_key": "catalog-page-0002",
             "state": "running",
             "row_version": 2,
@@ -299,7 +319,7 @@ _SEED_ROWS: tuple[tuple[str, SeedValues], ...] = (
         "checkpoint_heads",
         {
             "run_id": "run_active-demo",
-            "node_id": "nod_inventory-sync",
+            "node_id": "nod_inventory-live",
             "partition_key": "catalog-page-0002",
             "current_version": 0,
             "updated_at": _TIMESTAMP_LATER,
@@ -404,6 +424,17 @@ _SEED_ROWS: tuple[tuple[str, SeedValues], ...] = (
         },
     ),
     (
+        "idempotency_records",
+        {
+            "scope": "run:create",
+            "idempotency_key": "fixture-run-active",
+            "request_sha256": "9" * 64,
+            "status": "in_progress",
+            "created_at": _TIMESTAMP,
+            "updated_at": _TIMESTAMP_LATER,
+        },
+    ),
+    (
         "reconciliation_summaries",
         {
             "run_id": "run_completed-demo",
@@ -450,6 +481,18 @@ _SEED_ROWS: tuple[tuple[str, SeedValues], ...] = (
         },
     ),
     (
+        "repair_plans",
+        {
+            "repair_plan_id": "rpl_pending-repair",
+            "run_id": "run_completed-demo",
+            "reconciliation_fingerprint": "4" * 64,
+            "content_fingerprint": "a" * 64,
+            "status": "proposed",
+            "row_version": 1,
+            "created_at": _TIMESTAMP_LATEST,
+        },
+    ),
+    (
         "repair_approvals",
         {
             "repair_plan_id": "rpl_harbor-repair",
@@ -480,6 +523,24 @@ _SEED_ROWS: tuple[tuple[str, SeedValues], ...] = (
             "application_result_json": _json({"effect": "created"}),
             "target_version": 1,
             "applied_at": _TIMESTAMP_LATEST,
+        },
+    ),
+    (
+        "repair_actions",
+        {
+            "repair_action_id": "rac_pending-harbor-lamp",
+            "repair_plan_id": "rpl_pending-repair",
+            "run_id": "run_completed-demo",
+            "conflict_id": "cnf_missing-widget",
+            "canonical_key": "sku-harbor-lamp",
+            "action_kind": "create_target",
+            "external_idempotency_key": "repair-harbor-lamp-v2",
+            "proposed_after_sha256": "b" * 64,
+            "proposed_record_json": _json(
+                {"currency": "USD", "name": "Harbor Lamp", "price_minor": 4599, "sku": "HL-1"}
+            ),
+            "mismatch_evidence_json": _json([{"classification": "missing_from_target"}]),
+            "application_status": "pending",
         },
     ),
     (
@@ -626,6 +687,43 @@ def reconstruct_fixture(connection: sqlite3.Connection, schema: bytes, seed: byt
         raise
 
 
+def _schema_inventory(connection: sqlite3.Connection, table_names: Sequence[str]) -> dict[str, int]:
+    column_count = 0
+    primary_key_count = 0
+    unique_constraint_count = 0
+    foreign_key_count = 0
+    check_constraint_count = 0
+    explicit_index_count = 0
+    for table in table_names:
+        columns = connection.execute(f'PRAGMA table_info("{table}")').fetchall()
+        column_count += len(columns)
+        primary_key_count += int(any(int(row[5]) > 0 for row in columns))
+        indexes = connection.execute(f'PRAGMA index_list("{table}")').fetchall()
+        unique_constraint_count += sum(str(row[3]) == "u" for row in indexes)
+        explicit_index_count += sum(str(row[3]) == "c" for row in indexes)
+        foreign_keys = connection.execute(f'PRAGMA foreign_key_list("{table}")').fetchall()
+        foreign_key_count += len({int(row[0]) for row in foreign_keys})
+        table_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type='table' AND name=?", (table,)
+        ).fetchone()
+        if table_sql is None or not isinstance(table_sql[0], str):
+            raise FrozenFixtureError(f"The generated fixture is missing table SQL for {table}.")
+        check_constraint_count += table_sql[0].count("CONSTRAINT ck_")
+    trigger_count = int(
+        connection.execute("SELECT COUNT(*) FROM sqlite_master WHERE type='trigger'").fetchone()[0]
+    )
+    return {
+        "check_constraint_count": check_constraint_count,
+        "column_count": column_count,
+        "explicit_index_count": explicit_index_count,
+        "foreign_key_count": foreign_key_count,
+        "primary_key_count": primary_key_count,
+        "table_count": len(table_names),
+        "trigger_count": trigger_count,
+        "unique_constraint_count": unique_constraint_count,
+    }
+
+
 def _logical_manifest(schema: bytes, seed: bytes) -> dict[str, object]:
     connection = sqlite3.connect(":memory:")
     try:
@@ -637,6 +735,11 @@ def _logical_manifest(schema: bytes, seed: bytes) -> dict[str, object]:
                 "AND name NOT LIKE 'sqlite_%' AND name <> 'alembic_version' ORDER BY name"
             )
         ]
+        schema_inventory = _schema_inventory(connection, table_names)
+        if schema_inventory != _EXPECTED_SCHEMA_INVENTORY:
+            raise FrozenFixtureError(
+                "The generated fixture does not match the reviewed v0001 schema inventory."
+            )
         tables: dict[str, dict[str, object]] = {}
         for table in table_names:
             column_rows = connection.execute(f'PRAGMA table_info("{table}")').fetchall()
@@ -664,8 +767,13 @@ def _logical_manifest(schema: bytes, seed: bytes) -> dict[str, object]:
         for table in table_names:
             foreign_keys = connection.execute(f'PRAGMA foreign_key_list("{table}")').fetchall()
             for foreign_key_id in sorted({int(row[0]) for row in foreign_keys}):
-                definition = [row for row in foreign_keys if int(row[0]) == foreign_key_id]
+                definition = sorted(
+                    (row for row in foreign_keys if int(row[0]) == foreign_key_id),
+                    key=lambda row: int(row[1]),
+                )
                 columns = [str(row[3]) for row in definition]
+                referenced_table = str(definition[0][2])
+                referenced_columns = [str(row[4]) for row in definition]
                 predicate = " AND ".join(f'"{column}" IS NOT NULL' for column in columns)
                 non_null_rows = int(
                     connection.execute(
@@ -677,12 +785,37 @@ def _logical_manifest(schema: bytes, seed: bytes) -> dict[str, object]:
                         f"The generated fixture has no witness for {table} "
                         f"foreign key {foreign_key_id}."
                     )
+                join_predicate = " AND ".join(
+                    f'c."{column}" = p."{referenced_column}"'
+                    for column, referenced_column in zip(columns, referenced_columns, strict=True)
+                )
+                qualified_predicate = " AND ".join(
+                    f'c."{column}" IS NOT NULL' for column in columns
+                )
+                matching_rows = int(
+                    connection.execute(
+                        f'SELECT COUNT(*) FROM "{table}" AS c '
+                        f'JOIN "{referenced_table}" AS p ON {join_predicate} '
+                        f"WHERE {qualified_predicate}"
+                    ).fetchone()[0]
+                )
+                witness_columns = ", ".join(f'"{column}"' for column in columns)
+                witness_values = list(
+                    connection.execute(
+                        f'SELECT {witness_columns} FROM "{table}" WHERE {predicate} '
+                        f"ORDER BY {witness_columns} LIMIT 1"
+                    ).fetchone()
+                )
                 foreign_key_witnesses.append(
                     {
                         "columns": columns,
                         "foreign_key_id": foreign_key_id,
+                        "matching_rows": matching_rows,
                         "non_null_rows": non_null_rows,
+                        "referenced_columns": referenced_columns,
+                        "referenced_table": referenced_table,
                         "table": table,
+                        "witness_values": witness_values,
                     }
                 )
         invariants = {
@@ -706,6 +839,32 @@ def _logical_manifest(schema: bytes, seed: bytes) -> dict[str, object]:
         }
         if not all(invariants.values()):
             raise FrozenFixtureError("The generated fixture violates a cross-row invariant.")
+        sentinel_projections = {
+            "active_attempt": list(
+                connection.execute(
+                    "SELECT state,active_attempt_number,active_worker_identity FROM work_items "
+                    "WHERE work_item_id='wrk_active-partition'"
+                ).fetchone()
+            ),
+            "applied_repair": list(
+                connection.execute(
+                    "SELECT p.status,a.approved_by,r.application_status,r.target_version "
+                    "FROM repair_plans p JOIN repair_approvals a "
+                    "USING (repair_plan_id,reconciliation_fingerprint) "
+                    "JOIN repair_actions r USING (repair_plan_id,run_id) "
+                    "WHERE p.repair_plan_id='rpl_harbor-repair'"
+                ).fetchone()
+            ),
+            "secret_environment_name": connection.execute(
+                "SELECT environment_variable_name FROM connector_secret_references "
+                "WHERE connector_id='con_async-source' AND reference_name='api_token'"
+            ).fetchone()[0],
+            "unicode_vectors": list(
+                connection.execute(
+                    "SELECT value FROM system_metadata WHERE key LIKE 'unicode_%' ORDER BY key"
+                )
+            ),
+        }
         return {
             "format_version": 1,
             "revision": TARGET_REVISION,
@@ -720,6 +879,8 @@ def _logical_manifest(schema: bytes, seed: bytes) -> dict[str, object]:
             "logical_rows_sha256": _sha256(
                 _json([[name, tables[name]["rows_sha256"]] for name in table_names]).encode("ascii")
             ),
+            "schema_inventory": schema_inventory,
+            "sentinel_projections": sentinel_projections,
         }
     except sqlite3.Error as error:
         raise FrozenFixtureError("The generated fixture cannot be reconstructed.") from error
@@ -772,6 +933,24 @@ def _write_candidate(directory: Path, fixture: FrozenFixture) -> None:
         (directory / name).write_bytes(content)
 
 
+def _remove_tree(directory: Path) -> None:
+    try:
+        shutil.rmtree(directory)
+    except BaseException:
+        if directory.exists():
+            shutil.rmtree(directory)
+        raise
+
+
+def _recover_publication(directory: Path, backup: Path) -> None:
+    if directory.exists():
+        if backup.exists():
+            _remove_tree(backup)
+        return
+    if backup.exists():
+        os.replace(backup, directory)
+
+
 def write_fixture(directory: Path = DEFAULT_FIXTURE_DIRECTORY) -> FrozenFixture:
     """Atomically publish the deterministic v0001 fixture from a verified candidate."""
     fixture = build_fixture()
@@ -779,24 +958,25 @@ def write_fixture(directory: Path = DEFAULT_FIXTURE_DIRECTORY) -> FrozenFixture:
     parent.mkdir(parents=True, exist_ok=True)
     candidate = Path(tempfile.mkdtemp(prefix=f".{directory.name}-", dir=parent))
     backup = parent / f".{directory.name}-backup"
+    publication_started = False
     try:
         _write_candidate(candidate, fixture)
         verify_fixture(candidate)
         if backup.exists():
             raise FrozenFixtureError(f"Fixture backup path already exists: {backup}")
+        publication_started = True
         if directory.exists():
             os.replace(directory, backup)
-        try:
-            os.replace(candidate, directory)
-        except BaseException:
-            if backup.exists():
-                os.replace(backup, directory)
-            raise
+        os.replace(candidate, directory)
         if backup.exists():
-            shutil.rmtree(backup)
+            _remove_tree(backup)
+    except BaseException:
+        if publication_started:
+            _recover_publication(directory, backup)
+        raise
     finally:
         if candidate.exists():
-            shutil.rmtree(candidate)
+            _remove_tree(candidate)
     return fixture
 
 
