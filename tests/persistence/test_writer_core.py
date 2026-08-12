@@ -63,6 +63,7 @@ from paritygrid.application.ports.writer import (
     WriterNotStartedError,
     WriterResultTimeoutError,
     WriterSettings,
+    WriterState,
     WriterTicket,
 )
 from paritygrid.domain.models import RunId
@@ -190,6 +191,29 @@ def test_start_is_explicit_single_use_and_close_before_start_is_final(
         never_started.submit(command("closed"), timeout_seconds=1.0)
     with pytest.raises(WriterInvalidRequestError, match="single-use"):
         never_started.start()
+
+
+def test_snapshot_is_coherent_across_writer_lifecycle(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(core, "dispatch_command", successful_dispatch)
+    writer = SQLiteTransactionalWriter(sessions, settings(queue_capacity=2))
+    initial = writer.snapshot()
+    assert initial.state is WriterState.NEW
+    assert initial.queue_capacity == 2
+    assert initial.accepted == initial.completed == 0
+
+    writer.start()
+    assert writer.snapshot().state is WriterState.RUNNING
+    ticket = writer.submit(command("snapshot"), timeout_seconds=1.0)
+    ticket.result(timeout_seconds=1.0)
+    assert writer.close(timeout_seconds=1.0).drained
+
+    closed = writer.snapshot()
+    assert closed.state is WriterState.CLOSED
+    assert closed.accepted == closed.completed == 1
+    assert closed.queue_depth == closed.admission_waiters == closed.in_flight == 0
+    assert closed.max_resident <= closed.queue_capacity + 1
 
 
 def test_commit_receipt_and_notification_follow_session_close(

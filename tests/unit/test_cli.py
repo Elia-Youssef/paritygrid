@@ -1,6 +1,7 @@
 """Command-line entry point tests."""
 
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from typer.core import TyperGroup, TyperOption
@@ -8,6 +9,7 @@ from typer.main import get_command
 from typer.testing import CliRunner
 
 from paritygrid.cli import app
+from paritygrid.quality.wal_stress import WalStressError
 from paritygrid.runtime.config import Settings
 
 runner = CliRunner()
@@ -116,3 +118,63 @@ def test_database_upgrade_creates_parent_only_with_explicit_option(tmp_path: Pat
 
     assert result.exit_code == 0
     assert database.is_file()
+
+
+def test_wal_stress_command_writes_report_and_summarizes_result(tmp_path: Path) -> None:
+    database = tmp_path / "stress.db"
+    report = tmp_path / "stress.json"
+    stress_result = SimpleNamespace(
+        committed=98,
+        writer=SimpleNamespace(contention_retries=1),
+    )
+
+    with (
+        patch("paritygrid.cli.run_wal_stress", return_value=stress_result) as run_stress,
+        patch("paritygrid.cli.write_report_atomic") as write_report,
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "stress",
+                "wal",
+                "--database",
+                str(database),
+                "--report",
+                str(report),
+                "--seed",
+                "7",
+            ],
+        )
+
+    assert result.exit_code == 0
+    assert result.stdout == "WAL stress passed: commands=98, retries=1, report=written\n"
+    run_stress.assert_called_once()
+    configuration = run_stress.call_args.args[0]
+    assert configuration.database_path == database
+    assert configuration.seed == 7
+    write_report.assert_called_once_with(stress_result, report)
+
+
+def test_wal_stress_command_reports_safe_failure(tmp_path: Path) -> None:
+    database = tmp_path / "stress.db"
+    report = tmp_path / "stress.json"
+
+    with patch(
+        "paritygrid.cli.run_wal_stress",
+        side_effect=WalStressError("verification failed"),
+    ):
+        result = runner.invoke(
+            app,
+            [
+                "stress",
+                "wal",
+                "--database",
+                str(database),
+                "--report",
+                str(report),
+            ],
+        )
+
+    assert result.exit_code == 1
+    assert result.stdout == ""
+    assert result.stderr == "WAL stress failed: verification failed\n"

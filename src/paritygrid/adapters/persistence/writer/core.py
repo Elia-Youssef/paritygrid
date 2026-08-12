@@ -5,7 +5,6 @@ import time
 from collections import deque
 from contextlib import suppress
 from dataclasses import dataclass
-from enum import Enum, auto
 from threading import Condition, Lock, Thread, current_thread
 from typing import cast
 
@@ -51,23 +50,19 @@ from paritygrid.application.ports.writer import (
     WriterCommand,
     WriterCommitOutcomeUnknownError,
     WriterDefinitelyNotExecutedError,
+    WriterDiagnostics,
     WriterFailedError,
     WriterInvalidRequestError,
     WriterNotStartedError,
     WriterReceipt,
     WriterResultTimeoutError,
     WriterSettings,
+    WriterState,
     WriterSubmissionId,
     WriterTicket,
 )
 
-
-class _State(Enum):
-    NEW = auto()
-    RUNNING = auto()
-    CLOSING = auto()
-    CLOSED = auto()
-    FAILED = auto()
+_State = WriterState
 
 
 @dataclass(slots=True)
@@ -190,13 +185,17 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             active_settings.notification_capacity
         )
         self._condition = Condition(Lock())
-        self._state = _State.NEW
+        self._state = WriterState.NEW
         self._queue: deque[_QueuedCommand] = deque()
         self._admissions: deque[_AdmissionWaiter] = deque()
         self._next_submission = 1
         self._accepted = 0
         self._completed = 0
         self._in_flight = 0
+        self._max_queue_depth = 0
+        self._max_admission_waiters = 0
+        self._max_resident = 0
+        self._contention_retries = 0
         self._thread: Thread | None = None
         self._active: _QueuedCommand | None = None
 
@@ -209,11 +208,29 @@ class SQLiteTransactionalWriter(TransactionalWriter):
         """Expose immutable thread identity for lifecycle diagnostics."""
         return self._thread
 
+    def snapshot(self) -> WriterDiagnostics:
+        """Return one coherent view of lifecycle, queue, and retry counters."""
+        with self._condition:
+            return WriterDiagnostics(
+                state=self._state,
+                queue_capacity=self._settings.queue_capacity,
+                admission_capacity=self._settings.admission_waiter_capacity,
+                accepted=self._accepted,
+                completed=self._completed,
+                queue_depth=len(self._queue),
+                admission_waiters=len(self._admissions),
+                in_flight=self._in_flight,
+                max_queue_depth=self._max_queue_depth,
+                max_admission_waiters=self._max_admission_waiters,
+                max_resident=self._max_resident,
+                contention_retries=self._contention_retries,
+            )
+
     def start(self) -> None:
         with self._condition:
-            if self._state is not _State.NEW:
+            if self._state is not WriterState.NEW:
                 raise WriterInvalidRequestError("writer start is single-use")
-            self._state = _State.RUNNING
+            self._state = WriterState.RUNNING
             thread = Thread(
                 target=self._run,
                 name=self._settings.thread_name,
@@ -223,7 +240,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             try:
                 thread.start()
             except BaseException:
-                self._state = _State.FAILED
+                self._state = WriterState.FAILED
                 self._thread = None
                 self._condition.notify_all()
                 raise WriterFailedError("Writer thread could not be started.") from None
@@ -242,6 +259,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             self._require_admission_open()
             self._require_waiter_capacity()
             self._admissions.append(waiter)
+            self._update_high_waters()
             self._admit_waiters()
             while waiter.ticket is None and waiter.error is None:
                 remaining = deadline - time.monotonic()
@@ -266,6 +284,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             self._require_admission_open()
             self._require_waiter_capacity()
             self._admissions.append(waiter)
+            self._update_high_waters()
             self._admit_waiters()
             if waiter.ticket is not None:
                 future.cancel()
@@ -291,11 +310,11 @@ class SQLiteTransactionalWriter(TransactionalWriter):
         with self._condition:
             if self._thread is current_thread():
                 raise WriterInvalidRequestError("writer thread cannot join itself")
-            if self._state is _State.NEW:
-                self._state = _State.CLOSED
+            if self._state is WriterState.NEW:
+                self._state = WriterState.CLOSED
                 self._reject_admissions(WriterClosedError("Writer is closed."))
-            elif self._state is _State.RUNNING:
-                self._state = _State.CLOSING
+            elif self._state is WriterState.RUNNING:
+                self._state = WriterState.CLOSING
                 self._reject_admissions(WriterClosedError("Writer is closed."))
                 self._condition.notify_all()
             thread = self._thread
@@ -321,7 +340,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                     active.ticket.resolve_error(WriterFailedError("Writer lifecycle failed."))
                 self._active = None
                 self._in_flight = 0
-                self._state = _State.FAILED
+                self._state = WriterState.FAILED
                 self._fail_queued()
                 self._reject_admissions(WriterClosedError("Writer is closed."))
                 self._condition.notify_all()
@@ -329,17 +348,18 @@ class SQLiteTransactionalWriter(TransactionalWriter):
     def _run_loop(self) -> None:
         while True:
             with self._condition:
-                while not self._queue and self._state is _State.RUNNING:
+                while not self._queue and self._state is WriterState.RUNNING:
                     self._condition.wait()
                 if not self._queue:
-                    assert self._state is _State.CLOSING
-                    self._state = _State.CLOSED
+                    assert self._state is WriterState.CLOSING
+                    self._state = WriterState.CLOSED
                     self._condition.notify_all()
                     return
                 queued = self._queue.popleft()
                 self._active = queued
                 self._in_flight = 1
                 self._admit_waiters()
+                self._update_high_waters()
                 self._condition.notify_all()
             fatal = self._execute(queued)
             with self._condition:
@@ -347,7 +367,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                 self._active = None
                 self._completed += 1
                 if fatal is not None:
-                    self._state = _State.FAILED
+                    self._state = WriterState.FAILED
                     self._fail_queued()
                     self._reject_admissions(WriterClosedError("Writer is closed."))
                     self._condition.notify_all()
@@ -365,6 +385,8 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                 transaction = session.begin()
                 outcome = dispatch_command(session, queued.command)
             except PersistenceContentionError:
+                with self._condition:
+                    self._contention_retries += 1
                 cleanup = _rollback_and_close(session, transaction)
                 if cleanup is not None:
                     fatal = WriterFailedError("Writer cleanup failed before commit.")
@@ -451,11 +473,11 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             self._notifications.record_failure()
 
     def _require_admission_open(self) -> None:
-        if self._state is _State.NEW:
+        if self._state is WriterState.NEW:
             raise WriterNotStartedError("Writer must be started before submission.")
-        if self._state in {_State.CLOSING, _State.CLOSED}:
+        if self._state in {WriterState.CLOSING, WriterState.CLOSED}:
             raise WriterClosedError("Writer is closed.")
-        if self._state is _State.FAILED:
+        if self._state is WriterState.FAILED:
             raise WriterFailedError("Writer failed and requires recovery.")
 
     def _require_waiter_capacity(self) -> None:
@@ -475,7 +497,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
     def _admit_waiters(self) -> None:
         while self._admissions and len(self._queue) < self._settings.queue_capacity:
             if self._next_submission > MAX_WRITER_SUBMISSION_ID:
-                self._state = _State.CLOSING
+                self._state = WriterState.CLOSING
                 self._reject_admissions(
                     WriterClosedError("Writer submission identities are exhausted.")
                 )
@@ -489,9 +511,15 @@ class SQLiteTransactionalWriter(TransactionalWriter):
             waiter.ticket = ticket
             self._queue.append(_QueuedCommand(waiter.command, ticket))
             self._accepted += 1
+            self._update_high_waters()
             if waiter.loop is not None and waiter.future is not None:
                 _try_schedule_admission_result(waiter.loop, waiter.future, ticket)
             self._condition.notify_all()
+
+    def _update_high_waters(self) -> None:
+        self._max_queue_depth = max(self._max_queue_depth, len(self._queue))
+        self._max_admission_waiters = max(self._max_admission_waiters, len(self._admissions))
+        self._max_resident = max(self._max_resident, len(self._queue) + self._in_flight)
 
     def _reject_admissions(self, error: BaseException) -> None:
         waiters = tuple(self._admissions)
