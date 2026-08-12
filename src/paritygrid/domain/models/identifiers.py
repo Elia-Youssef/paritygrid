@@ -99,8 +99,23 @@ class RepairPlanId(_PrefixedIdentifier):
     _prefix: ClassVar[str] = "rpl"
 
 
+@dataclass(frozen=True, slots=True)
+class RepairActionId(_PrefixedIdentifier):
+    """Identity of one immutable action within a repair plan."""
+
+    _prefix: ClassVar[str] = "rac"
+
+
 type EntityId = (
-    PipelineId | NodeId | ConnectorId | RunId | WorkItemId | ArtifactId | ConflictId | RepairPlanId
+    PipelineId
+    | NodeId
+    | ConnectorId
+    | RunId
+    | WorkItemId
+    | ArtifactId
+    | ConflictId
+    | RepairPlanId
+    | RepairActionId
 )
 
 
