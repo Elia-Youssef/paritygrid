@@ -1261,8 +1261,93 @@ def test_run_counter_orphan_is_corruption(database: SQLiteDatabase) -> None:
         connection.exec_driver_sql('DROP TRIGGER "trg_runs_prohibit_delete"')
         connection.exec_driver_sql("DELETE FROM runs WHERE run_id = ?", (str(RUN_ID),))
         connection.commit()
-    with database.transaction() as session, pytest.raises(ExecutionCorruptionError, match="parent"):
-        SqlAlchemyRunRepository(session).get_event_counter(RUN_ID)
+    with database.transaction() as session:
+        repository = SqlAlchemyRunRepository(session)
+        with pytest.raises(ExecutionCorruptionError, match="parent"):
+            repository.get_event_counter(RUN_ID)
+        with pytest.raises(ExecutionCorruptionError, match="run-node parent"):
+            repository.get_node(RUN_ID, NODE_ID)
+        with pytest.raises(ExecutionCorruptionError, match="run-node parent"):
+            repository.list_nodes(RUN_ID, limit=10)
+
+
+@pytest.mark.parametrize(
+    "corruption",
+    ["missing_pipeline", "missing_version", "corrupt_pipeline", "corrupt_version"],
+)
+def test_run_reads_reject_corrupt_captured_pipeline_parent(
+    database: SQLiteDatabase, corruption: str
+) -> None:
+    seed_pipeline(database)
+    create_run(database)
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
+        if corruption == "missing_pipeline":
+            connection.exec_driver_sql('DROP TRIGGER "trg_pipeline_versions_prohibit_delete"')
+            connection.exec_driver_sql('DROP TRIGGER "trg_pipelines_prohibit_delete"')
+            connection.exec_driver_sql("DELETE FROM pipeline_versions")
+            connection.exec_driver_sql("DELETE FROM pipelines")
+        elif corruption == "missing_version":
+            connection.exec_driver_sql('DROP TRIGGER "trg_runs_protect_immutable_columns"')
+            connection.exec_driver_sql(
+                "UPDATE runs SET pipeline_version_number = 2 WHERE run_id = ?",
+                (str(RUN_ID),),
+            )
+        elif corruption == "corrupt_pipeline":
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints = ON")
+            connection.exec_driver_sql('DROP TRIGGER "trg_pipelines_protect_immutable_columns"')
+            connection.exec_driver_sql(
+                "UPDATE pipelines SET created_at = 'not-a-time' WHERE pipeline_id = ?",
+                (str(PIPELINE_ID),),
+            )
+        else:
+            connection.exec_driver_sql("PRAGMA ignore_check_constraints = ON")
+            connection.exec_driver_sql('DROP TRIGGER "trg_pipeline_versions_prohibit_update"')
+            connection.exec_driver_sql(
+                "UPDATE pipeline_versions SET specification_json = 'not-json' "
+                "WHERE pipeline_id = ? AND version_number = 1",
+                (str(PIPELINE_ID),),
+            )
+        connection.commit()
+    with database.transaction() as session:
+        repository = SqlAlchemyRunRepository(session)
+        with pytest.raises(ExecutionCorruptionError, match="pipeline"):
+            repository.get(RUN_ID)
+        with pytest.raises(ExecutionCorruptionError, match="pipeline"):
+            repository.list(limit=10)
+        with pytest.raises(ExecutionCorruptionError, match="pipeline"):
+            repository.get_event_counter(RUN_ID)
+        with pytest.raises(ExecutionCorruptionError, match="pipeline"):
+            repository.get_node(RUN_ID, NODE_ID)
+        with pytest.raises(ExecutionCorruptionError, match="pipeline"):
+            repository.list_nodes(RUN_ID, limit=10)
+
+
+def test_run_list_uses_constant_parent_integrity_queries(database: SQLiteDatabase) -> None:
+    seed_pipeline(database)
+    with database.transaction() as session:
+        empty_repository = SqlAlchemyRunRepository(session)
+        assert empty_repository.list(limit=10).items == ()
+    create_run(database, RunId("run_alpha"))
+    create_run(database, RunId("run_beta"))
+    with database.transaction() as session:
+        assert (
+            SqlAlchemyRunRepository(session).get_node(RunId("run_alpha"), NodeId("nod_missing"))
+            is None
+        )
+    query_count = 0
+
+    def count_query(*_arguments: object) -> None:
+        nonlocal query_count
+        query_count += 1
+
+    event.listen(database.engine, "before_cursor_execute", count_query)
+    try:
+        with database.transaction() as session:
+            assert len(SqlAlchemyRunRepository(session).list(limit=10).items) == 2
+    finally:
+        event.remove(database.engine, "before_cursor_execute", count_query)
+    assert query_count == 4
 
 
 def test_work_list_uses_constant_integrity_queries(database: SQLiteDatabase) -> None:

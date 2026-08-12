@@ -3,7 +3,7 @@
 from collections.abc import Mapping, Sequence
 from typing import NoReturn
 
-from sqlalchemy import insert, select, update
+from sqlalchemy import insert, select, tuple_, update
 from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.orm import Session
@@ -171,6 +171,7 @@ class SqlAlchemyRunRepository(RunRepository):
             return None
         record = run_from_row(row)
         self._require_counter(record.run_id)
+        self._require_pipeline_parents((record,))
         return record
 
     @translate_execution_storage_errors
@@ -198,6 +199,7 @@ class SqlAlchemyRunRepository(RunRepository):
         )
         records = tuple(run_from_row(row) for row in rows[:page_size])
         self._require_counters(records)
+        self._require_pipeline_parents(records)
         next_cursor = records[-1].run_id if len(rows) > page_size else None
         return RunPage(records, next_cursor)
 
@@ -334,11 +336,15 @@ class SqlAlchemyRunRepository(RunRepository):
                 raise ExecutionCorruptionError("run event counter is missing")
             return None
         counter = run_event_counter_from_row(row)
-        parent = self._session.execute(
-            select(runs.c.run_id).where(runs.c.run_id == str(identity))
-        ).scalar_one_or_none()
-        if parent is None or counter.run_id != identity:
+        parent_row = (
+            self._session.execute(select(runs).where(runs.c.run_id == str(identity)))
+            .mappings()
+            .one_or_none()
+        )
+        if parent_row is None or counter.run_id != identity:
             raise ExecutionCorruptionError("run event counter parent is missing")
+        parent = run_from_row(parent_row)
+        self._require_pipeline_parents((parent,))
         return counter
 
     @translate_execution_storage_errors
@@ -356,6 +362,11 @@ class SqlAlchemyRunRepository(RunRepository):
             .mappings()
             .one_or_none()
         )
+        parent = self.get(run_identity)
+        if parent is None:
+            if row is not None:
+                raise ExecutionCorruptionError("run-node parent is missing")
+            return None
         return None if row is None else run_node_from_row(row)
 
     @translate_execution_storage_errors
@@ -379,7 +390,10 @@ class SqlAlchemyRunRepository(RunRepository):
             .all()
         )
         records = tuple(run_node_from_row(row) for row in rows[:page_size])
-        if not records and self.get(identity) is None:
+        parent = self.get(identity)
+        if parent is None:
+            if records:
+                raise ExecutionCorruptionError("run-node parent is missing")
             return RunNodePage((), None)
         next_cursor = records[-1].node_id if len(rows) > page_size else None
         return RunNodePage(records, next_cursor)
@@ -494,6 +508,56 @@ class SqlAlchemyRunRepository(RunRepository):
         counters = {counter.run_id: counter for counter in map(run_event_counter_from_row, rows)}
         if set(counters) != {record.run_id for record in records}:
             raise ExecutionCorruptionError("run event counters are incomplete")
+
+    def _require_pipeline_parents(self, records: tuple[RunRecord, ...]) -> None:
+        """Validate captured pipeline versions in a fixed number of queries."""
+        if not records:
+            return
+        pipeline_ids = {record.pipeline_id for record in records}
+        pipeline_rows = (
+            self._session.execute(
+                select(pipelines).where(
+                    pipelines.c.pipeline_id.in_([str(identity) for identity in pipeline_ids])
+                )
+            )
+            .mappings()
+            .all()
+        )
+        try:
+            parents = {
+                parent.pipeline_id: parent for parent in map(pipeline_from_row, pipeline_rows)
+            }
+        except ConfigurationRepositoryError as error:
+            raise ExecutionCorruptionError("run pipeline parent is corrupt") from error
+        if set(parents) != pipeline_ids:
+            raise ExecutionCorruptionError("run pipeline parent is missing")
+
+        version_keys = {(record.pipeline_id, record.pipeline_version) for record in records}
+        version_rows = (
+            self._session.execute(
+                select(pipeline_versions).where(
+                    tuple_(
+                        pipeline_versions.c.pipeline_id,
+                        pipeline_versions.c.version_number,
+                    ).in_(
+                        [(str(pipeline_id), int(version)) for pipeline_id, version in version_keys]
+                    )
+                )
+            )
+            .mappings()
+            .all()
+        )
+        versions: set[tuple[PipelineId, PipelineVersion]] = set()
+        try:
+            for row in version_rows:
+                pipeline_id = PipelineId(str(row["pipeline_id"]))
+                parent = parents[pipeline_id]
+                published = pipeline_version_from_row(row, pipeline_created_at=parent.created_at)
+                versions.add((published.pipeline_id, published.version))
+        except ConfigurationRepositoryError as error:
+            raise ExecutionCorruptionError("run pipeline version parent is corrupt") from error
+        if versions != version_keys:
+            raise ExecutionCorruptionError("run pipeline version parent is missing")
 
     def _update_run(
         self,
