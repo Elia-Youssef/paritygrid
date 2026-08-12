@@ -11,3 +11,15 @@ class SQLiteConfigurationError(PersistenceError):
 
 class SQLiteCapabilityError(PersistenceError):
     """Raised when the SQLite runtime cannot meet required durability guarantees."""
+
+
+class MigrationConfigurationError(PersistenceError):
+    """Raised when a migration is requested through an unsafe execution boundary."""
+
+
+class MigrationIntegrityError(PersistenceError):
+    """Raised when the installed operational schema does not match its revision."""
+
+
+class MigrationExecutionError(PersistenceError):
+    """Raised when a migration cannot complete atomically."""

@@ -14,9 +14,17 @@ from paritygrid.adapters.persistence.capabilities import (
     validate_sqlite_pragmas,
 )
 from paritygrid.adapters.persistence.errors import (
+    MigrationConfigurationError,
+    MigrationExecutionError,
+    MigrationIntegrityError,
     PersistenceError,
     SQLiteCapabilityError,
     SQLiteConfigurationError,
+)
+from paritygrid.adapters.persistence.migration import (
+    HEAD_REVISION,
+    MigrationReport,
+    upgrade_to_head,
 )
 from paritygrid.adapters.persistence.sqlite import (
     SessionFactory,
@@ -40,6 +48,7 @@ from paritygrid.adapters.persistence.values import (
 )
 
 __all__ = (
+    "HEAD_REVISION",
     "MINIMUM_SQLITE_VERSION",
     "REQUIRED_BUSY_TIMEOUT_MS",
     "REQUIRED_JOURNAL_MODE",
@@ -47,6 +56,10 @@ __all__ = (
     "CanonicalStorageJson",
     "EnvironmentVariableName",
     "IdempotencyStatus",
+    "MigrationConfigurationError",
+    "MigrationExecutionError",
+    "MigrationIntegrityError",
+    "MigrationReport",
     "PersistenceError",
     "RepairActionApplicationStatus",
     "RepairPlanStatus",
@@ -68,6 +81,7 @@ __all__ = (
     "current_sqlite_library",
     "inspect_sqlite_engine",
     "transactional_session",
+    "upgrade_to_head",
     "validate_sqlite_library",
     "validate_sqlite_pragmas",
 )
