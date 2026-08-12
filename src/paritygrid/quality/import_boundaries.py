@@ -11,6 +11,7 @@ _PACKAGE_NAME = "paritygrid"
 _DOMAIN_PACKAGE = "paritygrid.domain"
 _ALLOWED_DOMAIN_MODULE_ROOTS = frozenset(
     {
+        "__future__",
         "collections",
         "dataclasses",
         "datetime",
@@ -27,12 +28,32 @@ _ALLOWED_DOMAIN_MODULE_ROOTS = frozenset(
 _FORBIDDEN_CALLS = frozenset(
     {
         "builtins.__import__",
+        "builtins.compile",
+        "builtins.eval",
+        "builtins.exec",
+        "builtins.globals",
+        "builtins.locals",
         "builtins.open",
+        "builtins.vars",
         "importlib.import_module",
     }
 )
+_BUILTIN_CALL_NAMES = frozenset(
+    {
+        "__import__",
+        "compile",
+        "eval",
+        "exec",
+        "globals",
+        "locals",
+        "open",
+        "vars",
+    }
+)
+_DANGEROUS_BUILTIN_REFERENCES = _BUILTIN_CALL_NAMES | {"__builtins__"}
 _INVALID_PYTHON = "<invalid-python>"
 _MISSING_DOMAIN_ROOT = "<missing-domain-root>"
+_RELATIVE_IMPORT_ESCAPE = "<relative-import-escape>"
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -68,6 +89,14 @@ def _resolve_from_import(node: ast.ImportFrom, current_module: str, is_package: 
     return ".".join(base_parts)
 
 
+def _is_relative_import_escape(node: ast.ImportFrom, current_module: str, is_package: bool) -> bool:
+    if node.level == 0:
+        return False
+    current_parts = current_module.split(".")
+    package_depth = len(current_parts) if is_package else len(current_parts) - 1
+    return node.level > package_depth
+
+
 def _is_domain_import(imported_module: str) -> bool:
     return imported_module == _DOMAIN_PACKAGE or imported_module.startswith(f"{_DOMAIN_PACKAGE}.")
 
@@ -91,18 +120,64 @@ def _import_aliases(tree: ast.AST, current_module: str, is_package: bool) -> dic
             for alias in node.names:
                 local_name = alias.asname or alias.name
                 aliases[local_name] = f"{base}.{alias.name}" if base else alias.name
+    assignments = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign | ast.AnnAssign | ast.NamedExpr)
+    ]
+    for _ in range(len(assignments) + 1):
+        previous = aliases.copy()
+        for node in assignments:
+            value, targets = _assignment_parts(node)
+            if value is None:
+                continue
+            qualified_value = _qualified_call_name(value, aliases)
+            if qualified_value is None:
+                continue
+            for target in targets:
+                if isinstance(target, ast.Name):
+                    aliases[target.id] = qualified_value
+        if aliases == previous:
+            break
     return aliases
+
+
+def _assignment_parts(
+    node: ast.Assign | ast.AnnAssign | ast.NamedExpr,
+) -> tuple[ast.expr | None, tuple[ast.expr, ...]]:
+    if isinstance(node, ast.Assign):
+        return node.value, tuple(node.targets)
+    return node.value, (node.target,)
 
 
 def _qualified_call_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
     if isinstance(node, ast.Name):
-        if node.id in {"open", "__import__"}:
+        if node.id in aliases:
+            return aliases[node.id]
+        if node.id == "__builtins__":
+            return "builtins"
+        if node.id in _BUILTIN_CALL_NAMES:
             return f"builtins.{node.id}"
-        return aliases.get(node.id, node.id)
+        return node.id
     if isinstance(node, ast.Attribute):
         owner = _qualified_call_name(node.value, aliases)
         if owner is not None:
             return f"{owner}.{node.attr}"
+    if isinstance(node, ast.Subscript) and isinstance(node.slice, ast.Constant):
+        owner = _qualified_call_name(node.value, aliases)
+        if owner is not None and isinstance(node.slice.value, str):
+            return f"{owner}.{node.slice.value}"
+    if isinstance(node, ast.Call):
+        accessor = _qualified_call_name(node.func, aliases)
+        if accessor in {"builtins.getattr", "getattr"} and len(node.args) >= 2:
+            owner = _qualified_call_name(node.args[0], aliases)
+            attribute = node.args[1]
+            if (
+                owner is not None
+                and isinstance(attribute, ast.Constant)
+                and isinstance(attribute.value, str)
+            ):
+                return f"{owner}.{attribute.value}"
     return None
 
 
@@ -124,10 +199,13 @@ def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolatio
             imported_modules.extend(alias.name for alias in node.names)
             import_line = node.lineno
         elif isinstance(node, ast.ImportFrom):
-            base = _resolve_from_import(node, module_name, is_package)
-            imported_modules.extend(
-                f"{base}.{alias.name}" if base else alias.name for alias in node.names
-            )
+            if _is_relative_import_escape(node, module_name, is_package):
+                imported_modules.append(_RELATIVE_IMPORT_ESCAPE)
+            else:
+                base = _resolve_from_import(node, module_name, is_package)
+                imported_modules.extend(
+                    f"{base}.{alias.name}" if base else alias.name for alias in node.names
+                )
             import_line = node.lineno
         if import_line is not None:
             violations.extend(
@@ -141,7 +219,20 @@ def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolatio
                 violations.append(
                     ImportViolation(path=path, line=node.lineno, imported_module=call_name)
                 )
-    return violations
+        if (
+            isinstance(node, ast.Name)
+            and isinstance(node.ctx, ast.Load)
+            and node.id in _DANGEROUS_BUILTIN_REFERENCES
+        ):
+            reference_name = "builtins" if node.id == "__builtins__" else f"builtins.{node.id}"
+            violations.append(
+                ImportViolation(
+                    path=path,
+                    line=node.lineno,
+                    imported_module=reference_name,
+                )
+            )
+    return sorted(set(violations))
 
 
 def find_domain_import_violations(source_root: Path) -> tuple[ImportViolation, ...]:

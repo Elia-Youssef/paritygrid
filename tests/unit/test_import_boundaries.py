@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from paritygrid.quality.import_boundaries import (
+    ImportViolation,
     _find_file_violations,
     _resolve_from_import,
     find_domain_import_violations,
@@ -126,6 +127,7 @@ def test_domain_safe_standard_library_imports_are_allowed(tmp_path: Path) -> Non
         "\n".join(
             (
                 "from collections.abc import Mapping",
+                "from __future__ import annotations",
                 "from dataclasses import dataclass",
                 "from datetime import UTC",
                 "from decimal import Decimal",
@@ -167,6 +169,26 @@ def test_domain_safe_standard_library_imports_are_allowed(tmp_path: Path) -> Non
             "from importlib import import_module as load\nload('fastapi')\n",
             "importlib.import_module",
         ),
+        ("load = __import__\nload('fastapi')\n", "builtins.__import__"),
+        ("opener = open\nopener('record.json')\n", "builtins.open"),
+        (
+            "runtime = __builtins__\nruntime.open('record.json')\n",
+            "builtins.open",
+        ),
+        (
+            "load = __builtins__['__import__']\nload('fastapi')\n",
+            "builtins.__import__",
+        ),
+        (
+            "load = getattr(__builtins__, '__import__')\nload('fastapi')\n",
+            "builtins.__import__",
+        ),
+        (
+            "first = __import__\nsecond = first\nsecond('fastapi')\n",
+            "builtins.__import__",
+        ),
+        ("globals()['open']('record.json')\n", "builtins.globals"),
+        ("eval(\"__import__('fastapi')\")\n", "builtins.eval"),
     ],
 )
 def test_dynamic_import_and_file_calls_are_rejected(
@@ -183,6 +205,26 @@ def test_dynamic_import_and_file_calls_are_rejected(
     violations = _find_file_violations(source, package_root)
 
     assert expected in {violation.imported_module for violation in violations}
+
+
+def test_dangerous_reference_fails_closed_across_nested_scope_shadowing(tmp_path: Path) -> None:
+    package_root = tmp_path / "paritygrid"
+    domain_root = package_root / "domain"
+    domain_root.mkdir(parents=True)
+    source = domain_root / "value.py"
+    source.write_text(
+        "def unsafe():\n"
+        "    load = __import__\n"
+        "    return load('fastapi')\n"
+        "def unrelated():\n"
+        "    load = lambda value: value\n"
+        "    return load('safe')\n",
+        encoding="utf-8",
+    )
+
+    violations = _find_file_violations(source, package_root)
+
+    assert ImportViolation(source, 2, "builtins.__import__") in violations
 
 
 @pytest.mark.parametrize(
@@ -202,6 +244,40 @@ def test_nested_and_relative_outer_imports_are_rejected(tmp_path: Path, source_t
     source.write_text(source_text, encoding="utf-8")
 
     assert _find_file_violations(source, package_root)
+
+
+def test_excessive_relative_import_escape_is_rejected(tmp_path: Path) -> None:
+    package_root = tmp_path / "paritygrid"
+    nested = package_root / "domain" / "canonical"
+    nested.mkdir(parents=True)
+    source = nested / "encoder.py"
+    source.write_text("from ....api import app\n", encoding="utf-8")
+
+    violations = _find_file_violations(source, package_root)
+
+    assert [(violation.line, violation.imported_module) for violation in violations] == [
+        (1, "<relative-import-escape>")
+    ]
+
+
+def test_source_read_failure_is_reported_as_invalid_python(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    package_root = tmp_path / "paritygrid"
+    domain_root = package_root / "domain"
+    domain_root.mkdir(parents=True)
+    source = domain_root / "value.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+
+    def fail_read_text(_path: Path, *, encoding: str) -> str:
+        del encoding
+        raise OSError("synthetic read failure")
+
+    monkeypatch.setattr(Path, "read_text", fail_read_text)
+
+    assert _find_file_violations(source, package_root) == [
+        ImportViolation(path=source, line=1, imported_module="<invalid-python>")
+    ]
 
 
 def test_recursive_scan_checks_nested_domain_packages(tmp_path: Path) -> None:

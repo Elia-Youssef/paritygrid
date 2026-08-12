@@ -33,6 +33,8 @@ def test_domain_error_registry_is_closed_complete_and_immutable() -> None:
     assert set(DomainError.__subclasses__()) == set(expected.values())
     assert all(error_type.code is code for code, error_type in DOMAIN_ERROR_TYPES.items())
     assert all(issubclass(error_type, DomainError) for error_type in DOMAIN_ERROR_TYPES.values())
+    with pytest.raises(TypeError):
+        DOMAIN_ERROR_TYPES[DomainErrorCode.INVALID_TRANSITION] = DomainError  # type: ignore[index]
 
 
 def test_invalid_transition_preserves_its_public_contract_and_identity_semantics() -> None:
@@ -179,4 +181,24 @@ def test_canonical_error_rejects_invalid_reason_and_context_combinations() -> No
         CanonicalEncodingError(
             reason=CanonicalErrorCode.UNSUPPORTED_CANONICAL_TYPE,
             subject_type="x" * 97,
+        )
+
+
+def test_canonical_error_context_accepts_exact_upper_bounds() -> None:
+    subject = "x" * 96
+    type_error = CanonicalEncodingError(
+        reason=CanonicalErrorCode.UNSUPPORTED_CANONICAL_TYPE,
+        subject_type=subject,
+    )
+    version_error = CanonicalEncodingError(
+        reason=CanonicalErrorCode.UNSUPPORTED_CANONICAL_VERSION,
+        version=2_147_483_647,
+    )
+
+    assert type_error.subject_type == subject
+    assert version_error.version == 2_147_483_647
+    with pytest.raises(ValueError, match="outside"):
+        CanonicalEncodingError(
+            reason=CanonicalErrorCode.UNSUPPORTED_CANONICAL_VERSION,
+            version=2_147_483_648,
         )
