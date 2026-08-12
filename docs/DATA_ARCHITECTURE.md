@@ -23,6 +23,12 @@ PRAGMA busy_timeout = 5000;
 
 The runtime must report the SQLite library version and reject the concurrency profiles when the installed library lacks required fixes or capabilities.
 
+ParityGrid supports SQLite 3.35.0 or newer. This baseline includes native `RETURNING`
+support for the operational repositories while retaining the required WAL, foreign-key,
+full-synchronous, and busy-timeout behavior. Startup rejects a library older than this
+baseline or one compiled without thread-safe connection support before opening the
+operational database.
+
 ### Connection ownership
 
 - A SQLAlchemy `Session` or `AsyncSession` belongs to one task and one transaction scope.
