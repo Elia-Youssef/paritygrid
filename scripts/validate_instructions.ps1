@@ -18,6 +18,7 @@ $requiredFiles = @(
     'docs/SECURITY.md',
     'docs/ENGINEERING_STANDARDS.md',
     'docs/REPOSITORY_POLICY.md',
+    'docs/GIT_WORKFLOW.md',
     'docs/QUALITY_STRATEGY.md',
     'docs/DELIVERY_PLAN.md',
     'docs/WORK_PACKAGES.md',

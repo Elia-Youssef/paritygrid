@@ -13,12 +13,13 @@ This directory is the authoritative instruction set for ParityGrid. When documen
 7. [Security model](SECURITY.md)
 8. [Engineering standards](ENGINEERING_STANDARDS.md)
 9. [Repository policy](REPOSITORY_POLICY.md)
-10. [Quality strategy](QUALITY_STRATEGY.md)
-11. [Delivery plan](DELIVERY_PLAN.md)
-12. [Work packages](WORK_PACKAGES.md)
-13. [CI and release](CI_RELEASE.md)
-14. [Public documentation plan](PUBLIC_DOCUMENTATION.md)
-15. [Instruction audit](INSTRUCTION_AUDIT.md)
+10. [Git workflow](GIT_WORKFLOW.md)
+11. [Quality strategy](QUALITY_STRATEGY.md)
+12. [Delivery plan](DELIVERY_PLAN.md)
+13. [Work packages](WORK_PACKAGES.md)
+14. [CI and release](CI_RELEASE.md)
+15. [Public documentation plan](PUBLIC_DOCUMENTATION.md)
+16. [Instruction audit](INSTRUCTION_AUDIT.md)
 
 Product requirements take precedence over implementation convenience. Security and data-integrity requirements are hard gates even when another document does not repeat them.
 
