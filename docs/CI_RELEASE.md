@@ -14,6 +14,29 @@ uv run paritygrid smoke
 
 Frontend commands must use the committed lockfile and non-interactive execution.
 
+### Phase 1 command set
+
+The initial required lane uses these reproducible commands:
+
+```powershell
+uv sync --locked --all-groups
+uv run ruff format --check .
+uv run ruff check .
+uv run pyright
+uv run paritygrid-check-boundaries
+uv run pytest --cov=paritygrid --cov-report=term-missing
+uv run paritygrid smoke
+npm --prefix web ci
+npm --prefix web run format:check
+npm --prefix web run lint
+npm --prefix web run typecheck
+npm --prefix web run test:coverage
+npm --prefix web run build
+uv run python scripts/verify_frontend_api_path.py
+```
+
+The frontend API smoke command runs after both locked environments are installed. Later phases add the stable `paritygrid verify` profiles without removing these underlying checks.
+
 ## Pull-request lane
 
 Runs on each proposed change:
