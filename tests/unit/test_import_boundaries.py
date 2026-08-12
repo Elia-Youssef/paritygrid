@@ -64,6 +64,51 @@ def test_plain_import_reports_outer_dependency(tmp_path: Path) -> None:
     ]
 
 
+@pytest.mark.parametrize(
+    ("source_text", "imported_module"),
+    [
+        ("import duckdb\n", "duckdb"),
+        ("from fastapi import Depends\n", "fastapi.Depends"),
+        ("from httpx import AsyncClient\n", "httpx.AsyncClient"),
+        ("import logging\n", "logging"),
+        ("import os\n", "os"),
+        ("from pathlib import Path\n", "pathlib.Path"),
+        ("from pydantic_settings import BaseSettings\n", "pydantic_settings.BaseSettings"),
+        ("import shutil\n", "shutil"),
+        ("from sqlalchemy.orm import Session\n", "sqlalchemy.orm.Session"),
+        ("import tempfile\n", "tempfile"),
+    ],
+)
+def test_infrastructure_imports_are_rejected_from_domain(
+    tmp_path: Path,
+    source_text: str,
+    imported_module: str,
+) -> None:
+    package_root = tmp_path / "paritygrid"
+    domain_root = package_root / "domain"
+    domain_root.mkdir(parents=True)
+    source = domain_root / "value.py"
+    source.write_text(source_text, encoding="utf-8")
+
+    violations = _find_file_violations(source, package_root)
+
+    assert [(violation.line, violation.imported_module) for violation in violations] == [
+        (1, imported_module)
+    ]
+
+
+def test_domain_safe_standard_library_imports_are_allowed(tmp_path: Path) -> None:
+    package_root = tmp_path / "paritygrid"
+    domain_root = package_root / "domain"
+    domain_root.mkdir(parents=True)
+    source = domain_root / "value.py"
+    source.write_text("import hashlib\nfrom dataclasses import dataclass\n", encoding="utf-8")
+
+    violations = _find_file_violations(source, package_root)
+
+    assert violations == []
+
+
 def test_command_passes_for_current_source_tree(capsys: pytest.CaptureFixture[str]) -> None:
     source_root = Path(__file__).parents[2] / "src"
 

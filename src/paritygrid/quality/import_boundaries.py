@@ -1,4 +1,4 @@
-"""Static checks for inward-pointing package imports."""
+"""Static checks for domain dependency boundaries."""
 
 import argparse
 import ast
@@ -9,6 +9,23 @@ from pathlib import Path
 
 _PACKAGE_NAME = "paritygrid"
 _DOMAIN_PACKAGE = "paritygrid.domain"
+_FORBIDDEN_DOMAIN_MODULE_ROOTS = frozenset(
+    {
+        "duckdb",
+        "fastapi",
+        "glob",
+        "httpx",
+        "logging",
+        "loguru",
+        "os",
+        "pathlib",
+        "pydantic_settings",
+        "shutil",
+        "sqlalchemy",
+        "structlog",
+        "tempfile",
+    }
+)
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -48,6 +65,14 @@ def _is_domain_import(imported_module: str) -> bool:
     return imported_module == _DOMAIN_PACKAGE or imported_module.startswith(f"{_DOMAIN_PACKAGE}.")
 
 
+def _is_forbidden_domain_import(imported_module: str) -> bool:
+    module_root = imported_module.partition(".")[0]
+    imports_outer_package = (
+        imported_module == _PACKAGE_NAME or imported_module.startswith(f"{_PACKAGE_NAME}.")
+    ) and not _is_domain_import(imported_module)
+    return imports_outer_package or module_root in _FORBIDDEN_DOMAIN_MODULE_ROOTS
+
+
 def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolation]:
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     module_name = _module_name(path, package_root)
@@ -70,8 +95,7 @@ def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolatio
             violations.extend(
                 ImportViolation(path=path, line=import_line, imported_module=imported_module)
                 for imported_module in imported_modules
-                if imported_module.startswith(_PACKAGE_NAME)
-                and not _is_domain_import(imported_module)
+                if _is_forbidden_domain_import(imported_module)
             )
     return violations
 
