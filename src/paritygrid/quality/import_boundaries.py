@@ -9,23 +9,30 @@ from pathlib import Path
 
 _PACKAGE_NAME = "paritygrid"
 _DOMAIN_PACKAGE = "paritygrid.domain"
-_FORBIDDEN_DOMAIN_MODULE_ROOTS = frozenset(
+_ALLOWED_DOMAIN_MODULE_ROOTS = frozenset(
     {
-        "duckdb",
-        "fastapi",
-        "glob",
-        "httpx",
-        "logging",
-        "loguru",
-        "os",
-        "pathlib",
-        "pydantic_settings",
-        "shutil",
-        "sqlalchemy",
-        "structlog",
-        "tempfile",
+        "collections",
+        "dataclasses",
+        "datetime",
+        "decimal",
+        "enum",
+        "hashlib",
+        "json",
+        "re",
+        "types",
+        "typing",
+        "unicodedata",
     }
 )
+_FORBIDDEN_CALLS = frozenset(
+    {
+        "builtins.__import__",
+        "builtins.open",
+        "importlib.import_module",
+    }
+)
+_INVALID_PYTHON = "<invalid-python>"
+_MISSING_DOMAIN_ROOT = "<missing-domain-root>"
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -65,18 +72,49 @@ def _is_domain_import(imported_module: str) -> bool:
     return imported_module == _DOMAIN_PACKAGE or imported_module.startswith(f"{_DOMAIN_PACKAGE}.")
 
 
-def _is_forbidden_domain_import(imported_module: str) -> bool:
+def _is_allowed_domain_import(imported_module: str) -> bool:
+    if _is_domain_import(imported_module):
+        return True
     module_root = imported_module.partition(".")[0]
-    imports_outer_package = (
-        imported_module == _PACKAGE_NAME or imported_module.startswith(f"{_PACKAGE_NAME}.")
-    ) and not _is_domain_import(imported_module)
-    return imports_outer_package or module_root in _FORBIDDEN_DOMAIN_MODULE_ROOTS
+    return module_root in _ALLOWED_DOMAIN_MODULE_ROOTS
+
+
+def _import_aliases(tree: ast.AST, current_module: str, is_package: bool) -> dict[str, str]:
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                local_name = alias.asname or alias.name.partition(".")[0]
+                aliases[local_name] = alias.name if alias.asname else local_name
+        elif isinstance(node, ast.ImportFrom):
+            base = _resolve_from_import(node, current_module, is_package)
+            for alias in node.names:
+                local_name = alias.asname or alias.name
+                aliases[local_name] = f"{base}.{alias.name}" if base else alias.name
+    return aliases
+
+
+def _qualified_call_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
+    if isinstance(node, ast.Name):
+        if node.id in {"open", "__import__"}:
+            return f"builtins.{node.id}"
+        return aliases.get(node.id, node.id)
+    if isinstance(node, ast.Attribute):
+        owner = _qualified_call_name(node.value, aliases)
+        if owner is not None:
+            return f"{owner}.{node.attr}"
+    return None
 
 
 def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolation]:
-    tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    try:
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    except (OSError, SyntaxError, UnicodeError) as error:
+        line = error.lineno if isinstance(error, SyntaxError) and error.lineno is not None else 1
+        return [ImportViolation(path=path, line=line, imported_module=_INVALID_PYTHON)]
     module_name = _module_name(path, package_root)
     is_package = path.name == "__init__.py"
+    aliases = _import_aliases(tree, module_name, is_package)
     violations: list[ImportViolation] = []
 
     for node in ast.walk(tree):
@@ -95,15 +133,29 @@ def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolatio
             violations.extend(
                 ImportViolation(path=path, line=import_line, imported_module=imported_module)
                 for imported_module in imported_modules
-                if _is_forbidden_domain_import(imported_module)
+                if not _is_allowed_domain_import(imported_module)
             )
+        if isinstance(node, ast.Call):
+            call_name = _qualified_call_name(node.func, aliases)
+            if call_name in _FORBIDDEN_CALLS:
+                violations.append(
+                    ImportViolation(path=path, line=node.lineno, imported_module=call_name)
+                )
     return violations
 
 
 def find_domain_import_violations(source_root: Path) -> tuple[ImportViolation, ...]:
-    """Find domain imports that point to an outer ParityGrid package."""
+    """Find imports and calls that violate the pure-domain boundary."""
     package_root = source_root / _PACKAGE_NAME
     domain_root = package_root / "domain"
+    if not domain_root.is_dir():
+        return (
+            ImportViolation(
+                path=domain_root,
+                line=0,
+                imported_module=_MISSING_DOMAIN_ROOT,
+            ),
+        )
     violations = [
         violation
         for path in sorted(domain_root.rglob("*.py"))

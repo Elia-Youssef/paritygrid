@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import ClassVar, cast
 
-from paritygrid.domain.errors import DomainError
+from paritygrid.domain.errors import StaleRepairPlanError
 from paritygrid.domain.models import (
     ConflictId,
     InventoryRecord,
@@ -19,18 +19,6 @@ from paritygrid.domain.reconciliation import (
     ReconciliationOutcome,
     differences_between,
 )
-
-
-class StaleRepairPlanError(DomainError):
-    """Raised when a repair plan no longer describes the current state."""
-
-    expected: StateFingerprint
-    actual: StateFingerprint
-
-    def __init__(self, *, expected: StateFingerprint, actual: StateFingerprint) -> None:
-        self.expected = expected
-        self.actual = actual
-        super().__init__(f"repair plan expects state {expected}, but current state is {actual}")
 
 
 class RepairActionKind(StrEnum):

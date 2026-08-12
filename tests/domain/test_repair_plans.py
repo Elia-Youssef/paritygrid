@@ -5,7 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-from paritygrid.domain.errors import DomainError
+from paritygrid.domain.errors import DomainError, DomainErrorCode
+from paritygrid.domain.errors import StaleRepairPlanError as CentralStaleRepairPlanError
 from paritygrid.domain.models import (
     ConflictId,
     ConnectorId,
@@ -26,6 +27,10 @@ from paritygrid.domain.repair import (
 
 CURRENT = StateFingerprint("1" * 64)
 STALE = StateFingerprint("2" * 64)
+
+
+def test_repair_package_preserves_the_stale_error_import() -> None:
+    assert StaleRepairPlanError is CentralStaleRepairPlanError
 
 
 def _record(
@@ -272,8 +277,11 @@ def test_plan_detects_and_rejects_stale_state() -> None:
     assert isinstance(captured.value, DomainError)
     assert captured.value.expected == CURRENT
     assert captured.value.actual == STALE
-    assert str(CURRENT) in str(captured.value)
-    assert str(STALE) in str(captured.value)
+    assert captured.value.code is DomainErrorCode.STALE_REPAIR_PLAN
+    assert str(captured.value) == (
+        f"repair plan expects state {CURRENT}, but current state is {STALE}"
+    )
+    assert captured.value.args == (str(captured.value),)
 
 
 def test_plan_state_checks_reject_unvalidated_fingerprints() -> None:
