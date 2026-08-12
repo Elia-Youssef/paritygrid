@@ -279,6 +279,44 @@ def test_head_stamped_database_without_schema_fails_closed(
         assert _foreign_keys(connection) == 1
 
 
+def test_empty_version_table_is_rejected_as_unversioned_tampering(engine: Engine) -> None:
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+        )
+
+    with engine.connect() as connection:
+        with pytest.raises(MigrationIntegrityError, match="unversioned operational database"):
+            upgrade_to_head(connection)
+        objects = connection.exec_driver_sql(
+            "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' "
+            "ORDER BY type, name"
+        ).all()
+        connection.rollback()
+
+        assert objects == [("table", "alembic_version")]
+        assert connection.in_transaction() is False
+        assert _foreign_keys(connection) == 1
+
+
+def test_unversioned_user_object_is_preserved_and_rejected(engine: Engine) -> None:
+    with engine.begin() as connection:
+        connection.exec_driver_sql("CREATE TABLE existing_data (value TEXT)")
+        connection.exec_driver_sql("INSERT INTO existing_data VALUES ('preserved')")
+
+    with engine.connect() as connection:
+        with pytest.raises(MigrationIntegrityError, match="unversioned operational database"):
+            upgrade_to_head(connection)
+        value = connection.exec_driver_sql("SELECT value FROM existing_data").scalar_one()
+        version_table = connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE name = 'alembic_version'"
+        ).all()
+        connection.rollback()
+
+        assert value == "preserved"
+        assert version_table == []
+
+
 def test_runtime_config_uses_package_resource_and_exact_connection(engine: Engine) -> None:
     with engine.connect() as connection:
         config = migration_runtime._migration_config(  # pyright: ignore[reportPrivateUsage]

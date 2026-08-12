@@ -580,6 +580,17 @@ def _validate_version_table(connection: Connection, revision: str) -> None:
         raise MigrationIntegrityError("The Alembic version table must contain one exact revision.")
 
 
+def _validate_starting_state(connection: Connection, revision: str | None) -> None:
+    if revision is not None:
+        _validate_version_table(connection, revision)
+        return
+    objects = connection.exec_driver_sql(
+        "SELECT type, name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%' ORDER BY type, name"
+    ).all()
+    if objects:
+        raise MigrationIntegrityError("An unversioned operational database must be empty.")
+
+
 def _validate_database_integrity(connection: Connection) -> None:
     quick_check = connection.exec_driver_sql("PRAGMA quick_check").all()
     if quick_check != [("ok",)]:
@@ -648,6 +659,7 @@ def upgrade_to_head(connection: Connection) -> MigrationReport:
         target_revision = _configured_head(config)
         connection.exec_driver_sql("BEGIN IMMEDIATE")
         previous_revision = _current_revision(connection)
+        _validate_starting_state(connection, previous_revision)
         command.upgrade(config, target_revision)
         current_revision = _current_revision(connection)
         if current_revision is None:

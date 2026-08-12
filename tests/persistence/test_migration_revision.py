@@ -178,6 +178,29 @@ def test_frozen_revision_matches_current_metadata_and_trigger_contract(
     assert migrated_definitions == reference_definitions
 
 
+def test_unversioned_exact_schema_lookalike_is_rejected_without_changes(
+    engine: Engine,
+) -> None:
+    with engine.begin() as connection:
+        metadata.create_all(connection)
+        install_integrity_triggers(connection)
+    with engine.connect() as connection:
+        before = _schema_definitions(connection)
+        connection.rollback()
+
+        with pytest.raises(MigrationIntegrityError, match="unversioned operational database"):
+            upgrade_to_head(connection)
+
+        after = _schema_definitions(connection)
+        version_table = connection.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE name = 'alembic_version'"
+        ).all()
+        connection.rollback()
+
+    assert after == before
+    assert version_table == []
+
+
 def test_repeat_upgrade_detects_semantic_index_tampering(engine: Engine) -> None:
     with engine.connect() as connection:
         upgrade_to_head(connection)
