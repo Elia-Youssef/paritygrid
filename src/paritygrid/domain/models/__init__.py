@@ -1,5 +1,6 @@
 """Trusted values shared by ParityGrid domain models."""
 
+from paritygrid.domain.models.fingerprints import StateFingerprint
 from paritygrid.domain.models.identifiers import (
     ArtifactId,
     AttemptNumber,
@@ -9,6 +10,7 @@ from paritygrid.domain.models.identifiers import (
     NodeId,
     PipelineId,
     PipelineVersion,
+    RepairActionId,
     RepairPlanId,
     RunId,
     WorkItemId,
@@ -31,8 +33,10 @@ __all__ = [
     "NodeId",
     "PipelineId",
     "PipelineVersion",
+    "RepairActionId",
     "RepairPlanId",
     "RunId",
+    "StateFingerprint",
     "UtcTimestamp",
     "WorkItemId",
 ]
