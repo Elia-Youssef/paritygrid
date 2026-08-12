@@ -6,7 +6,7 @@ import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
-from paritygrid.domain.errors import DomainError, InvalidTransitionError
+from paritygrid.domain.errors import DomainError, DomainErrorCode, InvalidTransitionError
 from paritygrid.domain.execution import (
     RUN_TRANSITIONS,
     WORK_ITEM_TRANSITIONS,
@@ -59,6 +59,10 @@ def test_every_run_state_pair_matches_the_documented_arrows(
         assert captured.value.lifecycle == "run"
         assert captured.value.current_state == current.value
         assert captured.value.target_state == target.value
+        assert captured.value.code is DomainErrorCode.INVALID_TRANSITION
+        message = f"invalid run transition from {current.value!r} to {target.value!r}"
+        assert str(captured.value) == message
+        assert captured.value.args == (message,)
 
 
 @pytest.mark.parametrize(("current", "target"), tuple(product(WorkItemState, repeat=2)))
@@ -76,6 +80,10 @@ def test_every_work_item_state_pair_matches_the_documented_arrows(
         assert captured.value.lifecycle == "work item"
         assert captured.value.current_state == current.value
         assert captured.value.target_state == target.value
+        assert captured.value.code is DomainErrorCode.INVALID_TRANSITION
+        message = f"invalid work item transition from {current.value!r} to {target.value!r}"
+        assert str(captured.value) == message
+        assert captured.value.args == (message,)
 
 
 def test_transition_tables_are_exhaustive_and_match_the_expected_arrows() -> None:
