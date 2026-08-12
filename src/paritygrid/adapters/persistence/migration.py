@@ -562,6 +562,33 @@ def _current_revision(connection: Connection) -> str | None:
     return revisions[0] if revisions else None
 
 
+def _validate_version_table(connection: Connection, revision: str) -> None:
+    columns = connection.exec_driver_sql("PRAGMA table_info(alembic_version)").all()
+    if len(columns) != 1:
+        raise MigrationIntegrityError("The Alembic version table has an invalid shape.")
+    column = columns[0]
+    if (
+        len(column) < 6
+        or column[1] != "version_num"
+        or column[2] != "VARCHAR(32)"
+        or column[3] != 1
+        or column[5] != 1
+    ):
+        raise MigrationIntegrityError("The Alembic version table has an invalid shape.")
+    revisions = connection.exec_driver_sql("SELECT version_num FROM alembic_version").all()
+    if revisions != [(revision,)]:
+        raise MigrationIntegrityError("The Alembic version table must contain one exact revision.")
+
+
+def _validate_database_integrity(connection: Connection) -> None:
+    quick_check = connection.exec_driver_sql("PRAGMA quick_check").all()
+    if quick_check != [("ok",)]:
+        raise MigrationIntegrityError("SQLite quick integrity verification failed.")
+    foreign_key_violations = connection.exec_driver_sql("PRAGMA foreign_key_check").all()
+    if foreign_key_violations:
+        raise MigrationIntegrityError("SQLite foreign-key integrity verification failed.")
+
+
 def _validate_revision_state(connection: Connection, revision: str) -> None:
     """Reject schema drift even when the revision stamp claims the packaged head."""
     if revision != HEAD_REVISION:
@@ -625,7 +652,9 @@ def upgrade_to_head(connection: Connection) -> MigrationReport:
         current_revision = _current_revision(connection)
         if current_revision is None:
             raise MigrationIntegrityError("Alembic did not install a database revision.")
+        _validate_version_table(connection, current_revision)
         _validate_revision_state(connection, current_revision)
+        _validate_database_integrity(connection)
         connection.commit()
         report = MigrationReport(
             previous_revision=previous_revision,

@@ -11,6 +11,7 @@ from typing import cast
 import pytest
 from alembic import command
 from alembic.script import ScriptDirectory
+from mako.template import Template  # pyright: ignore[reportMissingTypeStubs]
 from sqlalchemy import Connection, create_engine, event, inspect
 from sqlalchemy.engine import Engine
 
@@ -32,6 +33,7 @@ REVISION_PATH = (
     / "src/paritygrid/adapters/persistence/migrations/versions/0001_operational.py"
 )
 ROOT = Path(__file__).parents[2]
+TEMPLATE_PATH = ROOT / "src/paritygrid/adapters/persistence/migrations/script.py.mako"
 
 
 @pytest.fixture
@@ -89,6 +91,34 @@ def test_revision_is_self_contained_and_has_fixed_statement_inventory() -> None:
     assert sum(value.startswith("CREATE TABLE") for value in string_values) == 21
     assert sum(value.startswith("CREATE INDEX") for value in string_values) == 27
     assert sum(value.startswith("CREATE TRIGGER") for value in string_values) == 47
+
+
+def test_future_revision_template_never_renders_noop_downgrade() -> None:
+    template = Template(filename=str(TEMPLATE_PATH))
+    rendered = cast(
+        str,
+        template.render(  # pyright: ignore[reportUnknownMemberType]
+            message="Future migration",
+            up_revision="future_revision",
+            down_revision=HEAD_REVISION,
+            branch_labels=None,
+            depends_on=None,
+            imports="",
+            upgrades="pass",
+            downgrades="",
+        ),
+    )
+    tree = ast.parse(rendered)
+    downgrade = next(
+        node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "downgrade"
+    )
+    raised = downgrade.body[0]
+
+    assert not any(isinstance(node, ast.Pass) for node in downgrade.body)
+    assert isinstance(raised, ast.Raise)
+    assert isinstance(raised.exc, ast.Call)
+    assert isinstance(raised.exc.func, ast.Name)
+    assert raised.exc.func.id == "RuntimeError"
 
 
 def test_fresh_upgrade_installs_exact_structural_baseline(engine: Engine) -> None:
@@ -294,11 +324,16 @@ def test_downgrade_is_irreversible_before_schema_changes(engine: Engine) -> None
 
         if connection.in_transaction():
             connection.rollback()
+        connection.exec_driver_sql("PRAGMA foreign_keys = ON")
+        foreign_keys = connection.exec_driver_sql("PRAGMA foreign_keys").scalar_one()
+        connection.rollback()
         after = connection.exec_driver_sql(
             "SELECT type, name, tbl_name, sql FROM sqlite_master ORDER BY type, name"
         ).all()
         connection.rollback()
         assert after == before
+        assert foreign_keys == 1
+        assert connection.in_transaction() is False
 
 
 def test_direct_alembic_upgrade_without_supplied_connection_fails_closed(tmp_path: Path) -> None:
@@ -327,12 +362,26 @@ def test_root_alembic_configuration_contains_no_database_url() -> None:
     )
 
 
+def test_root_alembic_heads_works_from_arbitrary_cwd(tmp_path: Path) -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "alembic", "-c", str(ROOT / "alembic.ini"), "heads"],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "0001_operational (head)"
+    assert tuple(tmp_path.iterdir()) == ()
+
+
 def test_upgrade_works_from_arbitrary_unicode_directory(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     engine: Engine,
 ) -> None:
-    unrelated = tmp_path / "百分比 100%"
+    unrelated = tmp_path / "percentage-100%-é"
     unrelated.mkdir()
     monkeypatch.chdir(unrelated)
 
@@ -358,7 +407,7 @@ def test_wheel_contains_and_executes_packaged_history_outside_checkout(tmp_path:
         names = set(archive.namelist())
     assert "paritygrid/adapters/persistence/migrations/env.py" in names
     assert "paritygrid/adapters/persistence/migrations/versions/0001_operational.py" in names
-    external = tmp_path / "outside-checkout-百分比%"
+    external = tmp_path / "outside-checkout-100%-é"
     external.mkdir()
     database = external / "wheel.db"
     source = """

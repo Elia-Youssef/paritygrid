@@ -2,11 +2,12 @@
 
 from collections.abc import Iterator
 from pathlib import Path
+from typing import cast
 
 import pytest
 from alembic.config import Config
 from alembic.util.exc import CommandError
-from sqlalchemy import Connection, create_engine
+from sqlalchemy import Connection, create_engine, event
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -60,6 +61,10 @@ def _accept_schema(_connection: Connection, _revision: str) -> None:
     return None
 
 
+def _accept_connection(_connection: Connection, _revision: str | None = None) -> None:
+    return None
+
+
 def test_report_is_immutable_and_records_noop_status() -> None:
     report = MigrationReport(HEAD_REVISION, HEAD_REVISION, HEAD_REVISION)
 
@@ -94,6 +99,41 @@ def test_upgrade_uses_exact_connection_and_returns_report(
         assert report == MigrationReport(None, HEAD_REVISION, HEAD_REVISION)
         assert connection.in_transaction() is False
         assert _foreign_keys(connection) == 1
+
+
+def test_upgrade_preserves_exact_raw_dbapi_handle_without_second_connect(
+    monkeypatch: pytest.MonkeyPatch,
+    engine: Engine,
+) -> None:
+    observed_handles: list[object] = []
+
+    def install(config: Config, revision: str) -> None:
+        assert revision == HEAD_REVISION
+        supplied = config.attributes["connection"]
+        assert isinstance(supplied, Connection)
+        observed_handles.append(supplied.connection.driver_connection)
+        _install_revision(supplied)
+
+    monkeypatch.setattr(migration_runtime, "_configured_head", _expected_head)
+    monkeypatch.setattr(migration_runtime.command, "upgrade", install)
+    monkeypatch.setattr(migration_runtime, "_validate_revision_state", _accept_schema)
+    monkeypatch.setattr(migration_runtime, "_validate_version_table", _accept_connection)
+    monkeypatch.setattr(migration_runtime, "_validate_database_integrity", _accept_connection)
+    connect_events: list[object] = []
+
+    def record_connect(_connection: object, _record: object) -> None:
+        connect_events.append(_connection)
+
+    event.listen(engine, "connect", record_connect)
+    with engine.connect() as connection:
+        raw_handle = connection.connection.driver_connection
+        connect_count = len(connect_events)
+
+        upgrade_to_head(connection)
+
+        assert observed_handles == [raw_handle]
+        assert connection.connection.driver_connection is raw_handle
+        assert len(connect_events) == connect_count
 
 
 def test_repeat_upgrade_is_noop_and_still_checks_integrity(
@@ -296,6 +336,82 @@ def test_malformed_version_table_is_typed_and_rolled_back(engine: Engine) -> Non
             upgrade_to_head(connection)
         assert connection.in_transaction() is False
         assert _foreign_keys(connection) == 1
+
+
+@pytest.mark.parametrize(
+    "definition",
+    [
+        "CREATE TABLE alembic_version (version_num VARCHAR(32))",
+        "CREATE TABLE alembic_version (version_num TEXT NOT NULL PRIMARY KEY, extra TEXT)",
+    ],
+)
+def test_exact_version_table_shape_is_enforced(engine: Engine, definition: str) -> None:
+    with engine.begin() as connection:
+        connection.exec_driver_sql(definition)
+        connection.exec_driver_sql(
+            "INSERT INTO alembic_version (version_num) VALUES (?)", (HEAD_REVISION,)
+        )
+
+    with engine.connect() as connection:
+        with pytest.raises(MigrationIntegrityError, match="invalid shape"):
+            migration_runtime._validate_version_table(  # pyright: ignore[reportPrivateUsage]
+                connection, HEAD_REVISION
+            )
+        connection.rollback()
+
+
+def test_exact_version_table_requires_one_matching_row(engine: Engine) -> None:
+    with engine.begin() as connection:
+        connection.exec_driver_sql(
+            "CREATE TABLE alembic_version (version_num VARCHAR(32) NOT NULL PRIMARY KEY)"
+        )
+
+    with engine.connect() as connection:
+        with pytest.raises(MigrationIntegrityError, match="one exact revision"):
+            migration_runtime._validate_version_table(  # pyright: ignore[reportPrivateUsage]
+                connection, HEAD_REVISION
+            )
+        connection.rollback()
+
+
+def test_integrity_validation_rejects_quick_check_failure() -> None:
+    class SyntheticResult:
+        def all(self) -> list[tuple[str]]:
+            return [("corrupt synthetic page",)]
+
+    class SyntheticConnection:
+        def exec_driver_sql(self, _statement: str) -> SyntheticResult:
+            return SyntheticResult()
+
+    with pytest.raises(MigrationIntegrityError, match="quick integrity"):
+        migration_runtime._validate_database_integrity(  # pyright: ignore[reportPrivateUsage]
+            cast(Connection, SyntheticConnection())
+        )
+
+
+def test_upgrade_rejects_foreign_key_integrity_violation(engine: Engine) -> None:
+    with engine.connect() as connection:
+        upgrade_to_head(connection)
+        connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
+        connection.exec_driver_sql(
+            "INSERT INTO pipeline_versions "
+            "(pipeline_id, version_number, specification_json, specification_sha256, "
+            "planner_format_version, published_at) VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                "pip_missing",
+                1,
+                "{}",
+                "a" * 64,
+                1,
+                "2026-08-12T12:00:00.000000Z",
+            ),
+        )
+        connection.commit()
+
+        with pytest.raises(MigrationIntegrityError, match="foreign-key integrity"):
+            upgrade_to_head(connection)
+
+        assert connection.in_transaction() is False
 
 
 def test_multiple_revision_rows_are_rejected_as_multiple_heads(engine: Engine) -> None:
