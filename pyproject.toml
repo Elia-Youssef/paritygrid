@@ -24,6 +24,7 @@ paritygrid-check-boundaries = "paritygrid.quality.import_boundaries:main"
 
 [dependency-groups]
 dev = [
+  "hypothesis>=6.0,<7",
   "httpx>=0.28,<1",
   "pyright>=1.1.404,<2",
   "pytest>=8.4,<10",
