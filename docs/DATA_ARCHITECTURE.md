@@ -23,6 +23,19 @@ PRAGMA busy_timeout = 5000;
 
 The runtime must report the SQLite library version and reject the concurrency profiles when the installed library lacks required fixes or capabilities.
 
+ParityGrid supports SQLite 3.35.0 or newer. This baseline includes native `RETURNING`
+support for the operational repositories while retaining the required WAL, foreign-key,
+full-synchronous, and busy-timeout behavior. Startup rejects a library older than this
+baseline or one compiled without thread-safe connection support before opening the
+operational database. The configured database path must be absolute and must not traverse
+symbolic links or junctions. Startup also performs a no-change `user_version` write inside
+a rolled-back transaction so read-only storage is rejected before the application reports
+ready. Explicit startup probes verify the JSON SQL functions used by schema constraints and
+native `RETURNING`; version text alone is not treated as proof that an optional build feature
+is available. Python DB-API thread-safety levels 1 and 3 are supported: connection checkout
+ownership ensures level 1 connections are never used simultaneously by multiple threads,
+while level 0 is rejected.
+
 ### Connection ownership
 
 - A SQLAlchemy `Session` or `AsyncSession` belongs to one task and one transaction scope.

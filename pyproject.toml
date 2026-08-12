@@ -14,6 +14,7 @@ authors = [
 dependencies = [
   "fastapi>=0.116,<1",
   "pydantic-settings>=2.10,<3",
+  "sqlalchemy>=2.0,<3",
   "typer>=0.16,<1",
   "uvicorn>=0.35,<1",
 ]
