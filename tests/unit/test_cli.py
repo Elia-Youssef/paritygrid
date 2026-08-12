@@ -48,7 +48,16 @@ def test_database_upgrade_requires_explicit_path() -> None:
     result = runner.invoke(app, ["database", "upgrade"])
 
     assert result.exit_code == 2
+    assert isinstance(result.exception, SystemExit)
+    assert result.exception.code == 2
+
+
+def test_database_upgrade_help_describes_explicit_path() -> None:
+    result = runner.invoke(app, ["database", "upgrade", "--help"])
+
+    assert result.exit_code == 0
     assert "--database" in result.output
+    assert "Absolute path" in result.output
 
 
 def test_database_upgrade_migrates_absolute_file_and_reports_repeat(tmp_path: Path) -> None:
