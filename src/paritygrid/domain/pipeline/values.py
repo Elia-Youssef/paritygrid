@@ -120,7 +120,7 @@ class PipelineNode:
         }
 
     def to_bytes(self) -> bytes:
-        """Return canonical JSON bytes suitable for hashing or storage."""
+        """Return the local unversioned value encoding, not fingerprint input."""
         return _encode_primitive(self.to_primitive())
 
     def __bytes__(self) -> bytes:
@@ -156,7 +156,7 @@ class PipelineEdge:
         }
 
     def to_bytes(self) -> bytes:
-        """Return canonical JSON bytes suitable for hashing or storage."""
+        """Return the local unversioned value encoding, not fingerprint input."""
         return _encode_primitive(self.to_primitive())
 
     def __bytes__(self) -> bytes:
