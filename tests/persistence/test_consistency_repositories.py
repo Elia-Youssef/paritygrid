@@ -20,6 +20,7 @@ from paritygrid.adapters.persistence.repositories import (
     SqlAlchemyRunRepository,
     SqlAlchemyWorkItemRepository,
 )
+from paritygrid.adapters.persistence.repositories.consistency_common import request_digest
 from paritygrid.adapters.persistence.schema import (
     artifact_manifests,
     checkpoint_heads,
@@ -33,14 +34,18 @@ from paritygrid.application.ports import ConfigurationDocument
 from paritygrid.application.ports.consistency import (
     CheckpointConflictError,
     CheckpointVersion,
+    ConsistencyCorruptionError,
     ConsistencyInvalidRequestError,
     ConsistencyRecordNotFoundError,
     ConsistencyStaleRowVersionError,
+    ConsistencyStateConflictError,
     EventSequence,
     EventSequenceConflictError,
     EventSubjectKind,
     IdempotencyBeginDisposition,
+    IdempotencyBeginResult,
     IdempotencyConflictError,
+    IdempotencyReservation,
     IdempotencyStatus,
     PendingExecutionEvent,
     RedactedDocument,
@@ -85,6 +90,23 @@ def document(**values: object) -> ConfigurationDocument:
 
 def redacted(**values: object) -> RedactedDocument:
     return RedactedDocument.from_mapping(values)
+
+
+def reservation(result: IdempotencyBeginResult) -> IdempotencyReservation:
+    assert result.reservation is not None
+    return result.reservation
+
+
+def forged_reservation(
+    scope: str, key: str, request: ConfigurationDocument, timestamp_value: UtcTimestamp
+) -> IdempotencyReservation:
+    return IdempotencyReservation(
+        scope,
+        key,
+        request_digest(request),
+        timestamp_value,
+        timestamp_value,
+    )
 
 
 def seed_execution(database: SQLiteDatabase) -> None:
@@ -355,13 +377,20 @@ def test_idempotency_begin_terminal_replay_conflict_and_listing(
             scope="run:create", key="request-001", request=request, started_at=timestamp(2)
         )
         assert in_progress.disposition is IdempotencyBeginDisposition.IN_PROGRESS_REPLAY
+        assert in_progress.reservation is None
+        with pytest.raises(ConsistencyInvalidRequestError, match="reservation"):
+            repository.complete(
+                in_progress,  # type: ignore[arg-type]
+                request=request,
+                response_schema_version=1,
+                response=redacted(safe=True),
+                completed_at=timestamp(3),
+            )
         page = repository.list_in_progress(limit=1)
         assert page.items == (started.record,)
         completed = repository.complete(
-            scope="run:create",
-            key="request-001",
+            reservation(started),
             request=request,
-            expected_updated_at=timestamp(1),
             response_schema_version=1,
             response=redacted(run_id=str(RUN_ID)),
             completed_at=timestamp(3),
@@ -372,10 +401,8 @@ def test_idempotency_begin_terminal_replay_conflict_and_listing(
         )
         assert (
             repository.complete(
-                scope="run:create",
-                key="request-001",
+                reservation(started),
                 request=request,
-                expected_updated_at=timestamp(1),
                 response_schema_version=1,
                 response=redacted(run_id=str(RUN_ID)),
                 completed_at=timestamp(3),
@@ -390,6 +417,8 @@ def test_idempotency_begin_terminal_replay_conflict_and_listing(
             scope="run:create", key="request-001", request=request, started_at=timestamp(4)
         )
         assert terminal.disposition is IdempotencyBeginDisposition.COMPLETED_REPLAY
+        assert in_progress.reservation is None
+        assert terminal.reservation is None
         with pytest.raises(IdempotencyConflictError):
             repository.begin(
                 scope="run:create",
@@ -399,10 +428,8 @@ def test_idempotency_begin_terminal_replay_conflict_and_listing(
             )
         with pytest.raises(IdempotencyConflictError):
             repository.fail(
-                scope="run:create",
-                key="request-001",
+                reservation(started),
                 request=request,
-                expected_updated_at=timestamp(1),
                 response_schema_version=1,
                 response=redacted(error="safe"),
                 completed_at=timestamp(3),
@@ -417,10 +444,8 @@ def test_idempotency_failed_replay_and_no_transaction_guards(database: SQLiteDat
             scope="repair:apply", key="request-002", request=request, started_at=timestamp(1)
         )
         failed = repository.fail(
-            scope="repair:apply",
-            key="request-002",
+            reservation(started),
             request=request,
-            expected_updated_at=started.record.updated_at,
             response_schema_version=1,
             response=redacted(code="rejected"),
             completed_at=timestamp(2),
@@ -765,15 +790,13 @@ def test_idempotency_missing_pagination_stale_and_nonmonotonic_paths(
         assert repository.get(scope="missing", key="missing") is None
         with pytest.raises(IdempotencyConflictError, match="does not exist"):
             repository.complete(
-                scope="missing",
-                key="missing",
+                forged_reservation("missing", "missing", first_request, timestamp(1)),
                 request=first_request,
-                expected_updated_at=timestamp(1),
                 response_schema_version=1,
                 response=redacted(safe=True),
                 completed_at=timestamp(2),
             )
-        repository.begin(
+        first = repository.begin(
             scope="scope-a", key="key-a", request=first_request, started_at=timestamp(1)
         )
         repository.begin(
@@ -785,32 +808,54 @@ def test_idempotency_missing_pagination_stale_and_nonmonotonic_paths(
         tail = repository.list_in_progress(limit=1, after=page.next_cursor)
         assert len(tail.items) == 1
         assert tail.next_cursor is None
-        with pytest.raises(ConsistencyStaleRowVersionError):
+        with pytest.raises(IdempotencyConflictError, match="not initial"):
             repository.complete(
-                scope="scope-a",
-                key="key-a",
+                IdempotencyReservation(
+                    "scope-a",
+                    "key-a",
+                    reservation(first).request_sha256,
+                    timestamp(1),
+                    timestamp(2),
+                ),
                 request=first_request,
-                expected_updated_at=timestamp(2),
                 response_schema_version=1,
                 response=redacted(safe=True),
                 completed_at=timestamp(3),
             )
         with pytest.raises(IdempotencyConflictError, match="different request"):
             repository.complete(
-                scope="scope-a",
-                key="key-a",
+                reservation(first),
                 request=document(action="different"),
-                expected_updated_at=timestamp(1),
+                response_schema_version=1,
+                response=redacted(safe=True),
+                completed_at=timestamp(3),
+            )
+        with pytest.raises(IdempotencyConflictError, match="reservation has a different request"):
+            repository.complete(
+                IdempotencyReservation("scope-a", "key-a", "0" * 64, timestamp(1), timestamp(1)),
+                request=first_request,
+                response_schema_version=1,
+                response=redacted(safe=True),
+                completed_at=timestamp(3),
+            )
+        with pytest.raises(IdempotencyConflictError, match="durable state"):
+            repository.complete(
+                IdempotencyReservation(
+                    "scope-a",
+                    "key-a",
+                    reservation(first).request_sha256,
+                    timestamp(2),
+                    timestamp(2),
+                ),
+                request=first_request,
                 response_schema_version=1,
                 response=redacted(safe=True),
                 completed_at=timestamp(3),
             )
         with pytest.raises(ConsistencyInvalidRequestError, match="monotonic"):
             repository.complete(
-                scope="scope-a",
-                key="key-a",
+                reservation(first),
                 request=first_request,
-                expected_updated_at=timestamp(1),
                 response_schema_version=1,
                 response=redacted(safe=True),
                 completed_at=timestamp(0),
@@ -821,22 +866,20 @@ def test_idempotency_terminal_exact_and_different_replays(database: SQLiteDataba
     request = document(action="terminal")
     with database.transaction() as session:
         repository = SqlAlchemyIdempotencyRepository(session)
-        repository.begin(scope="scope", key="key", request=request, started_at=timestamp(1))
+        started = repository.begin(
+            scope="scope", key="key", request=request, started_at=timestamp(1)
+        )
         failed = repository.fail(
-            scope="scope",
-            key="key",
+            reservation(started),
             request=request,
-            expected_updated_at=timestamp(1),
             response_schema_version=1,
             response=redacted(code="safe"),
             completed_at=timestamp(2),
         )
         assert (
             repository.fail(
-                scope="scope",
-                key="key",
+                reservation(started),
                 request=request,
-                expected_updated_at=timestamp(1),
                 response_schema_version=1,
                 response=redacted(code="safe"),
                 completed_at=timestamp(2),
@@ -845,10 +888,8 @@ def test_idempotency_terminal_exact_and_different_replays(database: SQLiteDataba
         )
         with pytest.raises(IdempotencyConflictError, match="terminal"):
             repository.fail(
-                scope="scope",
-                key="key",
+                reservation(started),
                 request=request,
-                expected_updated_at=timestamp(1),
                 response_schema_version=1,
                 response=redacted(code="different"),
                 completed_at=timestamp(2),
@@ -914,6 +955,7 @@ def append_event_with_failpoint(database: SQLiteDatabase) -> None:
     [
         ("UPDATE checkpoint_heads", RuntimeError("after head")),
         ("UPDATE work_items", AbortConsistencyWrite("after work")),
+        ("INSERT INTO checkpoints", AbortConsistencyWrite("after history")),
     ],
 )
 def test_checkpoint_internal_failpoints_roll_back_every_companion_write(
@@ -940,6 +982,83 @@ def test_event_internal_base_exception_failpoint_rolls_back_counter_and_history(
         assert session.scalar(select(run_event_counters.c.next_sequence_number)) == 1
         assert session.scalar(select(run_event_counters.c.row_version)) == 1
         assert session.scalar(select(func.count()).select_from(execution_events)) == 0
+
+
+def test_event_insert_base_exception_rolls_back_counter_and_batch(
+    database: SQLiteDatabase,
+) -> None:
+    seed_execution(database)
+
+    def append() -> None:
+        with database.transaction() as session:
+            fail_after_statement(
+                session.connection(),
+                "INSERT INTO execution_events",
+                AbortConsistencyWrite("after event batch"),
+            )
+            SqlAlchemyExecutionEventRepository(session).append(
+                RUN_ID,
+                expected_next_sequence=EventSequence(1),
+                expected_counter_row_version=1,
+                events=(event("run_started", 2), event("work_started", 2)),
+            )
+
+    with pytest.raises(AbortConsistencyWrite, match="after event batch"):
+        append()
+    with database.transaction() as session:
+        assert session.scalar(select(run_event_counters.c.next_sequence_number)) == 1
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 0
+
+
+@pytest.mark.parametrize("operation", ["begin", "terminal"])
+def test_idempotency_internal_base_exception_rolls_back_atomic_record(
+    database: SQLiteDatabase, operation: str
+) -> None:
+    request = document(action="failpoint")
+    if operation == "terminal":
+        with database.transaction() as session:
+            started = SqlAlchemyIdempotencyRepository(session).begin(
+                scope="safe", key="failpoint", request=request, started_at=timestamp(1)
+            )
+        expected_count = 1
+    else:
+        started = None
+        expected_count = 0
+
+    def invoke() -> None:
+        with database.transaction() as session:
+            fragment = (
+                "INSERT INTO idempotency_records"
+                if operation == "begin"
+                else "UPDATE idempotency_records"
+            )
+            fail_after_statement(
+                session.connection(), fragment, AbortConsistencyWrite("idempotency write")
+            )
+            repository = SqlAlchemyIdempotencyRepository(session)
+            if started is None:
+                repository.begin(
+                    scope="safe", key="failpoint", request=request, started_at=timestamp(1)
+                )
+            else:
+                repository.complete(
+                    reservation(started),
+                    request=request,
+                    response_schema_version=1,
+                    response=redacted(safe=True),
+                    completed_at=timestamp(2),
+                )
+
+    with pytest.raises(AbortConsistencyWrite, match="idempotency write"):
+        invoke()
+    with database.transaction() as session:
+        assert (
+            session.scalar(select(func.count()).select_from(idempotency_records)) == expected_count
+        )
+        if expected_count:
+            durable = SqlAlchemyIdempotencyRepository(session).get(scope="safe", key="failpoint")
+            assert durable is not None
+            assert durable.status is IdempotencyStatus.IN_PROGRESS
 
 
 def test_checkpoint_history_artifact_validation_uses_constant_queries(
@@ -1068,6 +1187,73 @@ def test_two_session_stale_writers_converge_without_gaps(database: SQLiteDatabas
         assert replay.disposition is IdempotencyBeginDisposition.IN_PROGRESS_REPLAY
 
 
+def test_uncommitted_consistency_frontiers_are_invisible_then_publish_atomically(
+    database: SQLiteDatabase,
+) -> None:
+    seed_execution(database)
+    writer = Session(database.engine)
+    request = document(action="wal-visibility")
+    try:
+        writer.begin()
+        SqlAlchemyCheckpointRepository(writer).append(
+            RUN_ID,
+            NODE_ID,
+            PARTITION,
+            expected_current_version=CheckpointVersion(0),
+            expected_head_row_version=1,
+            expected_work_row_version=1,
+            payload_schema_version=1,
+            source_cursor=None,
+            output_position=None,
+            artifact_id=None,
+            committed_at=timestamp(3),
+        )
+        SqlAlchemyExecutionEventRepository(writer).append(
+            RUN_ID,
+            expected_next_sequence=EventSequence(1),
+            expected_counter_row_version=1,
+            events=(event("checkpoint_committed", 3),),
+        )
+        SqlAlchemyIdempotencyRepository(writer).begin(
+            scope="safe", key="wal-visibility", request=request, started_at=timestamp(3)
+        )
+
+        with database.transaction() as reader:
+            head = SqlAlchemyCheckpointRepository(reader).get_head(RUN_ID, NODE_ID, PARTITION)
+            assert head is not None
+            assert head.current_version == CheckpointVersion(0)
+            assert (
+                SqlAlchemyExecutionEventRepository(reader)
+                .list_after(RUN_ID, after=None, limit=10)
+                .items
+                == ()
+            )
+            assert (
+                SqlAlchemyIdempotencyRepository(reader).get(scope="safe", key="wal-visibility")
+                is None
+            )
+        writer.commit()
+    finally:
+        writer.close()
+
+    with database.transaction() as reader:
+        head = SqlAlchemyCheckpointRepository(reader).get_head(RUN_ID, NODE_ID, PARTITION)
+        assert head is not None
+        assert head.current_version == CheckpointVersion(1)
+        assert (
+            len(
+                SqlAlchemyExecutionEventRepository(reader)
+                .list_after(RUN_ID, after=None, limit=10)
+                .items
+            )
+            == 1
+        )
+        assert (
+            SqlAlchemyIdempotencyRepository(reader).get(scope="safe", key="wal-visibility")
+            is not None
+        )
+
+
 def test_reopen_preserves_all_frontiers_and_sqlite_integrity(database: SQLiteDatabase) -> None:
     seed_execution(database)
     request = document(action="reopen")
@@ -1092,12 +1278,12 @@ def test_reopen_preserves_all_frontiers_and_sqlite_integrity(database: SQLiteDat
             events=(event("checkpoint_committed", 3),),
         )
         idempotency = SqlAlchemyIdempotencyRepository(session)
-        idempotency.begin(scope="scope", key="reopen", request=request, started_at=timestamp(3))
+        started = idempotency.begin(
+            scope="scope", key="reopen", request=request, started_at=timestamp(3)
+        )
         idempotency.complete(
-            scope="scope",
-            key="reopen",
+            reservation(started),
             request=request,
-            expected_updated_at=timestamp(3),
             response_schema_version=1,
             response=redacted(safe=True),
             completed_at=timestamp(4),
@@ -1126,3 +1312,206 @@ def test_reopen_preserves_all_frontiers_and_sqlite_integrity(database: SQLiteDat
             assert connection.exec_driver_sql("PRAGMA journal_mode").scalar_one() == "wal"
     finally:
         reopened.close()
+
+
+@pytest.mark.parametrize("bad", [" ", "\n", "bad value", "é"])
+def test_portable_event_and_idempotency_identities_reject_unsafe_text(
+    database: SQLiteDatabase, bad: str
+) -> None:
+    seed_execution(database)
+    with database.transaction() as session:
+        events = SqlAlchemyExecutionEventRepository(session)
+        with pytest.raises(ConsistencyInvalidRequestError):
+            events.append(
+                RUN_ID,
+                expected_next_sequence=EventSequence(1),
+                expected_counter_row_version=1,
+                events=(
+                    PendingExecutionEvent(
+                        "bad value",
+                        timestamp(2),
+                        EventSubjectKind.RUN,
+                        RUN_ID,
+                        None,
+                        1,
+                        redacted(safe=True),
+                    ),
+                ),
+            )
+        with pytest.raises(ConsistencyInvalidRequestError):
+            events.append(
+                RUN_ID,
+                expected_next_sequence=EventSequence(1),
+                expected_counter_row_version=1,
+                events=(
+                    PendingExecutionEvent(
+                        "run_started",
+                        timestamp(2),
+                        EventSubjectKind.RUN,
+                        RUN_ID,
+                        bad,
+                        1,
+                        redacted(safe=True),
+                    ),
+                ),
+            )
+        idempotency = SqlAlchemyIdempotencyRepository(session)
+        with pytest.raises(ConsistencyInvalidRequestError):
+            idempotency.begin(
+                scope=bad, key="safe-key", request=document(safe=True), started_at=timestamp(2)
+            )
+        with pytest.raises(ConsistencyInvalidRequestError):
+            idempotency.begin(
+                scope="safe", key=bad, request=document(safe=True), started_at=timestamp(2)
+            )
+
+
+@pytest.mark.parametrize("field", ["event_kind", "correlation_id"])
+def test_event_reads_reject_raw_canonical_text_corruption(
+    database: SQLiteDatabase, field: str
+) -> None:
+    seed_execution(database)
+    with database.transaction() as session:
+        SqlAlchemyExecutionEventRepository(session).append(
+            RUN_ID,
+            expected_next_sequence=EventSequence(1),
+            expected_counter_row_version=1,
+            events=(event("run_started", 2),),
+        )
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql('DROP TRIGGER "trg_execution_events_prohibit_update"')
+        connection.exec_driver_sql(
+            f'UPDATE execution_events SET "{field}" = ? WHERE run_id = ? AND sequence_number = 1',
+            ("bad value", str(RUN_ID)),
+        )
+        connection.commit()
+    with database.transaction() as session, pytest.raises(ConsistencyCorruptionError):
+        SqlAlchemyExecutionEventRepository(session).get(RUN_ID, EventSequence(1))
+
+
+@pytest.mark.parametrize("field", ["scope", "idempotency_key"])
+def test_idempotency_reads_reject_raw_identity_and_in_progress_touch(
+    database: SQLiteDatabase, field: str
+) -> None:
+    with database.transaction() as session:
+        SqlAlchemyIdempotencyRepository(session).begin(
+            scope="safe", key="safe-key", request=document(safe=True), started_at=timestamp(1)
+        )
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql(
+            'DROP TRIGGER "trg_idempotency_records_protect_immutable_columns"'
+        )
+        connection.exec_driver_sql(
+            f'UPDATE idempotency_records SET "{field}" = ? WHERE scope = ? AND idempotency_key = ?',
+            ("bad value", "safe", "safe-key"),
+        )
+        connection.commit()
+    with database.transaction() as session, pytest.raises(ConsistencyCorruptionError):
+        SqlAlchemyIdempotencyRepository(session).list_in_progress(limit=10)
+
+
+def test_idempotency_reads_reject_touched_in_progress_record(database: SQLiteDatabase) -> None:
+    with database.transaction() as session:
+        SqlAlchemyIdempotencyRepository(session).begin(
+            scope="safe", key="safe-key", request=document(safe=True), started_at=timestamp(1)
+        )
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql(
+            "UPDATE idempotency_records SET updated_at = ? WHERE scope = ? AND idempotency_key = ?",
+            (str(timestamp(2)), "safe", "safe-key"),
+        )
+        connection.commit()
+    with database.transaction() as session, pytest.raises(ConsistencyCorruptionError):
+        SqlAlchemyIdempotencyRepository(session).get(scope="safe", key="safe-key")
+
+
+def test_repository_row_version_capacity_is_rejected_before_sql(
+    database: SQLiteDatabase,
+) -> None:
+    maximum = 2_147_483_647
+    missing_run = RunId("run_missing")
+    missing_node = NodeId("nod_missing")
+    missing_partition = PartitionKey("missing")
+    with database.transaction() as session:
+        checkpoints_repository = SqlAlchemyCheckpointRepository(session)
+        with pytest.raises(ConsistencyStateConflictError, match="head row version"):
+            checkpoints_repository.append(
+                missing_run,
+                missing_node,
+                missing_partition,
+                expected_current_version=CheckpointVersion(maximum - 1),
+                expected_head_row_version=maximum,
+                expected_work_row_version=1,
+                payload_schema_version=1,
+                source_cursor=None,
+                output_position=None,
+                artifact_id=None,
+                committed_at=timestamp(2),
+            )
+        with pytest.raises(ConsistencyStateConflictError, match="work-item row version"):
+            checkpoints_repository.append(
+                missing_run,
+                missing_node,
+                missing_partition,
+                expected_current_version=CheckpointVersion(maximum - 1),
+                expected_head_row_version=maximum - 1,
+                expected_work_row_version=maximum,
+                payload_schema_version=1,
+                source_cursor=None,
+                output_position=None,
+                artifact_id=None,
+                committed_at=timestamp(2),
+            )
+        with pytest.raises(ConsistencyStateConflictError, match="event counter row version"):
+            SqlAlchemyExecutionEventRepository(session).append(
+                missing_run,
+                expected_next_sequence=EventSequence(maximum - 1),
+                expected_counter_row_version=maximum,
+                events=(
+                    PendingExecutionEvent(
+                        "run_started",
+                        timestamp(2),
+                        EventSubjectKind.RUN,
+                        missing_run,
+                        None,
+                        1,
+                        redacted(safe=True),
+                    ),
+                ),
+            )
+
+
+def test_raw_frontier_row_version_corruption_is_rejected(database: SQLiteDatabase) -> None:
+    seed_execution(database)
+    with database.engine.connect() as connection:
+        connection.exec_driver_sql(
+            'DROP TRIGGER "trg_checkpoint_heads_current_version_must_increase"'
+        )
+        connection.exec_driver_sql(
+            'DROP TRIGGER "trg_run_event_counters_next_sequence_number_must_increase"'
+        )
+        connection.exec_driver_sql("UPDATE checkpoint_heads SET row_version = 2")
+        connection.exec_driver_sql("UPDATE run_event_counters SET row_version = 2")
+        connection.commit()
+    with database.transaction() as session:
+        with pytest.raises(ConsistencyCorruptionError, match="checkpoint head row version"):
+            SqlAlchemyCheckpointRepository(session).get_head(RUN_ID, NODE_ID, PARTITION)
+        with pytest.raises(ConsistencyCorruptionError, match="event counter row version"):
+            SqlAlchemyExecutionEventRepository(session).list_after(RUN_ID, after=None, limit=10)
+
+
+def test_sensitive_canary_never_reaches_database_or_wal(database: SQLiteDatabase) -> None:
+    seed_execution(database)
+    canary = "p3-consistency-sensitive-canary"
+    with pytest.raises(ConsistencyInvalidRequestError) as captured:
+        RedactedDocument.from_mapping({"api_key": canary})
+    assert canary not in str(captured.value)
+
+    database_path = Path(str(database.engine.url.database))
+    for path in (
+        database_path,
+        Path(f"{database_path}-wal"),
+        Path(f"{database_path}-shm"),
+    ):
+        if path.exists():
+            assert canary.encode() not in path.read_bytes()

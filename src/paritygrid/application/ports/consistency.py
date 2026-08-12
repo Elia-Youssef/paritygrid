@@ -334,10 +334,34 @@ class IdempotencyRecord:
         )
 
 
+@dataclass(frozen=True, slots=True, repr=False)
+class IdempotencyReservation:
+    """Capability returned only to the transaction that creates a reservation."""
+
+    scope: str
+    key: str
+    request_sha256: str
+    created_at: UtcTimestamp
+    updated_at: UtcTimestamp
+
+    def __repr__(self) -> str:
+        return (
+            "IdempotencyReservation("
+            f"created_at={self.created_at!r}, updated_at={self.updated_at!r}, "
+            "identity=<redacted>, request=<redacted>)"
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class IdempotencyBeginResult:
     disposition: IdempotencyBeginDisposition
     record: IdempotencyRecord
+    reservation: IdempotencyReservation | None
+
+    def __post_init__(self) -> None:
+        started = self.disposition is IdempotencyBeginDisposition.STARTED
+        if started != (type(self.reservation) is IdempotencyReservation):
+            raise ValueError("only a started idempotency result carries a reservation")
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -441,11 +465,9 @@ class IdempotencyRepository(Protocol):
 
     def complete(
         self,
+        reservation: IdempotencyReservation,
         *,
-        scope: str,
-        key: str,
         request: ConfigurationDocument,
-        expected_updated_at: UtcTimestamp,
         response_schema_version: int,
         response: RedactedDocument,
         completed_at: UtcTimestamp,
@@ -453,11 +475,9 @@ class IdempotencyRepository(Protocol):
 
     def fail(
         self,
+        reservation: IdempotencyReservation,
         *,
-        scope: str,
-        key: str,
         request: ConfigurationDocument,
-        expected_updated_at: UtcTimestamp,
         response_schema_version: int,
         response: RedactedDocument,
         completed_at: UtcTimestamp,

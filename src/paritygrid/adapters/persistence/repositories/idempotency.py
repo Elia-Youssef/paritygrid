@@ -5,11 +5,13 @@ from sqlalchemy.dialects.sqlite import insert as sqlite_insert
 from sqlalchemy.orm import Session
 
 from paritygrid.adapters.persistence.repositories.consistency_common import (
-    bounded_text,
     encode_redacted_document,
+    idempotency_scope,
+    portable_identity,
     positive_int,
     request_digest,
     require_document,
+    require_exact,
     require_idempotency_cursor,
     require_redacted_document,
     require_timestamp,
@@ -32,6 +34,7 @@ from paritygrid.application.ports.consistency import (
     IdempotencyPage,
     IdempotencyRecord,
     IdempotencyRepository,
+    IdempotencyReservation,
     IdempotencyStatus,
     RedactedDocument,
     validate_consistency_page_limit,
@@ -94,11 +97,15 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
             stored = stored_idempotency_from_row(row)
             if stored.request_sha256 != digest:
                 raise ConsistencyCorruptionError("idempotency insert result is corrupt")
-            return IdempotencyBeginResult(IdempotencyBeginDisposition.STARTED, stored.record)
+            return IdempotencyBeginResult(
+                IdempotencyBeginDisposition.STARTED,
+                stored.record,
+                _reservation(stored),
+            )
         existing = self._require_stored(identity)
         if existing.request_sha256 != digest:
             raise IdempotencyConflictError("idempotency identity has a different request")
-        return IdempotencyBeginResult(_DISPOSITIONS[existing.record.status], existing.record)
+        return IdempotencyBeginResult(_DISPOSITIONS[existing.record.status], existing.record, None)
 
     @translate_consistency_storage_errors
     def get(self, *, scope: str, key: str) -> IdempotencyRecord | None:
@@ -119,8 +126,8 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
         )
         if cursor is not None:
             created_at = require_timestamp(cursor.created_at, "idempotency cursor time")
-            scope = bounded_text(cursor.scope, "idempotency cursor scope", 96)
-            key = bounded_text(cursor.key, "idempotency cursor key", 128)
+            scope = idempotency_scope(cursor.scope)
+            key = portable_identity(cursor.key, "idempotency cursor key", 128)
             statement = statement.where(
                 or_(
                     idempotency_records.c.created_at > str(created_at),
@@ -161,21 +168,17 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
     @translate_consistency_storage_errors
     def complete(
         self,
+        reservation: IdempotencyReservation,
         *,
-        scope: str,
-        key: str,
         request: ConfigurationDocument,
-        expected_updated_at: UtcTimestamp,
         response_schema_version: int,
         response: RedactedDocument,
         completed_at: UtcTimestamp,
     ) -> IdempotencyRecord:
         return self._terminalize(
             status=IdempotencyStatus.COMPLETED,
-            scope=scope,
-            key=key,
+            reservation=reservation,
             request=request,
-            expected_updated_at=expected_updated_at,
             response_schema_version=response_schema_version,
             response=response,
             completed_at=completed_at,
@@ -184,21 +187,17 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
     @translate_consistency_storage_errors
     def fail(
         self,
+        reservation: IdempotencyReservation,
         *,
-        scope: str,
-        key: str,
         request: ConfigurationDocument,
-        expected_updated_at: UtcTimestamp,
         response_schema_version: int,
         response: RedactedDocument,
         completed_at: UtcTimestamp,
     ) -> IdempotencyRecord:
         return self._terminalize(
             status=IdempotencyStatus.FAILED,
-            scope=scope,
-            key=key,
+            reservation=reservation,
             request=request,
-            expected_updated_at=expected_updated_at,
             response_schema_version=response_schema_version,
             response=response,
             completed_at=completed_at,
@@ -208,18 +207,22 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
         self,
         *,
         status: IdempotencyStatus,
-        scope: str,
-        key: str,
+        reservation: IdempotencyReservation,
         request: ConfigurationDocument,
-        expected_updated_at: UtcTimestamp,
         response_schema_version: int,
         response: RedactedDocument,
         completed_at: UtcTimestamp,
     ) -> IdempotencyRecord:
         self._require_transaction()
-        identity = _require_identity(scope, key)
+        capability = require_exact(reservation, IdempotencyReservation, "idempotency reservation")
+        identity = _require_identity(capability.scope, capability.key)
         request_value = require_document(request, "idempotency request")
-        expected_update = require_timestamp(expected_updated_at, "expected idempotency update time")
+        created = require_timestamp(capability.created_at, "idempotency reservation creation time")
+        expected_update = require_timestamp(
+            capability.updated_at, "idempotency reservation update time"
+        )
+        if created != expected_update:
+            raise IdempotencyConflictError("idempotency reservation is not initial")
         schema_version = positive_int(
             response_schema_version, "idempotency response schema version"
         )
@@ -227,9 +230,13 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
         response_json = encode_redacted_document(response_value, "idempotency response").text
         completed = require_timestamp(completed_at, "idempotency completion time")
         digest = request_digest(request_value)
+        if capability.request_sha256 != digest:
+            raise IdempotencyConflictError("idempotency reservation has a different request")
         current = self._require_stored(identity)
         if current.request_sha256 != digest:
             raise IdempotencyConflictError("idempotency identity has a different request")
+        if current.record.created_at != created:
+            raise IdempotencyConflictError("idempotency reservation does not match durable state")
         if current.record.status is not IdempotencyStatus.IN_PROGRESS:
             if _terminal_replay_matches(
                 current.record,
@@ -240,8 +247,6 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
             ):
                 return current.record
             raise IdempotencyConflictError("idempotency terminal result conflicts with replay")
-        if current.record.updated_at != expected_update:
-            raise ConsistencyStaleRowVersionError("idempotency update time is stale")
         if completed < current.record.updated_at:
             raise ConsistencyInvalidRequestError("idempotency completion time is not monotonic")
         row = (
@@ -335,8 +340,21 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
 
 def _require_identity(scope: object, key: object) -> tuple[str, str]:
     return (
-        bounded_text(scope, "idempotency scope", 96),
-        bounded_text(key, "idempotency key", 128),
+        idempotency_scope(scope),
+        portable_identity(key, "idempotency key", 128),
+    )
+
+
+def _reservation(stored: StoredIdempotencyRecord) -> IdempotencyReservation:
+    record = stored.record
+    if record.status is not IdempotencyStatus.IN_PROGRESS:
+        raise ConsistencyCorruptionError("idempotency reservation result is not in progress")
+    return IdempotencyReservation(
+        scope=record.scope,
+        key=record.key,
+        request_sha256=stored.request_sha256,
+        created_at=record.created_at,
+        updated_at=record.updated_at,
     )
 
 

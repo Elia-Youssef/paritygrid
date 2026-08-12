@@ -9,15 +9,16 @@ from paritygrid.adapters.persistence.repositories.consistency_common import (
     decode_optional_document,
     decode_redacted_document,
     stored_artifact_id,
+    stored_event_kind,
+    stored_idempotency_scope,
     stored_node_id,
     stored_nonnegative_int,
     stored_optional_artifact_id,
-    stored_optional_text,
     stored_optional_timestamp,
     stored_partition_key,
+    stored_portable_identity,
     stored_positive_int,
     stored_run_id,
-    stored_text,
     stored_timestamp,
     stored_work_item_id,
 )
@@ -151,12 +152,14 @@ def execution_event_from_row(row: RowMapping) -> ExecutionEventRecord:
         return ExecutionEventRecord(
             run_id=stored_run_id(row["run_id"]),
             sequence=EventSequence(stored_positive_int(row["sequence_number"], "event sequence")),
-            event_kind=stored_text(row["event_kind"], "event kind", 96),
+            event_kind=stored_event_kind(row["event_kind"]),
             occurred_at=stored_timestamp(row["occurred_at"], "event occurrence time"),
             subject_kind=subject_kind,
             subject_id=subject_id,
-            correlation_id=stored_optional_text(
-                row["correlation_id"], "correlation identifier", 96
+            correlation_id=(
+                None
+                if row["correlation_id"] is None
+                else stored_portable_identity(row["correlation_id"], "correlation identifier", 96)
             ),
             payload_schema_version=stored_positive_int(
                 row["payload_schema_version"], "event payload schema version"
@@ -187,6 +190,8 @@ def stored_idempotency_from_row(row: RowMapping) -> StoredIdempotencyRecord:
         if status is IdempotencyStatus.IN_PROGRESS:
             if schema_value is not None or response_value is not None or completed_at is not None:
                 raise ConsistencyCorruptionError("in-progress idempotency record is corrupt")
+            if updated_at != created_at:
+                raise ConsistencyCorruptionError("in-progress idempotency chronology is corrupt")
             schema_version = None
             response = None
         else:
@@ -198,8 +203,8 @@ def stored_idempotency_from_row(row: RowMapping) -> StoredIdempotencyRecord:
                 raise ConsistencyCorruptionError("terminal idempotency chronology is corrupt")
         return StoredIdempotencyRecord(
             record=IdempotencyRecord(
-                scope=stored_text(row["scope"], "idempotency scope", 96),
-                key=stored_text(row["idempotency_key"], "idempotency key", 128),
+                scope=stored_idempotency_scope(row["scope"]),
+                key=stored_portable_identity(row["idempotency_key"], "idempotency key", 128),
                 status=status,
                 response_schema_version=schema_version,
                 response=response,

@@ -18,6 +18,7 @@ from paritygrid.application.ports.consistency import (
     CheckpointVersion,
     ConsistencyCorruptionError,
     ConsistencyInvalidRequestError,
+    ConsistencyStateConflictError,
     ConsistencyStorageError,
     ConsistencyStorageUnavailableError,
     EventSequence,
@@ -30,6 +31,11 @@ from paritygrid.domain.models import ArtifactId, NodeId, RunId, UtcTimestamp, Wo
 from paritygrid.domain.pipeline import PartitionKey
 
 _EVENT_KIND_PATTERN = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", flags=re.ASCII)
+_IDEMPOTENCY_SCOPE_PATTERN = re.compile(
+    r"[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*(?::[a-z][a-z0-9]*(?:[-_][a-z0-9]+)*)*",
+    flags=re.ASCII,
+)
+_PORTABLE_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*", flags=re.ASCII)
 
 
 def translate_consistency_storage_errors[**P, R](
@@ -115,6 +121,22 @@ def optional_text(value: object, subject: str, maximum: int) -> str | None:
     return None if value is None else bounded_text(value, subject, maximum)
 
 
+def portable_identity(value: object, subject: str, maximum: int) -> str:
+    """Validate one portable header-like identifier without normalization."""
+    identity = bounded_text(value, subject, maximum)
+    if _PORTABLE_IDENTITY_PATTERN.fullmatch(identity) is None:
+        raise ConsistencyInvalidRequestError(f"{subject} must use portable ASCII")
+    return identity
+
+
+def idempotency_scope(value: object) -> str:
+    """Validate a canonical command scope."""
+    scope = bounded_text(value, "idempotency scope", 96)
+    if _IDEMPOTENCY_SCOPE_PATTERN.fullmatch(scope) is None:
+        raise ConsistencyInvalidRequestError("idempotency scope must use canonical lowercase ASCII")
+    return scope
+
+
 def event_kind(value: object) -> str:
     kind = bounded_text(value, "event kind", 96)
     if _EVENT_KIND_PATTERN.fullmatch(kind) is None:
@@ -128,6 +150,13 @@ def positive_int(value: object, subject: str) -> int:
             f"{subject} must be an integer within the supported range"
         )
     return value
+
+
+def require_incrementable(value: int, subject: str) -> None:
+    if value >= MAX_CONSISTENCY_SEQUENCE:
+        raise ConsistencyStateConflictError(
+            f"{subject} cannot advance beyond the supported maximum"
+        )
 
 
 def encode_document(document: ConfigurationDocument, subject: str) -> CanonicalStorageJson:
@@ -214,6 +243,27 @@ def stored_text(value: object, subject: str, maximum: int) -> str:
 
 def stored_optional_text(value: object, subject: str, maximum: int) -> str | None:
     return None if value is None else stored_text(value, subject, maximum)
+
+
+def stored_event_kind(value: object) -> str:
+    try:
+        return event_kind(value)
+    except ConsistencyInvalidRequestError as error:
+        raise ConsistencyCorruptionError("event kind is corrupt") from error
+
+
+def stored_portable_identity(value: object, subject: str, maximum: int) -> str:
+    try:
+        return portable_identity(value, subject, maximum)
+    except ConsistencyInvalidRequestError as error:
+        raise ConsistencyCorruptionError(f"{subject} is corrupt") from error
+
+
+def stored_idempotency_scope(value: object) -> str:
+    try:
+        return idempotency_scope(value)
+    except ConsistencyInvalidRequestError as error:
+        raise ConsistencyCorruptionError("idempotency scope is corrupt") from error
 
 
 def stored_positive_int(value: object, subject: str) -> int:

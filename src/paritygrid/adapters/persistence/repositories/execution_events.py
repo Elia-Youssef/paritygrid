@@ -10,10 +10,11 @@ from sqlalchemy.orm import Session
 from paritygrid.adapters.persistence.repositories.consistency_common import (
     encode_redacted_document,
     event_kind,
-    optional_text,
+    portable_identity,
     positive_int,
     require_event_sequence,
     require_event_subject_kind,
+    require_incrementable,
     require_redacted_document,
     require_run_id,
     require_timestamp,
@@ -101,6 +102,7 @@ class SqlAlchemyExecutionEventRepository(ExecutionEventRepository):
         identity = require_run_id(run_id)
         expected_next = require_event_sequence(expected_next_sequence)
         expected_row = positive_int(expected_counter_row_version, "expected counter row version")
+        require_incrementable(expected_row, "event counter row version")
         pending = validate_events(events)
         new_next = expected_next.advance(len(pending))
         state = _load_event_state(self._session, identity)
@@ -294,7 +296,11 @@ def _encode_event(event: PendingExecutionEvent, state: _EventState) -> _EncodedE
             raise ConsistencyInvalidRequestError("event subject does not belong to its run")
     else:
         subject_id = require_work_item_id(event.subject_id)
-    correlation = optional_text(event.correlation_id, "correlation identifier", 96)
+    correlation = (
+        None
+        if event.correlation_id is None
+        else portable_identity(event.correlation_id, "correlation identifier", 96)
+    )
     schema_version = positive_int(event.payload_schema_version, "event payload schema version")
     payload = encode_redacted_document(
         require_redacted_document(event.payload, "event payload"), "event payload"
@@ -331,6 +337,8 @@ def _load_event_state(session: Session, run_id: RunId) -> _EventState | None:
     counter = event_counter_from_row(counter_row)
     if stored_identity != run_id or counter.run_id != run_id:
         raise ConsistencyCorruptionError("event run identity is corrupt")
+    if counter.row_version > int(counter.next_sequence):
+        raise ConsistencyCorruptionError("event counter row version is corrupt")
     run_created = stored_timestamp(run_row["created_at"], "run creation time")
     _validate_event_frontier(session, run_id, counter.next_sequence)
     return _EventState(run_id, run_created, counter)

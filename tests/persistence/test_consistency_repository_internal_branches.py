@@ -43,6 +43,7 @@ from paritygrid.application.ports.consistency import (
     ExecutionEventRecord,
     IdempotencyConflictError,
     IdempotencyRecord,
+    IdempotencyReservation,
     IdempotencyStatus,
     PendingExecutionEvent,
     RedactedDocument,
@@ -65,6 +66,10 @@ def document(**values: object) -> ConfigurationDocument:
 
 def redacted(**values: object) -> RedactedDocument:
     return RedactedDocument.from_mapping(values)
+
+
+def reservation(digest: str = "a" * 64) -> IdempotencyReservation:
+    return IdempotencyReservation("scope", "key", digest, NOW, NOW)
 
 
 def result(
@@ -767,6 +772,27 @@ def test_idempotency_public_zero_row_and_corrupt_result_paths(
     request = document(action="safe")
     digest = idempotency_module.request_digest(request)
 
+    monkeypatch.setattr(
+        repository, "_require_stored", lambda _identity: stored_idempotency(digest="b" * 64)
+    )
+    with pytest.raises(IdempotencyConflictError, match="identity has a different request"):
+        repository.complete(
+            reservation(digest),
+            request=request,
+            response_schema_version=1,
+            response=redacted(safe=True),
+            completed_at=LATER,
+        )
+
+    with pytest.raises(ConsistencyCorruptionError, match="not in progress"):
+        idempotency_module._reservation(
+            stored_idempotency(
+                status=IdempotencyStatus.COMPLETED,
+                response=redacted(safe=True),
+                updated_at=LATER,
+            )
+        )
+
     session.execute.return_value = result(one_or_none={})
     monkeypatch.setattr(
         idempotency_module,
@@ -786,10 +812,8 @@ def test_idempotency_public_zero_row_and_corrupt_result_paths(
     monkeypatch.setattr(repository, "_classify_terminal_cas", classified)
     with pytest.raises(IdempotencyConflictError, match="classified"):
         repository.complete(
-            scope="scope",
-            key="key",
+            reservation(digest),
             request=request,
-            expected_updated_at=NOW,
             response_schema_version=1,
             response=redacted(safe=True),
             completed_at=LATER,
@@ -808,10 +832,8 @@ def test_idempotency_public_zero_row_and_corrupt_result_paths(
     )
     with pytest.raises(ConsistencyCorruptionError, match="terminal result"):
         repository.complete(
-            scope="scope",
-            key="key",
+            reservation(digest),
             request=request,
-            expected_updated_at=NOW,
             response_schema_version=1,
             response=redacted(safe=True),
             completed_at=LATER,

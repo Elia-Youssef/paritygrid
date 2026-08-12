@@ -46,8 +46,11 @@ from paritygrid.application.ports.consistency import (
     EventSequenceConflictError,
     EventSubjectKind,
     ExecutionEventRecord,
+    IdempotencyBeginDisposition,
+    IdempotencyBeginResult,
     IdempotencyCursor,
     IdempotencyRecord,
+    IdempotencyReservation,
     IdempotencyStatus,
     PendingExecutionEvent,
     RedactedDocument,
@@ -92,6 +95,9 @@ def test_checkpoint_version_rejects_invalid_exact_values(value: object) -> None:
 def test_checkpoint_version_maximum_cannot_advance() -> None:
     with pytest.raises(ConsistencyStateConflictError):
         CheckpointVersion(MAX_CONSISTENCY_SEQUENCE).next()
+    assert CheckpointVersion(MAX_CONSISTENCY_SEQUENCE - 1).next() == CheckpointVersion(
+        MAX_CONSISTENCY_SEQUENCE
+    )
     assert int(CheckpointVersion(4)) == 4
 
 
@@ -109,6 +115,9 @@ def test_event_sequence_advance_validates_count_and_overflow() -> None:
         EventSequence(1).advance(cast(int, True))
     with pytest.raises(EventSequenceConflictError):
         EventSequence(MAX_CONSISTENCY_SEQUENCE).advance(1)
+    assert EventSequence(MAX_CONSISTENCY_SEQUENCE - 1).advance(1) == EventSequence(
+        MAX_CONSISTENCY_SEQUENCE
+    )
     assert EventSequence(2).advance(3) == EventSequence(5)
     assert int(EventSequence(3)) == 3
 
@@ -181,10 +190,32 @@ def test_public_record_reprs_redact_documents_and_idempotency_identity() -> None
         NOW,
     )
     cursor = IdempotencyCursor(NOW, "scope-canary", "key-canary")
-    for value in (checkpoint, pending, event, idem, cursor):
+    reservation = IdempotencyReservation("scope-canary", "key-canary", "c" * 64, NOW, NOW)
+    for value in (checkpoint, pending, event, idem, cursor, reservation):
         rendered = repr(value)
         assert "canary" not in rendered
         assert "redacted" in rendered
+
+
+def test_idempotency_begin_result_enforces_reservation_authority() -> None:
+    record = IdempotencyRecord(
+        "scope-canary", "key-canary", IdempotencyStatus.IN_PROGRESS, None, None, NOW, NOW, None
+    )
+    reservation = IdempotencyReservation("scope-canary", "key-canary", "c" * 64, NOW, NOW)
+    with pytest.raises(ValueError, match="started"):
+        IdempotencyBeginResult(IdempotencyBeginDisposition.STARTED, record, None)
+    with pytest.raises(ValueError, match="started"):
+        IdempotencyBeginResult(IdempotencyBeginDisposition.IN_PROGRESS_REPLAY, record, reservation)
+    assert (
+        IdempotencyBeginResult(IdempotencyBeginDisposition.STARTED, record, reservation).reservation
+        is reservation
+    )
+    assert (
+        IdempotencyBeginResult(
+            IdempotencyBeginDisposition.IN_PROGRESS_REPLAY, record, None
+        ).reservation
+        is None
+    )
 
 
 def test_canonical_codec_and_digest_golden_vector() -> None:

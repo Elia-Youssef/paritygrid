@@ -13,6 +13,7 @@ from paritygrid.adapters.persistence.repositories.consistency_common import (
     require_artifact_id,
     require_checkpoint_version,
     require_document,
+    require_incrementable,
     require_node_id,
     require_partition_key,
     require_run_id,
@@ -164,6 +165,8 @@ class SqlAlchemyCheckpointRepository(CheckpointRepository):
         expected_version = require_checkpoint_version(expected_current_version)
         expected_head_row = positive_int(expected_head_row_version, "expected head row version")
         expected_work_row = positive_int(expected_work_row_version, "expected work row version")
+        require_incrementable(expected_head_row, "checkpoint head row version")
+        require_incrementable(expected_work_row, "work-item row version")
         schema_version = positive_int(payload_schema_version, "checkpoint payload schema version")
         committed = require_timestamp(committed_at, "checkpoint commit time")
         source_json = (
@@ -414,6 +417,8 @@ def _load_checkpoint_state(
         raise ConsistencyCorruptionError("checkpoint head identity is corrupt")
     if work.expected_checkpoint_version != head.current_version:
         raise ConsistencyCorruptionError("checkpoint and work frontiers diverge")
+    if head.row_version != int(head.current_version) + 1:
+        raise ConsistencyCorruptionError("checkpoint head row version is corrupt")
     work_created = stored_timestamp(work_row["created_at"], "work creation time")
     work_updated = stored_timestamp(work_row["updated_at"], "work update time")
     if head.updated_at < work_created or head.updated_at > work_updated:
