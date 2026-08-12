@@ -12,6 +12,7 @@ The repository uses short-lived topic branches, required pull-request checks, an
 - passes all required checks;
 - has no unresolved review conversation;
 - has approval from a maintainer who did not author the change;
+- receives a fresh approval when the reviewed commit changes;
 - uses a merge commit so the accepted phase remains visible as one historical unit.
 
 History rewriting and force pushes are disabled on protected branches. Branch deletion is enabled after a successful merge.
@@ -88,14 +89,18 @@ Acceptance evidence describes the exact commit being merged. Evidence from an ol
 
 ## Repository settings
 
-When the GitHub repository is created, enable:
+When the GitHub repository is created, enable repository rulesets for `main` and active `phase/**` branches. Rulesets are preferred because their active constraints are visible to contributors and multiple rulesets combine without silently replacing one another. Configure them to provide:
 
-- branch protection for `main` and active `phase/**` branches;
 - pull requests and required approvals;
+- dismissal of stale approvals after new commits;
 - required conversation resolution;
 - required status checks from the committed workflows;
+- a requirement that the proposed commit is current with its target;
+- blocked force pushes and branch deletion;
 - automatic deletion of merged branches;
 - secret scanning, dependency alerts, and private vulnerability reporting;
 - merge commits, with squash and rebase merging disabled for phase acceptance.
 
-Rules are reviewed when workflow job names change so a renamed check cannot silently remove a merge gate.
+Enable a merge queue if simultaneous contribution volume makes repeated target-branch updates expensive. The queue must rerun the required checks for its merge group before it lands.
+
+Rulesets are reviewed when workflow job names change so a renamed check cannot silently remove a merge gate.
