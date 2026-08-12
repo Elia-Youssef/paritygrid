@@ -33,7 +33,9 @@ from paritygrid.adapters.persistence.repositories import (
     SqlAlchemyExecutionEventRepository,
     SqlAlchemyIdempotencyRepository,
     SqlAlchemyPipelineRepository,
+    SqlAlchemyRunNodeAggregateRepository,
     SqlAlchemyRunRepository,
+    SqlAlchemyRunRevisionRepository,
     SqlAlchemyWorkAttemptRepository,
     SqlAlchemyWorkItemRepository,
 )
@@ -57,6 +59,10 @@ from paritygrid.adapters.persistence.values import (
     Sha256Digest,
     WorkAttemptOutcome,
 )
+from paritygrid.adapters.persistence.writer.core import SQLiteTransactionalWriter
+from paritygrid.adapters.persistence.writer.notifications import (
+    BoundedCommittedNotificationBuffer,
+)
 
 __all__ = (
     "HEAD_REVISION",
@@ -65,6 +71,7 @@ __all__ = (
     "REQUIRED_BUSY_TIMEOUT_MS",
     "REQUIRED_JOURNAL_MODE",
     "REQUIRED_SYNCHRONOUS_LEVEL",
+    "BoundedCommittedNotificationBuffer",
     "CanonicalStorageJson",
     "EnvironmentVariableName",
     "IdempotencyStatus",
@@ -83,6 +90,7 @@ __all__ = (
     "SQLiteDatabaseConfig",
     "SQLiteLibraryInfo",
     "SQLitePragmaState",
+    "SQLiteTransactionalWriter",
     "SecretReferenceName",
     "SessionFactory",
     "Sha256Digest",
@@ -91,7 +99,9 @@ __all__ = (
     "SqlAlchemyExecutionEventRepository",
     "SqlAlchemyIdempotencyRepository",
     "SqlAlchemyPipelineRepository",
+    "SqlAlchemyRunNodeAggregateRepository",
     "SqlAlchemyRunRepository",
+    "SqlAlchemyRunRevisionRepository",
     "SqlAlchemyWorkAttemptRepository",
     "SqlAlchemyWorkItemRepository",
     "WorkAttemptOutcome",

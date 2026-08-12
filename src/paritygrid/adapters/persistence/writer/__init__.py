@@ -1,0 +1,1 @@
+"""Serialized transactional persistence writer."""

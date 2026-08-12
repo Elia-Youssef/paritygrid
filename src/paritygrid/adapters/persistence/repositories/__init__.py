@@ -17,6 +17,12 @@ from paritygrid.adapters.persistence.repositories.pipelines import (
     SqlAlchemyPipelineRepository,
 )
 from paritygrid.adapters.persistence.repositories.repairs import SqlAlchemyRepairRepository
+from paritygrid.adapters.persistence.repositories.run_node_aggregates import (
+    SqlAlchemyRunNodeAggregateRepository,
+)
+from paritygrid.adapters.persistence.repositories.run_revisions import (
+    SqlAlchemyRunRevisionRepository,
+)
 from paritygrid.adapters.persistence.repositories.runs import SqlAlchemyRunRepository
 from paritygrid.adapters.persistence.repositories.work_items import (
     SqlAlchemyWorkAttemptRepository,
@@ -50,7 +56,9 @@ __all__ = [
     "SqlAlchemyIdempotencyRepository",
     "SqlAlchemyPipelineRepository",
     "SqlAlchemyRepairRepository",
+    "SqlAlchemyRunNodeAggregateRepository",
     "SqlAlchemyRunRepository",
+    "SqlAlchemyRunRevisionRepository",
     "SqlAlchemyWorkAttemptRepository",
     "SqlAlchemyWorkItemRepository",
 ]
