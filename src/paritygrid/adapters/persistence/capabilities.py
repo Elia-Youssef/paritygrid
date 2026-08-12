@@ -2,6 +2,7 @@
 
 import sqlite3
 from dataclasses import dataclass
+from typing import cast
 
 from paritygrid.adapters.persistence.errors import (
     SQLiteCapabilityError,
@@ -25,13 +26,27 @@ class SQLiteLibraryInfo:
     threadsafety: int
 
     def __post_init__(self) -> None:
+        version = cast(object, self.version)
+        version_info = cast(object, self.version_info)
+        threadsafety = cast(object, self.threadsafety)
+        if type(version) is not str:
+            raise SQLiteConfigurationError("SQLite version text must be a string.")
+        if not isinstance(version_info, tuple):
+            raise SQLiteConfigurationError(
+                "SQLite version information must contain exactly three integer components."
+            )
+        components = cast(tuple[object, ...], version_info)
+        if len(components) != 3 or any(type(component) is not int for component in components):
+            raise SQLiteConfigurationError(
+                "SQLite version information must contain exactly three integer components."
+            )
         if any(component < 0 for component in self.version_info):
             raise SQLiteConfigurationError("SQLite version components cannot be negative.")
         if self.version != ".".join(str(component) for component in self.version_info):
             raise SQLiteConfigurationError(
                 "SQLite version text must match its numeric version tuple."
             )
-        if self.threadsafety not in {0, 1, 3}:
+        if type(threadsafety) is not int or threadsafety not in {0, 1, 3}:
             raise SQLiteConfigurationError("SQLite thread-safety level is not recognized.")
 
 
@@ -57,6 +72,8 @@ class SQLiteCapabilities:
     journal_mode: str
     synchronous_level: int
     busy_timeout_ms: int
+    supports_json_sql: bool
+    supports_returning: bool
 
 
 def current_sqlite_library() -> SQLiteLibraryInfo:
@@ -82,6 +99,18 @@ def validate_sqlite_library(library: SQLiteLibraryInfo) -> None:
 
 def validate_sqlite_pragmas(state: SQLitePragmaState) -> None:
     """Reject a connection whose observed settings weaken durability or integrity."""
+    foreign_keys = cast(object, state.foreign_keys)
+    journal_mode = cast(object, state.journal_mode)
+    synchronous_level = cast(object, state.synchronous_level)
+    busy_timeout_ms = cast(object, state.busy_timeout_ms)
+    if type(foreign_keys) is not bool:
+        raise SQLiteCapabilityError("SQLite reported an invalid foreign-key setting.")
+    if not isinstance(journal_mode, str):
+        raise SQLiteCapabilityError("SQLite reported an invalid journal mode.")
+    if type(synchronous_level) is not int:
+        raise SQLiteCapabilityError("SQLite reported an invalid synchronous setting.")
+    if type(busy_timeout_ms) is not int:
+        raise SQLiteCapabilityError("SQLite reported an invalid busy-timeout setting.")
     if not state.foreign_keys:
         raise SQLiteCapabilityError("SQLite foreign-key enforcement could not be enabled.")
     if state.journal_mode.casefold() != REQUIRED_JOURNAL_MODE:
@@ -95,10 +124,17 @@ def validate_sqlite_pragmas(state: SQLitePragmaState) -> None:
 def build_capability_report(
     library: SQLiteLibraryInfo,
     pragmas: SQLitePragmaState,
+    *,
+    supports_json_sql: bool,
+    supports_returning: bool,
 ) -> SQLiteCapabilities:
     """Validate and combine the library and connection observations."""
     validate_sqlite_library(library)
     validate_sqlite_pragmas(pragmas)
+    if type(supports_json_sql) is not bool or not supports_json_sql:
+        raise SQLiteCapabilityError("SQLite JSON SQL functions are required.")
+    if type(supports_returning) is not bool or not supports_returning:
+        raise SQLiteCapabilityError("SQLite native RETURNING support is required.")
     return SQLiteCapabilities(
         library_version=library.version,
         library_version_info=library.version_info,
@@ -108,4 +144,6 @@ def build_capability_report(
         journal_mode=pragmas.journal_mode.casefold(),
         synchronous_level=pragmas.synchronous_level,
         busy_timeout_ms=pragmas.busy_timeout_ms,
+        supports_json_sql=True,
+        supports_returning=True,
     )
