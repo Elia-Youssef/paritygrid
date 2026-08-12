@@ -26,6 +26,7 @@ from paritygrid.application.ports.consistency import (
 from paritygrid.application.ports.execution import (
     ExecutionDuplicateError,
     ExecutionInvalidRequestError,
+    ExecutionLeaseLostError,
     ExecutionRecordNotFoundError,
     ExecutionStaleRowVersionError,
     ExecutionStateConflictError,
@@ -380,6 +381,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                 ExecutionInvalidRequestError,
                 ExecutionDuplicateError,
                 ExecutionRecordNotFoundError,
+                ExecutionLeaseLostError,
                 ExecutionStaleRowVersionError,
                 ExecutionStateConflictError,
                 ConsistencyInvalidRequestError,

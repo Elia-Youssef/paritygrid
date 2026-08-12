@@ -33,6 +33,9 @@ from paritygrid.application.ports.consistency import (
 )
 from paritygrid.application.ports.execution import (
     ExecutionCorruptionError,
+    ExecutionLeaseExpiredError,
+    ExecutionLeaseLostError,
+    ExecutionLeaseMismatchError,
     ExecutionStateConflictError,
     ExecutionStorageUnavailableError,
 )
@@ -1139,6 +1142,49 @@ def test_stable_conflicts_from_each_repository_only_fail_the_current_ticket(
         conflict.result(timeout_seconds=1.0)
     assert following.result(timeout_seconds=1.0).mutated
     assert writer.close(timeout_seconds=1.0).drained
+
+
+@pytest.mark.parametrize(
+    "lease_error",
+    [
+        ExecutionLeaseLostError("lease lost"),
+        ExecutionLeaseExpiredError("lease expired"),
+        ExecutionLeaseMismatchError("lease mismatch"),
+    ],
+)
+def test_lease_races_are_command_local_and_writer_continues(
+    sessions: sessionmaker[Session],
+    monkeypatch: pytest.MonkeyPatch,
+    lease_error: ExecutionLeaseLostError,
+) -> None:
+    def dispatch(session: Session, submitted: WriterCommand) -> DispatchOutcome:
+        if cast(_Command, submitted).label == "lease-race":
+            session.execute(text("CREATE TABLE IF NOT EXISTS lease_guard (value INTEGER)"))
+            session.execute(text("INSERT INTO lease_guard VALUES (1)"))
+            raise lease_error
+        return successful_dispatch(session, submitted)
+
+    monkeypatch.setattr(core, "dispatch_command", dispatch)
+    writer = SQLiteTransactionalWriter(sessions, settings())
+    writer.start()
+    raced = writer.submit(command("lease-race"), timeout_seconds=1.0)
+    following = writer.submit(command("following"), timeout_seconds=1.0)
+    with pytest.raises(type(lease_error)) as caught:
+        raced.result(timeout_seconds=1.0)
+    assert caught.value is lease_error
+    receipt = following.result(timeout_seconds=1.0)
+    assert cast(_Result, receipt.result).label == "following"
+    notification = writer.notifications.take()
+    assert notification is not None
+    assert notification.submission_id == following.submission_id
+    assert writer.notifications.take() is None
+    assert writer.close(timeout_seconds=1.0).drained
+    with sessions() as session:
+        count = session.execute(
+            text("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lease_guard'")
+        ).scalar_one()
+        if count:
+            assert session.execute(text("SELECT COUNT(*) FROM lease_guard")).scalar_one() == 0
 
 
 def test_closed_observer_loops_never_escape_writer_scheduling() -> None:
