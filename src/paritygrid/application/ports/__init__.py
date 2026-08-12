@@ -2,6 +2,7 @@
 
 from paritygrid.application.ports.configuration import (
     MAX_PAGE_SIZE,
+    MAX_PIPELINE_DESCRIPTION_LENGTH,
     ConfigurationDocument,
     ConfigurationRepositoryError,
     ConfigurationStorageError,
@@ -29,6 +30,7 @@ from paritygrid.application.ports.configuration import (
 
 __all__ = [
     "MAX_PAGE_SIZE",
+    "MAX_PIPELINE_DESCRIPTION_LENGTH",
     "ConfigurationDocument",
     "ConfigurationRepositoryError",
     "ConfigurationStorageError",

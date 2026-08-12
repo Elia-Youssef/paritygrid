@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
 from typing import cast
 
 import pytest
@@ -10,6 +11,7 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.orm import Session
 
 from paritygrid.adapters.persistence import repositories as runtime
+from paritygrid.adapters.persistence.repositories import common as repository_common
 from paritygrid.application.ports import (
     ConfigurationDocument,
     ConnectorRecord,
@@ -24,7 +26,11 @@ from paritygrid.application.ports import (
     StaleConnectorRevisionError,
     StaleRowVersionError,
 )
-from paritygrid.application.ports.configuration import DocumentObject
+from paritygrid.application.ports.configuration import (
+    DocumentArray,
+    DocumentObject,
+    NestedDocumentObject,
+)
 from paritygrid.domain.models import ConnectorId, PipelineId, PipelineVersion, UtcTimestamp
 
 
@@ -208,11 +214,28 @@ def test_document_constructor_and_bounds_are_closed() -> None:
         ConfigurationDocument(items=cast(DocumentObject, ((1, 2),)))
     with pytest.raises(TypeError, match="values must be immutable"):
         ConfigurationDocument(items=cast(DocumentObject, (("bad", []),)))
+    with pytest.raises(TypeError, match="JSON-compatible"):
+        ConfigurationDocument.from_mapping({"bad": cast(object, type("Number", (int,), {})(1))})
+    with pytest.raises(ValueError, match="canonical"):
+        ConfigurationDocument(items=(("nested", NestedDocumentObject((("z", 1), ("a", 2)))),))
+    with pytest.raises(ValueError, match="canonical"):
+        ConfigurationDocument(items=(("nested", NestedDocumentObject((("a", 1), ("a", 2)))),))
     with pytest.raises(ValueError, match="too many entries"):
         ConfigurationDocument.from_mapping({"items": [None] * 10_001})
     assert repr(ConnectorSecretReference("primary", "PRIMARY")) == (
         "ConnectorSecretReference(redacted=True)"
     )
+
+
+def test_document_arrays_and_objects_have_unambiguous_immutable_shapes() -> None:
+    source = {"empty": [], "pairs": [["a", 1]], "objects": [{"a": 1}]}
+    document = ConfigurationDocument.from_mapping(source)
+    assert isinstance(document.items[0][1], DocumentArray)
+    assert document.to_mapping() == source
+    assert ConfigurationDocument.from_mapping(document.to_mapping()) == document
+    assert ConfigurationDocument(
+        items=(("values", DocumentArray((True, 1, None))),)
+    ).to_mapping() == {"values": [True, 1, None]}
 
 
 def test_secret_reference_input_type_and_nested_policy_paths_are_closed() -> None:
@@ -223,6 +246,12 @@ def test_secret_reference_input_type_and_nested_policy_paths_are_closed() -> Non
         ConfigurationDocument.from_mapping({"items": [{"api_token_reference": "primary.token"}]}),
         declared,
     )
+    with pytest.raises(InvalidRepositoryRequestError, match="sequence"):
+        runtime._validate_secret_references(
+            cast(tuple[ConnectorSecretReference, ...], cast(object, "primary"))
+        )
+    with pytest.raises(CorruptRepositoryRecordError):
+        repository_common.stored_nonnegative_int(-1, "counter")
 
 
 def test_concurrent_cas_failure_classification_is_deterministic() -> None:
@@ -316,6 +345,9 @@ class _EmptyMappingsResult:
     def scalar_one(self) -> object:
         return self._scalar
 
+    def one(self) -> tuple[int, None, None]:
+        return (0, None, None)
+
 
 class _RacingSession:
     def __init__(self, scalar: object = None) -> None:
@@ -331,6 +363,58 @@ class _RacingSession:
 def test_empty_pipeline_version_sequence_has_zero_latest_version() -> None:
     repository = runtime.SqlAlchemyPipelineRepository(cast(Session, cast(object, _RacingSession())))
     assert repository._latest_version_number(PipelineId("pip_valid")) == 0
+
+
+def test_invalid_pipeline_version_aggregate_is_corruption(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = runtime.SqlAlchemyPipelineRepository(cast(Session, cast(object, _RacingSession())))
+    result = _EmptyMappingsResult()
+
+    def invalid_aggregate() -> tuple[int, int, int]:
+        return (1, 0, 1)
+
+    def execute_invalid(_statement: object) -> _EmptyMappingsResult:
+        return result
+
+    monkeypatch.setattr(result, "one", invalid_aggregate)
+    monkeypatch.setattr(repository._session, "execute", execute_invalid)
+    with pytest.raises(CorruptRepositoryRecordError):
+        repository._latest_version_number(PipelineId("pip_valid"))
+
+    def impossible_empty_aggregate() -> tuple[int, int, None]:
+        return (0, 1, None)
+
+    monkeypatch.setattr(result, "one", impossible_empty_aggregate)
+    with pytest.raises(CorruptRepositoryRecordError, match="history"):
+        repository._latest_version_number(PipelineId("pip_valid"))
+
+
+def test_missing_pipeline_version_reads_are_empty_or_detect_orphans(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = runtime.SqlAlchemyPipelineRepository(cast(Session, cast(object, _RacingSession())))
+
+    def missing_pipeline(_pipeline_id: PipelineId) -> None:
+        return None
+
+    def empty_state(_pipeline_id: PipelineId) -> SimpleNamespace:
+        return SimpleNamespace(latest=0)
+
+    monkeypatch.setattr(repository, "get", missing_pipeline)
+    monkeypatch.setattr(repository, "_version_state", empty_state)
+    pipeline_id = PipelineId("pip_missing")
+    assert repository.get_version(pipeline_id, PipelineVersion(1)) is None
+    assert repository.list_versions(pipeline_id, limit=1).items == ()
+
+    def orphan_state(_pipeline_id: PipelineId) -> SimpleNamespace:
+        return SimpleNamespace(latest=1)
+
+    monkeypatch.setattr(repository, "_version_state", orphan_state)
+    with pytest.raises(CorruptRepositoryRecordError, match="parent"):
+        repository.get_version(pipeline_id, PipelineVersion(1))
+    with pytest.raises(CorruptRepositoryRecordError, match="parent"):
+        repository.list_versions(pipeline_id, limit=1)
 
 
 def test_pipeline_post_update_race_is_reclassified(
@@ -475,12 +559,7 @@ def test_publication_concurrent_exact_install_converges(
     repository = runtime.SqlAlchemyPipelineRepository(
         cast(Session, cast(object, _RacingSession(1)))
     )
-    versions = iter((None, installed))
-
-    def read_version(
-        _pipeline_id: PipelineId, _version: PipelineVersion
-    ) -> PipelineVersionRecord | None:
-        return next(versions)
+    states = iter((SimpleNamespace(latest=0), SimpleNamespace(latest=1)))
 
     def read_pipeline(_pipeline_id: PipelineId) -> PipelineRecord:
         return PipelineRecord(
@@ -492,7 +571,18 @@ def test_publication_concurrent_exact_install_converges(
             row_version=1,
         )
 
-    monkeypatch.setattr(repository, "get_version", read_version)
+    def read_state(_pipeline_id: PipelineId) -> SimpleNamespace:
+        return next(states)
+
+    def read_installed(
+        _pipeline_id: PipelineId,
+        _version: PipelineVersion,
+        _created_at: UtcTimestamp,
+    ) -> PipelineVersionRecord:
+        return installed
+
+    monkeypatch.setattr(repository, "_version_state", read_state)
+    monkeypatch.setattr(repository, "_get_version_row", read_installed)
     monkeypatch.setattr(repository, "get", read_pipeline)
     assert (
         repository.publish_version(

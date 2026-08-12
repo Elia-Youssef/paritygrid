@@ -9,7 +9,22 @@ from typing import Protocol, Self, cast
 
 from paritygrid.domain.models import ConnectorId, PipelineId, PipelineVersion, UtcTimestamp
 
-type DocumentValue = bool | int | str | tuple["DocumentValue", ...] | DocumentObject | None
+
+@dataclass(frozen=True, slots=True)
+class DocumentArray:
+    """An immutable JSON array whose shape cannot be confused with an object."""
+
+    values: tuple[DocumentValue, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class NestedDocumentObject:
+    """An immutable nested JSON object with an explicit structural tag."""
+
+    items: DocumentObject
+
+
+type DocumentValue = bool | int | str | DocumentArray | NestedDocumentObject | None
 type DocumentObject = tuple[tuple[str, DocumentValue], ...]
 
 MAX_PAGE_SIZE = 100
@@ -17,6 +32,7 @@ MAX_DOCUMENT_DEPTH = 32
 MAX_DOCUMENT_ENTRIES = 10_000
 MAX_DOCUMENT_KEY_LENGTH = 1_024
 MAX_DOCUMENT_STRING_LENGTH = 65_536
+MAX_PIPELINE_DESCRIPTION_LENGTH = 4_096
 
 
 class ConfigurationRepositoryError(Exception):
@@ -74,10 +90,7 @@ class ConfigurationDocument:
     items: DocumentObject
 
     def __post_init__(self) -> None:
-        candidate = _validate_document_object(cast(object, self.items), depth=0, budget=[0])
-        keys = tuple(key for key, _value in candidate)
-        if candidate != self.items or keys != tuple(sorted(keys)) or len(set(keys)) != len(keys):
-            raise ValueError("configuration document items must be canonical and sorted")
+        _validate_document_object(cast(object, self.items), depth=0, budget=[0])
 
     @classmethod
     def from_mapping(cls, value: Mapping[str, object]) -> Self:
@@ -320,34 +333,34 @@ def _freeze_object(
 
 def _freeze_value(value: object, *, depth: int, budget: list[int]) -> DocumentValue:
     _check_depth(depth)
-    if value is None or isinstance(value, bool):
+    if value is None:
+        return None
+    if type(value) is bool:
         return value
-    if isinstance(value, int):
+    if type(value) is int:
         return value
     if isinstance(value, str):
         _check_normalized_text(value, key=False)
         return value
     if isinstance(value, Mapping):
-        return _freeze_object(cast(Mapping[object, object], value), depth=depth, budget=budget)
+        return NestedDocumentObject(
+            _freeze_object(cast(Mapping[object, object], value), depth=depth, budget=budget)
+        )
     if isinstance(value, Sequence) and not isinstance(value, (str, bytes, bytearray)):
         sequence = cast(Sequence[object], value)
         result: list[DocumentValue] = []
         for item in sequence:
             _consume_entry(budget)
             result.append(_freeze_value(item, depth=depth + 1, budget=budget))
-        return tuple(result)
+        return DocumentArray(tuple(result))
     raise TypeError("configuration document values must be JSON-compatible without floats")
 
 
 def _thaw_value(value: DocumentValue) -> object:
-    if isinstance(value, tuple):
-        if all(
-            isinstance(item, tuple) and len(item) == 2 and isinstance(item[0], str)
-            for item in value
-        ):
-            object_value = cast(DocumentObject, value)
-            return {key: _thaw_value(item) for key, item in object_value}
-        return [_thaw_value(item) for item in value]
+    if isinstance(value, NestedDocumentObject):
+        return {key: _thaw_value(item) for key, item in value.items}
+    if isinstance(value, DocumentArray):
+        return [_thaw_value(item) for item in value.values]
     return value
 
 
@@ -373,7 +386,13 @@ def _validate_document_object(value: object, *, depth: int, budget: list[int]) -
                 _validate_document_value(key_value[1], depth=depth + 1, budget=budget),
             )
         )
-    return tuple(result)
+    canonical = tuple(result)
+    keys = tuple(key for key, _item in canonical)
+    if keys != tuple(sorted(keys)) or len(set(keys)) != len(keys):
+        raise ValueError(
+            "configuration document items must be canonical and sorted with unique keys"
+        )
+    return canonical
 
 
 def _validate_document_value(value: object, *, depth: int, budget: list[int]) -> DocumentValue:
@@ -381,24 +400,23 @@ def _validate_document_value(value: object, *, depth: int, budget: list[int]) ->
     if isinstance(value, str):
         _check_normalized_text(value, key=False)
         return value
-    if value is None or isinstance(value, (bool, int)):
+    if value is None:
+        return None
+    if type(value) is bool:
         return value
-    if not isinstance(value, tuple):
-        raise TypeError("configuration document values must be immutable")
-    sequence = cast(tuple[object, ...], value)
-    if all(_is_pair(item) for item in sequence):
-        return _validate_document_object(sequence, depth=depth, budget=budget)
-    result: list[DocumentValue] = []
-    for item in sequence:
-        _consume_entry(budget)
-        result.append(_validate_document_value(item, depth=depth + 1, budget=budget))
-    return tuple(result)
-
-
-def _is_pair(value: object) -> bool:
-    if not isinstance(value, tuple):
-        return False
-    return len(cast(tuple[object, ...], value)) == 2
+    if type(value) is int:
+        return value
+    if isinstance(value, NestedDocumentObject):
+        return NestedDocumentObject(
+            _validate_document_object(value.items, depth=depth, budget=budget)
+        )
+    if isinstance(value, DocumentArray):
+        result: list[DocumentValue] = []
+        for item in value.values:
+            _consume_entry(budget)
+            result.append(_validate_document_value(item, depth=depth + 1, budget=budget))
+        return DocumentArray(tuple(result))
+    raise TypeError("configuration document values must be immutable structural values")
 
 
 def _check_depth(depth: int) -> None:

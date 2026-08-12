@@ -5,16 +5,19 @@ from __future__ import annotations
 import sqlite3
 from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import closing
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Barrier
 from types import MethodType
-from typing import NoReturn, cast
+from typing import Any, NoReturn, cast
 
 import pytest
 from sqlalchemy import event, func, insert, select, text, update
-from sqlalchemy.engine import Connection
+from sqlalchemy.engine import Connection, Result
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
+from sqlalchemy.orm import Session
+from sqlalchemy.sql import Executable
 
 from paritygrid.adapters.persistence import (
     SQLiteDatabase,
@@ -464,7 +467,14 @@ def test_connector_rejects_resolved_or_undeclared_secrets_without_leakage(
             )
         assert candidate not in str(caught.value)
         assert candidate not in repr(caught.value)
+        assert caught.value.__cause__ is None
+        assert caught.value.__context__ is None
         assert session.execute(select(func.count()).select_from(connectors)).scalar_one() == 0
+    database_path = Path(cast(str, database.engine.url.database))
+    for suffix in ("", "-wal", "-shm"):
+        candidate_path = Path(f"{database_path}{suffix}")
+        if candidate_path.exists():
+            assert candidate.encode("utf-8") not in candidate_path.read_bytes()
 
 
 def test_connector_duplicate_and_transaction_rollback_are_atomic(database: SQLiteDatabase) -> None:
@@ -511,7 +521,10 @@ def test_connector_mid_write_failure_rolls_back_all_rows(database: SQLiteDatabas
                 connector_id=ConnectorId("con_inventory"),
                 kind="inventory-http",
                 display_name="Inventory",
-                configuration=document(api_token_reference="primary.token"),
+                configuration=document(
+                    api_token_reference="primary.token",
+                    backup_token_reference="backup.token",
+                ),
                 capabilities=document(),
                 schema_discovery=None,
                 secret_references=(
@@ -962,3 +975,240 @@ def test_storage_failures_are_redacted_without_raw_exception_chain(
         exposed = f"{error!s} {error!r} {error.args!r}"
         assert "canary" not in exposed
         assert session.in_transaction()
+
+
+def test_raw_version_gaps_and_precreation_publication_are_corruption(
+    database: SQLiteDatabase,
+) -> None:
+    pipeline_id = PipelineId("pip_corrupt-history")
+    with database.transaction() as session:
+        create_pipeline(SqlAlchemyPipelineRepository(session), pipeline_id)
+        session.execute(
+            insert(pipeline_versions),
+            [
+                {
+                    "pipeline_id": str(pipeline_id),
+                    "version_number": version,
+                    "specification_json": "{}",
+                    "specification_sha256": (
+                        "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                    ),
+                    "planner_format_version": 1,
+                    "published_at": str(timestamp(1)),
+                }
+                for version in (1, 3)
+            ],
+        )
+        repository = SqlAlchemyPipelineRepository(session)
+        with pytest.raises(CorruptRepositoryRecordError, match="not contiguous"):
+            repository.get_version(pipeline_id, PipelineVersion(1))
+        with pytest.raises(CorruptRepositoryRecordError, match="not contiguous"):
+            repository.list_versions(pipeline_id, limit=10)
+        with pytest.raises(CorruptRepositoryRecordError, match="not contiguous"):
+            repository.publish_version(
+                pipeline_id=pipeline_id,
+                expected_latest_version=PipelineVersion(3),
+                specification=document(),
+                planner_format_version=1,
+                published_at=timestamp(2),
+            )
+
+    early_id = PipelineId("pip_early-version")
+    with database.transaction() as session:
+        create_pipeline(SqlAlchemyPipelineRepository(session), early_id)
+        session.execute(
+            insert(pipeline_versions).values(
+                pipeline_id=str(early_id),
+                version_number=1,
+                specification_json="{}",
+                specification_sha256=(
+                    "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+                ),
+                planner_format_version=1,
+                published_at="2026-08-12T11:59:59.000000Z",
+            )
+        )
+        with pytest.raises(CorruptRepositoryRecordError, match="publication time"):
+            SqlAlchemyPipelineRepository(session).get_version(early_id, PipelineVersion(1))
+
+
+def test_connector_reads_revalidate_secret_policy_and_row_coherence(
+    database: SQLiteDatabase,
+) -> None:
+    def insert_connector(
+        session: object,
+        connector_id: str,
+        configuration_json: str,
+        *,
+        updated_at: str = "2026-08-12T12:00:00.000000Z",
+        archived_at: str | None = None,
+    ) -> None:
+        cast(Session, session).execute(
+            insert(connectors).values(
+                connector_id=connector_id,
+                kind="plain",
+                display_name="Corrupt fixture",
+                configuration_json=configuration_json,
+                capabilities_json="{}",
+                schema_discovery_json=None,
+                revision=1,
+                created_at="2026-08-12T12:00:00.000000Z",
+                updated_at=updated_at,
+                archived_at=archived_at,
+                row_version=1,
+            )
+        )
+
+    with database.transaction() as session:
+        insert_connector(session, "con_raw-secret", '{"api_token":"canary"}')
+        insert_connector(
+            session,
+            "con_unused-reference",
+            '{"api_token_reference":"primary.token"}',
+        )
+        session.execute(
+            insert(connector_secret_references),
+            [
+                {
+                    "connector_id": "con_unused-reference",
+                    "reference_name": name,
+                    "environment_variable_name": environment,
+                    "created_at": "2026-08-12T12:00:00.000000Z",
+                }
+                for name, environment in (
+                    ("primary.token", "PRIMARY_TOKEN"),
+                    ("unused.token", "UNUSED_TOKEN"),
+                )
+            ],
+        )
+        insert_connector(
+            session,
+            "con_bad-archive-time",
+            "{}",
+            updated_at="2026-08-12T12:00:01.000000Z",
+            archived_at="2026-08-12T12:00:02.000000Z",
+        )
+        insert_connector(
+            session,
+            "con_bad-reference-time",
+            '{"api_token_reference":"primary.token"}',
+        )
+        session.execute(
+            insert(connector_secret_references).values(
+                connector_id="con_bad-reference-time",
+                reference_name="primary.token",
+                environment_variable_name="PRIMARY_TOKEN",
+                created_at="2026-08-12T12:00:01.000000Z",
+            )
+        )
+        repository = SqlAlchemyConnectorRepository(session)
+        for identity in (
+            "con_raw-secret",
+            "con_unused-reference",
+            "con_bad-archive-time",
+            "con_bad-reference-time",
+        ):
+            with pytest.raises(CorruptRepositoryRecordError):
+                repository.get(ConnectorId(identity))
+
+
+def test_exact_runtime_inputs_and_description_bound_fail_before_sql(
+    database: SQLiteDatabase,
+) -> None:
+    with database.transaction() as session:
+        pipelines_repository = SqlAlchemyPipelineRepository(session)
+        connectors_repository = SqlAlchemyConnectorRepository(session)
+        with pytest.raises(InvalidRepositoryRequestError, match="pipeline identifier"):
+            pipelines_repository.get(cast(PipelineId, "pip_wrong_type"))
+        with pytest.raises(InvalidRepositoryRequestError, match="creation time"):
+            pipelines_repository.create(
+                pipeline_id=PipelineId("pip_wrong-time"),
+                display_name="Wrong",
+                description=None,
+                created_at=cast(UtcTimestamp, "2026-08-12T12:00:00.000000Z"),
+            )
+        with pytest.raises(InvalidRepositoryRequestError, match="invalid length"):
+            pipelines_repository.create(
+                pipeline_id=PipelineId("pip_long-description"),
+                display_name="Long",
+                description="x" * 4_097,
+                created_at=timestamp(0),
+            )
+        with pytest.raises(InvalidRepositoryRequestError, match="include archived"):
+            pipelines_repository.list(limit=1, include_archived=cast(bool, 1))
+        with pytest.raises(InvalidRepositoryRequestError, match="include archived"):
+            connectors_repository.list(limit=1, include_archived=cast(bool, 1))
+        with pytest.raises(InvalidRepositoryRequestError, match="connector identifier"):
+            connectors_repository.get(cast(ConnectorId, "con_wrong_type"))
+        with pytest.raises(InvalidRepositoryRequestError, match="ConfigurationDocument"):
+            connectors_repository.create(
+                connector_id=ConnectorId("con_wrong-document"),
+                kind="plain",
+                display_name="Wrong",
+                configuration=cast(ConfigurationDocument, {}),
+                capabilities=document(),
+                schema_discovery=None,
+                secret_references=(),
+                created_at=timestamp(0),
+            )
+
+
+def test_caller_owns_session_and_wal_visibility_survives_reopen(tmp_path: Path) -> None:
+    path = tmp_path / "configuration عربي %25.db"
+    database = SQLiteDatabase.open(SQLiteDatabaseConfig(database_path=path))
+    with database.engine.connect() as connection:
+        upgrade_to_head(connection)
+
+    class OwnershipSpy:
+        def __init__(self, session: Session) -> None:
+            self._session = session
+
+        def in_transaction(self) -> bool:
+            return self._session.in_transaction()
+
+        def execute(self, statement: Executable) -> Result[Any]:
+            return self._session.execute(statement)
+
+        def begin(self) -> NoReturn:
+            raise AssertionError("repository attempted to begin a transaction")
+
+        def begin_nested(self) -> NoReturn:
+            raise AssertionError("repository attempted to create a savepoint")
+
+        def commit(self) -> NoReturn:
+            raise AssertionError("repository attempted to commit")
+
+        def rollback(self) -> NoReturn:
+            raise AssertionError("repository attempted to roll back")
+
+        def close(self) -> NoReturn:
+            raise AssertionError("repository attempted to close the caller session")
+
+    try:
+        with database.transaction() as session:
+            repository = SqlAlchemyPipelineRepository(cast(Session, OwnershipSpy(session)))
+            create_pipeline(repository, PipelineId("pip_wal-visibility"))
+            with closing(sqlite3.connect(path)) as reader:
+                assert reader.execute(
+                    "SELECT count(*) FROM pipelines WHERE pipeline_id = 'pip_wal-visibility'"
+                ).fetchone() == (0,)
+            assert session.in_transaction()
+        with closing(sqlite3.connect(path)) as reader:
+            assert reader.execute(
+                "SELECT count(*) FROM pipelines WHERE pipeline_id = 'pip_wal-visibility'"
+            ).fetchone() == (1,)
+    finally:
+        database.close()
+
+    reopened = SQLiteDatabase.open(SQLiteDatabaseConfig(database_path=path))
+    try:
+        with reopened.engine.connect() as connection:
+            assert connection.exec_driver_sql("PRAGMA quick_check").scalar_one() == "ok"
+            assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
+        with reopened.transaction() as session:
+            assert (
+                SqlAlchemyPipelineRepository(session).get(PipelineId("pip_wal-visibility"))
+                is not None
+            )
+    finally:
+        reopened.close()
