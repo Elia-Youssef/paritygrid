@@ -23,7 +23,7 @@ Logical state fingerprints use SHA-256. Each canonical item is length-framed wit
 
 The root preimage contains the null-terminated domain prefix `paritygrid:canonical-state:v1`, the length-framed ASCII scope, an unsigned eight-byte item count, and the sorted leaf digests. The final value is the 64-character lowercase hexadecimal SHA-256 digest. Version 1 defines separate scopes for inventory state, reconciliation state, and repair-plan content.
 
-Repair-plan content fingerprints include the exact reconciliation fingerprint, action kind, proposed record, expected target record, and mismatch evidence. They exclude plan, action, and conflict identifiers. Full canonical encodings of repair values retain those identities for persistence and audit uses.
+Repair-plan content fingerprints include the exact reconciliation fingerprint, action kind, proposed business state, expected target business state, and mismatch evidence. They exclude plan, action, and conflict identifiers as well as connector and source-record provenance that does not change the target effect. The exact reconciliation fingerprint retains the complete observed source and target state. Full canonical encodings of repair values retain identities and record provenance for persistence and audit uses.
 
 Fingerprint inputs are snapshotted once and bounded to 10,000 items. Empty states are valid. Each scope accepts only its declared exact value type.
 

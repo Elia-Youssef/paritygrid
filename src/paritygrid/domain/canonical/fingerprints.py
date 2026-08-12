@@ -44,7 +44,13 @@ def fingerprint_state(
     except TypeError as error:
         raise _invalid_state("fingerprint.values") from error
 
-    for value in iterator:
+    while True:
+        try:
+            value = next(iterator)
+        except StopIteration:
+            break
+        except Exception as error:
+            raise _invalid_state("fingerprint.values") from error
         if len(leaves) == MAX_FINGERPRINT_ITEMS:
             raise _invalid_state("fingerprint.item-count")
         canonical_bytes = _encode_state_value(value, scope=scope, encoder=encoder)

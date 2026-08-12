@@ -242,6 +242,18 @@ def _inventory_record_value(value: InventoryRecord) -> dict[str, CanonicalPrimit
     }
 
 
+def _inventory_effect_value(value: InventoryRecord) -> dict[str, CanonicalPrimitive]:
+    """Project the business state affected by a repair without observation provenance."""
+    return {
+        "attributes": _attributes_value(value.attributes),
+        "name": value.name,
+        "quantity": value.quantity,
+        "sku": value.sku,
+        "unit_price": _money_value(value.unit_price),
+        "updated_at": str(value.updated_at),
+    }
+
+
 def _inventory_record_primitive(value: object) -> CanonicalPrimitive:
     return _inventory_record_value(cast(InventoryRecord, value))
 
@@ -316,17 +328,19 @@ def _repair_action_value(
     value: RepairAction,
     *,
     include_identity: bool,
+    include_record_provenance: bool,
     include_state_fingerprint: bool,
 ) -> dict[str, CanonicalPrimitive]:
+    record_value = _inventory_record_value if include_record_provenance else _inventory_effect_value
     primitive: dict[str, CanonicalPrimitive] = {
         "expected_target_record": (
             None
             if value.expected_target_record is None
-            else _inventory_record_value(value.expected_target_record)
+            else record_value(value.expected_target_record)
         ),
         "kind": value.kind.value,
         "mismatches": [_field_mismatch_value(item) for item in value.mismatches],
-        "proposed_record": _inventory_record_value(value.proposed_record),
+        "proposed_record": record_value(value.proposed_record),
     }
     if include_identity:
         primitive["action_id"] = value.action_id.value
@@ -340,6 +354,7 @@ def _repair_action_primitive(value: object) -> CanonicalPrimitive:
     return _repair_action_value(
         cast(RepairAction, value),
         include_identity=True,
+        include_record_provenance=True,
         include_state_fingerprint=True,
     )
 
@@ -351,6 +366,7 @@ def _repair_plan_primitive(value: object) -> CanonicalPrimitive:
             _repair_action_value(
                 action,
                 include_identity=True,
+                include_record_provenance=True,
                 include_state_fingerprint=True,
             )
             for action in plan.actions
@@ -367,6 +383,7 @@ def _repair_plan_content_primitive(plan: RepairPlan) -> CanonicalPrimitive:
             _repair_action_value(
                 action,
                 include_identity=False,
+                include_record_provenance=False,
                 include_state_fingerprint=False,
             )
             for action in plan.actions

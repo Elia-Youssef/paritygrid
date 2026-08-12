@@ -99,7 +99,7 @@ def test_every_scope_has_a_locked_golden_digest() -> None:
         == "7ea8bd3d2e37d494246317e61ddec9ab540ae4ffce74b32fe6b4d4e7fd62fe8d"
     )
     assert str(fingerprint_state([plan], scope=FingerprintScope.REPAIR_PLAN_CONTENT)) == (
-        "6dfa480e6fe7f4786ac0ab5af536e09a93e2176660ca41466a4f12414870b81b"
+        "bd5e7be1c2cfc145e1cdb0fca8fc5d137bfb0da56aea2961df061261cc41a8d3"
     )
 
 
@@ -156,6 +156,90 @@ def test_repair_plan_content_excludes_generated_plan_action_and_conflict_identit
         [first],
         scope=FingerprintScope.REPAIR_PLAN_CONTENT,
     ) == fingerprint_state([renamed], scope=FingerprintScope.REPAIR_PLAN_CONTENT)
+
+
+def test_repair_plan_content_excludes_record_provenance_but_retains_exact_state() -> None:
+    source = _record()
+    alternate_provenance = InventoryRecord.create(
+        sku=source.sku,
+        name=source.name,
+        quantity=source.quantity,
+        unit_price=source.unit_price,
+        updated_at=source.updated_at,
+        connector_id=ConnectorId("con_alternate-source"),
+        source_record_key="alternate-001",
+        attributes=dict(source.attributes),
+    )
+
+    def plan_for(record: InventoryRecord, state: StateFingerprint) -> RepairPlan:
+        action = RepairAction.from_outcome(
+            action_id=RepairActionId("rac_create-001"),
+            conflict_id=ConflictId("cnf_missing-001"),
+            state_fingerprint=state,
+            outcome=ReconciliationOutcome((record,), ()),
+        )
+        return RepairPlan(RepairPlanId("rpl_inventory-001"), state, (action,))
+
+    original = plan_for(source, STATE)
+    renamed_provenance = plan_for(alternate_provenance, STATE)
+    changed_state = plan_for(alternate_provenance, StateFingerprint("2" * 64))
+
+    original_digest = fingerprint_state([original], scope=FingerprintScope.REPAIR_PLAN_CONTENT)
+    assert original_digest == fingerprint_state(
+        [renamed_provenance], scope=FingerprintScope.REPAIR_PLAN_CONTENT
+    )
+    assert original_digest != fingerprint_state(
+        [changed_state], scope=FingerprintScope.REPAIR_PLAN_CONTENT
+    )
+
+
+def test_multiple_repair_actions_cannot_reintroduce_generated_identity_ordering() -> None:
+    def plan_for(identities: tuple[tuple[str, str], ...]) -> RepairPlan:
+        actions = tuple(
+            RepairAction.from_outcome(
+                action_id=RepairActionId(action_id),
+                conflict_id=ConflictId(conflict_id),
+                state_fingerprint=STATE,
+                outcome=ReconciliationOutcome(
+                    (_record(sku=f"SKU-{index:03d}", source_key=f"source-{index:03d}"),),
+                    (),
+                ),
+            )
+            for index, (action_id, conflict_id) in enumerate(identities, start=1)
+        )
+        return RepairPlan(RepairPlanId("rpl_inventory-001"), STATE, actions)
+
+    first = plan_for(
+        (("rac_generated-z", "cnf_generated-z"), ("rac_generated-a", "cnf_generated-a"))
+    )
+    renamed = plan_for(
+        (("rac_generated-a", "cnf_generated-a"), ("rac_generated-z", "cnf_generated-z"))
+    )
+
+    assert fingerprint_state(
+        [first], scope=FingerprintScope.REPAIR_PLAN_CONTENT
+    ) == fingerprint_state([renamed], scope=FingerprintScope.REPAIR_PLAN_CONTENT)
+
+
+def test_reconciliation_fingerprint_retains_exact_observation_provenance() -> None:
+    original = _record()
+    alternate = InventoryRecord.create(
+        sku=original.sku,
+        name=original.name,
+        quantity=original.quantity,
+        unit_price=original.unit_price,
+        updated_at=original.updated_at,
+        connector_id=ConnectorId("con_alternate-source"),
+        source_record_key="alternate-001",
+        attributes=dict(original.attributes),
+    )
+    original_outcome = ReconciliationOutcome((original,), ())
+    alternate_outcome = ReconciliationOutcome((alternate,), ())
+
+    assert original_outcome.classification == alternate_outcome.classification
+    assert fingerprint_state(
+        [original_outcome], scope=FingerprintScope.RECONCILIATION_STATE
+    ) != fingerprint_state([alternate_outcome], scope=FingerprintScope.RECONCILIATION_STATE)
 
 
 def test_repair_plan_semantic_change_changes_its_content_digest() -> None:
@@ -233,6 +317,22 @@ def test_invalid_scope_values_and_non_iterables_raise_typed_errors() -> None:
 
     assert captured_scope.value.subject_type == "fingerprint.scope"
     assert captured_values.value.subject_type == "fingerprint.values"
+
+
+def test_iterator_failure_is_translated_to_a_typed_fingerprint_error() -> None:
+    class BrokenIterator:
+        def __iter__(self) -> BrokenIterator:
+            return self
+
+        def __next__(self) -> InventoryRecord:
+            raise RuntimeError("synthetic iterator failure")
+
+    with pytest.raises(CanonicalEncodingError) as captured:
+        fingerprint_state(BrokenIterator(), scope=FingerprintScope.INVENTORY_STATE)
+
+    assert captured.value.reason is CanonicalErrorCode.INVALID_CANONICAL_VALUE
+    assert captured.value.subject_type == "fingerprint.values"
+    assert isinstance(captured.value.__cause__, RuntimeError)
 
 
 def test_fingerprint_version_validation_uses_the_canonical_encoder_contract() -> None:
