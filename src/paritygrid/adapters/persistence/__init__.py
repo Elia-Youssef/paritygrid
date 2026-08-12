@@ -30,6 +30,9 @@ from paritygrid.adapters.persistence.repositories import (
     MAX_CANONICAL_DOCUMENT_BYTES,
     SqlAlchemyConnectorRepository,
     SqlAlchemyPipelineRepository,
+    SqlAlchemyRunRepository,
+    SqlAlchemyWorkAttemptRepository,
+    SqlAlchemyWorkItemRepository,
 )
 from paritygrid.adapters.persistence.sqlite import (
     SessionFactory,
@@ -82,6 +85,9 @@ __all__ = (
     "Sha256Digest",
     "SqlAlchemyConnectorRepository",
     "SqlAlchemyPipelineRepository",
+    "SqlAlchemyRunRepository",
+    "SqlAlchemyWorkAttemptRepository",
+    "SqlAlchemyWorkItemRepository",
     "WorkAttemptOutcome",
     "build_capability_report",
     "create_session_factory",

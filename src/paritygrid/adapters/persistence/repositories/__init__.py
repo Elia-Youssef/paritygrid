@@ -8,6 +8,11 @@ from paritygrid.adapters.persistence.repositories.connectors import SqlAlchemyCo
 from paritygrid.adapters.persistence.repositories.pipelines import (
     SqlAlchemyPipelineRepository,
 )
+from paritygrid.adapters.persistence.repositories.runs import SqlAlchemyRunRepository
+from paritygrid.adapters.persistence.repositories.work_items import (
+    SqlAlchemyWorkAttemptRepository,
+    SqlAlchemyWorkItemRepository,
+)
 
 MAX_PERSISTED_INTEGER = _common.MAX_PERSISTED_INTEGER
 _bounded_text = _common.bounded_text
@@ -31,4 +36,7 @@ __all__ = [
     "MAX_CANONICAL_DOCUMENT_BYTES",
     "SqlAlchemyConnectorRepository",
     "SqlAlchemyPipelineRepository",
+    "SqlAlchemyRunRepository",
+    "SqlAlchemyWorkAttemptRepository",
+    "SqlAlchemyWorkItemRepository",
 ]
