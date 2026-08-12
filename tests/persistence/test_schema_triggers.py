@@ -19,6 +19,54 @@ UTC = "2026-08-12T12:00:00.000000Z"
 HASH_A = "a" * 64
 HASH_B = "b" * 64
 
+EXPECTED_IMMUTABLE_COLUMNS = {
+    "system_metadata": ("key",),
+    "pipelines": ("pipeline_id", "created_at"),
+    "connectors": ("connector_id", "kind", "created_at"),
+    "runs": (
+        "run_id",
+        "pipeline_id",
+        "pipeline_version_number",
+        "runner_kind",
+        "runner_configuration_json",
+        "scenario_seed",
+        "created_at",
+    ),
+    "run_event_counters": ("run_id",),
+    "run_nodes": ("run_id", "node_id"),
+    "work_items": (
+        "work_item_id",
+        "run_id",
+        "node_id",
+        "partition_key",
+        "input_reference_json",
+        "created_at",
+    ),
+    "checkpoint_heads": ("run_id", "node_id", "partition_key"),
+    "idempotency_records": ("scope", "idempotency_key", "request_sha256", "created_at"),
+    "repair_plans": (
+        "repair_plan_id",
+        "run_id",
+        "reconciliation_fingerprint",
+        "content_fingerprint",
+        "created_at",
+    ),
+    "repair_actions": (
+        "repair_action_id",
+        "repair_plan_id",
+        "run_id",
+        "conflict_id",
+        "canonical_key",
+        "action_kind",
+        "external_idempotency_key",
+        "before_sha256",
+        "proposed_after_sha256",
+        "proposed_record_json",
+        "expected_target_record_json",
+        "mismatch_evidence_json",
+    ),
+}
+
 
 @pytest.fixture
 def engine() -> Iterator[Engine]:
@@ -98,6 +146,11 @@ def test_catalog_covers_whole_row_and_immutable_column_update_guards() -> None:
     assert update_prohibitions == set(IMMUTABLE_TABLE_NAMES)
     assert protected_columns == set(IMMUTABLE_COLUMNS)
     assert update_prohibitions.isdisjoint(protected_columns)
+    assert dict(IMMUTABLE_COLUMNS) == EXPECTED_IMMUTABLE_COLUMNS
+    assert all(
+        set(columns) <= set(metadata.tables[table_name].columns.keys())
+        for table_name, columns in IMMUTABLE_COLUMNS.items()
+    )
 
 
 def test_trigger_names_and_sql_are_unique_deterministic_and_migration_ready() -> None:
@@ -131,10 +184,33 @@ def test_trigger_names_and_sql_are_unique_deterministic_and_migration_ready() ->
 def test_installed_catalog_matches_declarations(engine: Engine) -> None:
     with engine.begin() as connection:
         install_integrity_triggers(connection)
-        names = connection.exec_driver_sql(
-            "SELECT name FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
-        ).scalars()
-        assert tuple(names) == tuple(item.name for item in TRIGGER_DECLARATIONS)
+        rows = connection.exec_driver_sql(
+            "SELECT name, tbl_name, sql FROM sqlite_master WHERE type = 'trigger' ORDER BY name"
+        ).all()
+        assert tuple(rows) == tuple(
+            (item.name, item.table_name, item.sql) for item in TRIGGER_DECLARATIONS
+        )
+
+
+def test_immutable_history_trigger_rejects_no_op_update(engine: Engine) -> None:
+    with engine.begin() as connection:
+        install_integrity_triggers(connection)
+        connection.exec_driver_sql(
+            "INSERT INTO pipelines "
+            "(pipeline_id, display_name, created_at, row_version) VALUES (?, ?, ?, ?)",
+            ("pip_example", "Example", UTC, 1),
+        )
+        connection.exec_driver_sql(
+            "INSERT INTO pipeline_versions "
+            "(pipeline_id, version_number, specification_json, specification_sha256, "
+            "planner_format_version, published_at) VALUES (?, ?, ?, ?, ?, ?)",
+            ("pip_example", 1, "{}", HASH_A, 1, UTC),
+        )
+        with Savepoint(connection), pytest.raises(IntegrityError):
+            connection.exec_driver_sql(
+                "UPDATE pipeline_versions SET version_number = version_number "
+                "WHERE pipeline_id = 'pip_example'"
+            )
 
 
 def test_triggers_allow_named_mutation_but_protect_identity_and_delete(engine: Engine) -> None:
@@ -148,6 +224,9 @@ def test_triggers_allow_named_mutation_but_protect_identity_and_delete(engine: E
         connection.exec_driver_sql(
             "UPDATE pipelines SET display_name = ?, row_version = ? WHERE pipeline_id = ?",
             ("Renamed", 2, "pip_example"),
+        )
+        connection.exec_driver_sql(
+            "UPDATE pipelines SET pipeline_id = pipeline_id WHERE pipeline_id = 'pip_example'"
         )
         assert (
             connection.exec_driver_sql(

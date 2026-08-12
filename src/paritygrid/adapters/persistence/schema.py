@@ -105,7 +105,13 @@ def _utc(column: str, name: str, *, nullable: bool = False) -> CheckConstraint:
         f"AND substr({column}, 12, 2) NOT GLOB '*[^0-9]*' "
         f"AND substr({column}, 15, 2) NOT GLOB '*[^0-9]*' "
         f"AND substr({column}, 18, 2) NOT GLOB '*[^0-9]*' "
-        f"AND substr({column}, 21, 6) NOT GLOB '*[^0-9]*'"
+        f"AND substr({column}, 21, 6) NOT GLOB '*[^0-9]*' "
+        f"AND substr({column}, 1, 4) BETWEEN '0001' AND '9999' "
+        f"AND substr({column}, 6, 2) BETWEEN '01' AND '12' "
+        f"AND substr({column}, 9, 2) BETWEEN '01' AND '31' "
+        f"AND substr({column}, 12, 2) BETWEEN '00' AND '23' "
+        f"AND substr({column}, 15, 2) BETWEEN '00' AND '59' "
+        f"AND substr({column}, 18, 2) BETWEEN '00' AND '59'"
     )
     if nullable:
         expression = f"{column} IS NULL OR ({expression})"
@@ -599,6 +605,7 @@ artifact_manifests = Table(
         "run_nodes",
     ),
     _uq("artifact_manifests", "relative_path"),
+    _uq("artifact_manifests", "artifact_id", "run_id", "node_id", "partition_key"),
     _id("artifact_id", "art", "artifact_id_shape"),
     _bounded_text("partition_key", 128, "partition_key_size"),
     CheckConstraint(
@@ -657,13 +664,23 @@ checkpoints = Table(
         ["checkpoint_heads.run_id", "checkpoint_heads.node_id", "checkpoint_heads.partition_key"],
         "checkpoint_heads",
     ),
-    _fk("checkpoints", ["artifact_id"], ["artifact_manifests.artifact_id"], "artifact_manifests"),
+    _fk(
+        "checkpoints",
+        ["artifact_id", "run_id", "node_id", "partition_key"],
+        [
+            "artifact_manifests.artifact_id",
+            "artifact_manifests.run_id",
+            "artifact_manifests.node_id",
+            "artifact_manifests.partition_key",
+        ],
+        "artifact_manifests",
+    ),
     _positive("version", "version_range"),
     _positive("payload_schema_version", "payload_schema_version_range"),
     _json("source_cursor_json", "source_cursor_json_object", shape="object", nullable=True),
     _json("output_position_json", "output_position_json_object", shape="object", nullable=True),
     _utc("committed_at", "committed_at_utc"),
-    _ix("checkpoints", "artifact_id"),
+    _ix("checkpoints", "artifact_id", "run_id", "node_id", "partition_key"),
 )
 
 execution_events = Table(
@@ -799,7 +816,7 @@ reconciliation_conflicts = Table(
     _column("created_at", String(27)),
     _pk("reconciliation_conflicts", "conflict_id"),
     _uq("reconciliation_conflicts", "run_id", "canonical_key"),
-    _uq("reconciliation_conflicts", "conflict_id", "run_id"),
+    _uq("reconciliation_conflicts", "conflict_id", "run_id", "canonical_key"),
     _fk("reconciliation_conflicts", ["run_id"], ["runs.run_id"], "runs"),
     _id("conflict_id", "cnf", "conflict_id_shape"),
     _bounded_text("canonical_key", 64, "canonical_key_size"),
@@ -859,6 +876,7 @@ repair_plans = Table(
         "AND length(failure_detail) BETWEEN 1 AND 4096)",
         name="failure_detail_size",
     ),
+    _ix("repair_plans", "run_id", "reconciliation_fingerprint"),
 )
 
 repair_approvals = Table(
@@ -884,6 +902,7 @@ repair_approvals = Table(
     _bounded_text("correlation_id", 96, "correlation_id_size"),
     _positive("approval_schema_version", "approval_schema_version_range"),
     _json("detail_json", "detail_json_object", shape="object"),
+    _ix("repair_approvals", "repair_plan_id", "reconciliation_fingerprint"),
 )
 
 repair_actions = Table(
@@ -917,8 +936,12 @@ repair_actions = Table(
     ),
     _fk(
         "repair_actions",
-        ["conflict_id", "run_id"],
-        ["reconciliation_conflicts.conflict_id", "reconciliation_conflicts.run_id"],
+        ["conflict_id", "run_id", "canonical_key"],
+        [
+            "reconciliation_conflicts.conflict_id",
+            "reconciliation_conflicts.run_id",
+            "reconciliation_conflicts.canonical_key",
+        ],
         "reconciliation_conflicts",
     ),
     _id("repair_action_id", "rac", "repair_action_id_shape"),
@@ -954,7 +977,8 @@ repair_actions = Table(
         "AND expected_target_record_json IS NOT NULL)",
         name="action_shape",
     ),
-    _ix("repair_actions", "conflict_id", "run_id"),
+    _ix("repair_actions", "repair_plan_id", "run_id"),
+    _ix("repair_actions", "conflict_id", "run_id", "canonical_key"),
     CheckConstraint(
         "(application_status = 'pending' AND application_result_json IS NULL "
         "AND target_version IS NULL AND applied_at IS NULL AND failed_at IS NULL) OR "

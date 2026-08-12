@@ -3,6 +3,8 @@
 import ast
 import importlib
 import os
+import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -88,6 +90,43 @@ def test_foreign_keys_never_cascade_or_nullify_operational_history() -> None:
             assert constraint.onupdate is None
 
 
+def test_every_foreign_key_has_a_supporting_child_index() -> None:
+    for table in metadata.tables.values():
+        indexed_prefixes = [
+            tuple(column.name for column in constraint.columns)
+            for constraint in table.constraints
+            if isinstance(constraint, (PrimaryKeyConstraint, SQLUniqueConstraint))
+        ]
+        indexed_prefixes.extend(
+            tuple(column.name for column in index.columns) for index in table.indexes
+        )
+        for constraint in table.foreign_key_constraints:
+            child_columns = tuple(column.name for column in constraint.columns)
+            assert any(
+                columns[: len(child_columns)] == child_columns for columns in indexed_prefixes
+            ), f"{table.name} foreign key {constraint.name} lacks a supporting child index"
+
+
+def test_every_foreign_key_targets_an_exact_unique_parent_key() -> None:
+    for table in metadata.tables.values():
+        for constraint in table.foreign_key_constraints:
+            parent = constraint.referred_table
+            parent_columns = tuple(element.column.name for element in constraint.elements)
+            unique_parent_keys = [
+                tuple(column.name for column in parent_constraint.columns)
+                for parent_constraint in parent.constraints
+                if isinstance(parent_constraint, (PrimaryKeyConstraint, SQLUniqueConstraint))
+            ]
+            unique_parent_keys.extend(
+                tuple(column.name for column in index.columns)
+                for index in parent.indexes
+                if index.unique
+            )
+            assert parent_columns in unique_parent_keys, (
+                f"{table.name} foreign key {constraint.name} does not target an exact unique key"
+            )
+
+
 def test_sqlite_schema_compiles_deterministically() -> None:
     first = _compiled_schema()
     second = _compiled_schema()
@@ -106,6 +145,29 @@ def test_schema_import_does_not_create_runtime_files(tmp_path: Path) -> None:
     finally:
         os.chdir(previous)
     assert set(tmp_path.iterdir()) == before
+
+
+def test_fresh_mapping_import_and_configuration_have_no_file_side_effects(tmp_path: Path) -> None:
+    source = """
+from pathlib import Path
+from sqlalchemy.orm import configure_mappers
+from paritygrid.adapters.persistence.schema import OPERATIONAL_TABLE_NAMES
+
+before = tuple(sorted(path.name for path in Path.cwd().iterdir()))
+configure_mappers()
+after = tuple(sorted(path.name for path in Path.cwd().iterdir()))
+assert len(OPERATIONAL_TABLE_NAMES) == 21
+assert after == before
+"""
+    result = subprocess.run(
+        [sys.executable, "-I", "-c", source],
+        cwd=tmp_path,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+    assert tuple(tmp_path.iterdir()) == ()
 
 
 def test_schema_dependency_direction_stays_inside_adapter_boundary() -> None:
