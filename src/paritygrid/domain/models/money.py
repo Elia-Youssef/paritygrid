@@ -10,6 +10,7 @@ _MONEY_PATTERN = re.compile(
     r"(?P<currency>[A-Z]{3}) (?P<amount>-?(?:0|[1-9][0-9]*)(?:\.(?P<fraction>[0-9]+))?)",
     flags=re.ASCII,
 )
+_MAX_MONEY_TEXT_LENGTH = 21
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -65,6 +66,8 @@ class Money:
     def parse(cls, value: str) -> Self:
         """Parse the canonical `<currency> <amount>` representation."""
         text = _require_text(value, subject="money")
+        if len(text) > _MAX_MONEY_TEXT_LENGTH:
+            raise ValueError("money representation exceeds the supported size")
         match = _MONEY_PATTERN.fullmatch(text)
         if match is None:
             raise ValueError("money must use canonical `<currency> <amount>` form")
@@ -112,7 +115,7 @@ def _validate_currency(value: object) -> str:
 
 
 def _validate_currency_value(value: object) -> CurrencyCode:
-    if not isinstance(value, CurrencyCode):
+    if type(value) is not CurrencyCode:
         raise TypeError("money currency must be a CurrencyCode")
     return value
 

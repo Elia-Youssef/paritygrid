@@ -228,6 +228,29 @@ def test_dangerous_reference_fails_closed_across_nested_scope_shadowing(tmp_path
 
 
 @pytest.mark.parametrize(
+    ("source_text", "expected"),
+    [
+        ("__loader__.load_module('fastapi')\n", "runtime.__loader__"),
+        ("__spec__.loader.load_module('fastapi')\n", "runtime.__spec__"),
+    ],
+)
+def test_runtime_import_hooks_are_rejected(
+    tmp_path: Path,
+    source_text: str,
+    expected: str,
+) -> None:
+    package_root = tmp_path / "paritygrid"
+    domain_root = package_root / "domain"
+    domain_root.mkdir(parents=True)
+    source = domain_root / "value.py"
+    source.write_text(source_text, encoding="utf-8")
+
+    violations = _find_file_violations(source, package_root)
+
+    assert expected in {violation.imported_module for violation in violations}
+
+
+@pytest.mark.parametrize(
     "source_text",
     [
         "def load():\n    import fastapi\n",

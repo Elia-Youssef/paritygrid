@@ -25,6 +25,11 @@ from paritygrid.domain.repair import (
     StaleRepairPlanError,
 )
 
+
+class _RepairActionSubclass(RepairAction):
+    pass
+
+
 CURRENT = StateFingerprint("1" * 64)
 STALE = StateFingerprint("2" * 64)
 
@@ -227,6 +232,21 @@ def test_plan_rejects_untrusted_fields(
 
     with pytest.raises(expected_error, match=message):
         RepairPlan(**values)  # type: ignore[arg-type]
+
+
+def test_repair_plan_rejects_a_registered_action_subclass() -> None:
+    action = _create_action()
+    action_subclass = _RepairActionSubclass(
+        action.action_id,
+        action.conflict_id,
+        action.state_fingerprint,
+        action.kind,
+        action.proposed_record,
+        action.expected_target_record,
+    )
+
+    with pytest.raises(TypeError, match="RepairAction"):
+        RepairPlan(RepairPlanId("rpl_inventory-001"), CURRENT, (action_subclass,))
 
 
 def test_plan_bounds_the_number_of_actions_before_canonicalization() -> None:

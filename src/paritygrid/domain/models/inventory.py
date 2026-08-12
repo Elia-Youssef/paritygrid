@@ -133,7 +133,7 @@ def _validate_quantity(value: object) -> int:
 
 
 def _validate_unit_price(value: object) -> Money:
-    if not isinstance(value, Money):
+    if type(value) is not Money:
         raise TypeError("inventory unit price must be Money")
     if value.amount < 0:
         raise ValueError("inventory unit price must not be negative")
@@ -141,19 +141,19 @@ def _validate_unit_price(value: object) -> Money:
 
 
 def _validate_timestamp(value: object) -> UtcTimestamp:
-    if not isinstance(value, UtcTimestamp):
+    if type(value) is not UtcTimestamp:
         raise TypeError("inventory timestamp must be UtcTimestamp")
     return value
 
 
 def _validate_connector(value: object) -> ConnectorId:
-    if not isinstance(value, ConnectorId):
+    if type(value) is not ConnectorId:
         raise TypeError("inventory connector must be ConnectorId")
     return value
 
 
 def _validate_attributes(value: object) -> InventoryAttributes:
-    if not isinstance(value, InventoryAttributes):
+    if type(value) is not InventoryAttributes:
         raise TypeError("inventory record attributes must be InventoryAttributes")
     return value
 
@@ -195,8 +195,12 @@ def _canonical_attributes(value: object) -> tuple[tuple[str, str], ...]:
 def _mapping_items(value: object) -> tuple[tuple[str, str], ...]:
     if not isinstance(value, Mapping):
         raise TypeError("inventory attributes must be a mapping")
-    items = cast(Mapping[object, object], value).items()
-    return tuple(cast(tuple[str, str], item) for item in items)
+    items: list[tuple[str, str]] = []
+    for index, item in enumerate(cast(Mapping[object, object], value).items()):
+        if index == InventoryAttributes.MAX_ITEMS:
+            raise ValueError("inventory record has too many attributes")
+        items.append(cast(tuple[str, str], item))
+    return tuple(items)
 
 
 def _attribute_pair(value: object) -> tuple[object, object]:
@@ -221,12 +225,13 @@ def _normalize_business_text(
     normalized = unicodedata.normalize("NFC", value)
     if not normalized and not allow_empty:
         raise ValueError(f"{field} must not be empty")
-    if len(normalized) > max_characters or len(normalized.encode("utf-8")) > max_utf8_bytes:
-        raise ValueError(f"{field} exceeds its size limit")
     if normalized != normalized.strip(" ") or "  " in normalized:
         raise ValueError(f"{field} must use canonical spacing")
     if any(character.isspace() and character != " " for character in normalized):
         raise ValueError(f"{field} contains unsupported whitespace")
     if any(unicodedata.category(character).startswith("C") for character in normalized):
         raise ValueError(f"{field} contains a control or unsupported code point")
+    encoded = normalized.encode("utf-8")
+    if len(normalized) > max_characters or len(encoded) > max_utf8_bytes:
+        raise ValueError(f"{field} exceeds its size limit")
     return normalized
