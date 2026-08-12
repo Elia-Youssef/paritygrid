@@ -1,0 +1,92 @@
+[build-system]
+requires = ["hatchling>=1.27,<2"]
+build-backend = "hatchling.build"
+
+[project]
+name = "paritygrid"
+version = "0.1.0"
+description = "Verifiable data reconciliation and observable I/O execution."
+readme = "README.md"
+requires-python = ">=3.14"
+authors = [
+  { name = "ParityGrid contributors" },
+]
+dependencies = [
+  "fastapi>=0.116,<1",
+  "pydantic-settings>=2.10,<3",
+  "typer>=0.16,<1",
+  "uvicorn>=0.35,<1",
+]
+
+[project.scripts]
+paritygrid = "paritygrid.cli:app"
+paritygrid-check-boundaries = "paritygrid.quality.import_boundaries:main"
+
+[dependency-groups]
+dev = [
+  "httpx>=0.28,<1",
+  "pyright>=1.1.404,<2",
+  "pytest>=8.4,<10",
+  "pytest-cov>=6.2,<8",
+  "ruff>=0.12,<1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/paritygrid"]
+
+[tool.pyright]
+include = ["src", "tests"]
+exclude = [".venv", "tests/fixtures"]
+pythonVersion = "3.14"
+typeCheckingMode = "strict"
+venvPath = "."
+venv = ".venv"
+
+[tool.pytest.ini_options]
+addopts = [
+  "--strict-config",
+  "--strict-markers",
+  "-ra",
+]
+testpaths = ["tests"]
+
+[tool.coverage.run]
+branch = true
+source = ["paritygrid"]
+
+[tool.coverage.report]
+fail_under = 90
+show_missing = true
+skip_covered = true
+
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+src = ["src", "tests"]
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "ANN",
+  "ASYNC",
+  "B",
+  "C4",
+  "E",
+  "F",
+  "I",
+  "N",
+  "PERF",
+  "PIE",
+  "PT",
+  "RUF",
+  "SIM",
+  "UP",
+  "W",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["ANN401"]

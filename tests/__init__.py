@@ -1,0 +1,1 @@
+"""ParityGrid test suite."""
