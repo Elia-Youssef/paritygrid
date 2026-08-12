@@ -10,3 +10,4 @@
 *.ico binary
 *.woff2 binary
 *.parquet binary
+tests/fixtures/persistence/v0001/schema.sql whitespace=-trailing-space
