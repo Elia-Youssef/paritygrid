@@ -26,6 +26,11 @@ from paritygrid.adapters.persistence.migration import (
     MigrationReport,
     upgrade_to_head,
 )
+from paritygrid.adapters.persistence.repositories import (
+    MAX_CANONICAL_DOCUMENT_BYTES,
+    SqlAlchemyConnectorRepository,
+    SqlAlchemyPipelineRepository,
+)
 from paritygrid.adapters.persistence.sqlite import (
     SessionFactory,
     SQLiteDatabase,
@@ -49,6 +54,7 @@ from paritygrid.adapters.persistence.values import (
 
 __all__ = (
     "HEAD_REVISION",
+    "MAX_CANONICAL_DOCUMENT_BYTES",
     "MINIMUM_SQLITE_VERSION",
     "REQUIRED_BUSY_TIMEOUT_MS",
     "REQUIRED_JOURNAL_MODE",
@@ -74,6 +80,8 @@ __all__ = (
     "SecretReferenceName",
     "SessionFactory",
     "Sha256Digest",
+    "SqlAlchemyConnectorRepository",
+    "SqlAlchemyPipelineRepository",
     "WorkAttemptOutcome",
     "build_capability_report",
     "create_session_factory",
