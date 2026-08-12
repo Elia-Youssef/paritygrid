@@ -23,6 +23,7 @@ dependencies = [
 [project.scripts]
 paritygrid = "paritygrid.cli:app"
 paritygrid-check-boundaries = "paritygrid.quality.import_boundaries:main"
+paritygrid-freeze-v0001 = "paritygrid.quality.frozen_schema:main"
 
 [dependency-groups]
 dev = [
