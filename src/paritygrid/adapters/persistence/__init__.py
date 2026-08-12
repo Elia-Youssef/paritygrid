@@ -28,7 +28,10 @@ from paritygrid.adapters.persistence.migration import (
 )
 from paritygrid.adapters.persistence.repositories import (
     MAX_CANONICAL_DOCUMENT_BYTES,
+    SqlAlchemyCheckpointRepository,
     SqlAlchemyConnectorRepository,
+    SqlAlchemyExecutionEventRepository,
+    SqlAlchemyIdempotencyRepository,
     SqlAlchemyPipelineRepository,
     SqlAlchemyRunRepository,
     SqlAlchemyWorkAttemptRepository,
@@ -83,7 +86,10 @@ __all__ = (
     "SecretReferenceName",
     "SessionFactory",
     "Sha256Digest",
+    "SqlAlchemyCheckpointRepository",
     "SqlAlchemyConnectorRepository",
+    "SqlAlchemyExecutionEventRepository",
+    "SqlAlchemyIdempotencyRepository",
     "SqlAlchemyPipelineRepository",
     "SqlAlchemyRunRepository",
     "SqlAlchemyWorkAttemptRepository",
