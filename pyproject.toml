@@ -35,7 +35,7 @@ dev = [
 packages = ["src/paritygrid"]
 
 [tool.pyright]
-include = ["src", "tests"]
+include = ["src", "tests", "scripts/verify_frontend_api_path.py"]
 exclude = [".venv", "tests/fixtures"]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"

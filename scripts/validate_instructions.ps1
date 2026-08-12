@@ -6,6 +6,22 @@ $projectRoot = Split-Path -Parent $PSScriptRoot
 $docsRoot = Join-Path $projectRoot 'docs'
 $failures = [System.Collections.Generic.List[string]]::new()
 
+function Get-ProjectRelativePath {
+    param(
+        [Parameter(Mandatory)]
+        [string]$LiteralPath
+    )
+
+    Push-Location -LiteralPath $projectRoot
+    try {
+        $relativePath = Resolve-Path -LiteralPath $LiteralPath -Relative
+        return $relativePath -replace '^\.[\\/]', ''
+    }
+    finally {
+        Pop-Location
+    }
+}
+
 $requiredFiles = @(
     'README.md',
     'docs/INDEX.md',
@@ -34,8 +50,13 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
-$markdownFiles = Get-ChildItem -LiteralPath $projectRoot -Recurse -File -Filter '*.md' |
-    Where-Object { $_.FullName -notlike "*$([IO.Path]::DirectorySeparatorChar).git$([IO.Path]::DirectorySeparatorChar)*" }
+$repositoryFiles = @(
+    git -C $projectRoot ls-files
+    git -C $projectRoot ls-files --others --exclude-standard
+) | Sort-Object -Unique
+$markdownFiles = $repositoryFiles |
+    Where-Object { [IO.Path]::GetExtension($_) -ieq '.md' } |
+    ForEach-Object { Get-Item -LiteralPath (Join-Path $projectRoot $_) }
 
 $prohibitedPatterns = @(
     ('\b' + 'ag' + 'ents?\b'),
@@ -49,7 +70,7 @@ foreach ($markdownFile in $markdownFiles) {
     $content = Get-Content -LiteralPath $markdownFile.FullName -Raw
     foreach ($pattern in $prohibitedPatterns) {
         if ($content -cmatch $pattern -or $content -match $pattern) {
-            $relativePath = [IO.Path]::GetRelativePath($projectRoot, $markdownFile.FullName)
+            $relativePath = Get-ProjectRelativePath -LiteralPath $markdownFile.FullName
             $failures.Add("Prohibited internal terminology in Markdown: $relativePath")
             break
         }
@@ -69,17 +90,16 @@ foreach ($markdownFile in $markdownFiles) {
 
         $resolvedPath = Join-Path $markdownFile.DirectoryName $pathPart
         if (-not (Test-Path -LiteralPath $resolvedPath)) {
-            $relativePath = [IO.Path]::GetRelativePath($projectRoot, $markdownFile.FullName)
+            $relativePath = Get-ProjectRelativePath -LiteralPath $markdownFile.FullName
             $failures.Add("Broken local link in ${relativePath}: $target")
         }
     }
 }
 
-$prohibitedNames = Get-ChildItem -LiteralPath $projectRoot -Recurse -Force |
-    Where-Object { $_.Name -ieq ('AG' + 'ENTS.md') }
+$prohibitedNames = $repositoryFiles |
+    Where-Object { [IO.Path]::GetFileName($_) -ieq ('AG' + 'ENTS.md') }
 foreach ($prohibitedName in $prohibitedNames) {
-    $relativePath = [IO.Path]::GetRelativePath($projectRoot, $prohibitedName.FullName)
-    $failures.Add("Prohibited instruction filename: $relativePath")
+    $failures.Add("Prohibited instruction filename: $prohibitedName")
 }
 
 $unsafeTrackedExtensions = @('.db', '.duckdb', '.parquet', '.pem', '.key')
