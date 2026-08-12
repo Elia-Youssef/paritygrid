@@ -1,0 +1,141 @@
+@import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+
+  --background: #071017;
+  --foreground: #ecf6f8;
+  --surface: #0b1720;
+  --surface-elevated: #10212c;
+  --surface-quiet: #09131b;
+  --muted: #91a7ad;
+  --muted-strong: #b7c8cc;
+  --border: #213640;
+  --border-strong: #34505c;
+  --focus-ring: #72e6eb;
+  --primary: #42d4da;
+  --primary-foreground: #031013;
+  --secondary: #19303b;
+  --secondary-foreground: #d9edef;
+
+  --state-active: #42d4da;
+  --state-verified: #42cd91;
+  --state-warning: #e9b859;
+  --state-failure: #ef6f79;
+  --state-stale: #8aa0a7;
+  --state-paused: #a896ed;
+  --state-cancelled: #bd8793;
+
+  --chart-cyan: #42d4da;
+  --chart-green: #42cd91;
+  --chart-amber: #e9b859;
+  --chart-violet: #a896ed;
+  --runner-sequential: #b9c7cb;
+  --runner-threaded: #42d4da;
+  --runner-async: #42cd91;
+  --runner-process: #a896ed;
+  --queue-idle: #27404b;
+  --queue-busy: #b8893c;
+  --queue-saturated: #d85f6b;
+
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --text-xs: 0.75rem;
+  --text-sm: 0.875rem;
+  --text-base: 1rem;
+  --text-lg: 1.125rem;
+  --text-display: clamp(2.25rem, 5vw, 4.5rem);
+
+  --space-1: 0.25rem;
+  --space-2: 0.5rem;
+  --space-3: 0.75rem;
+  --space-4: 1rem;
+  --space-6: 1.5rem;
+  --space-8: 2rem;
+  --space-12: 3rem;
+  --radius-sm: 0.375rem;
+  --radius-md: 0.625rem;
+  --radius-lg: 0.875rem;
+  --shadow-elevated: 0 18px 50px rgb(0 0 0 / 0.28);
+  --motion-fast: 120ms;
+  --motion-base: 180ms;
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-surface: var(--surface);
+  --color-surface-elevated: var(--surface-elevated);
+  --color-surface-quiet: var(--surface-quiet);
+  --color-muted: var(--muted);
+  --color-muted-strong: var(--muted-strong);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-focus-ring: var(--focus-ring);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-active: var(--state-active);
+  --color-verified: var(--state-verified);
+  --color-warning: var(--state-warning);
+  --color-failure: var(--state-failure);
+  --color-stale: var(--state-stale);
+  --color-paused: var(--state-paused);
+  --color-cancelled: var(--state-cancelled);
+  --font-sans: var(--font-sans);
+  --font-mono: var(--font-mono);
+  --radius-sm: var(--radius-sm);
+  --radius-md: var(--radius-md);
+  --radius-lg: var(--radius-lg);
+  --shadow-elevated: var(--shadow-elevated);
+}
+
+@layer base {
+  * {
+    border-color: var(--border);
+  }
+
+  html {
+    min-width: 320px;
+    background: var(--background);
+  }
+
+  body {
+    min-width: 320px;
+    min-height: 100vh;
+    margin: 0;
+    background-color: var(--background);
+    color: var(--foreground);
+    font-family: var(--font-sans);
+    font-size: var(--text-base);
+    text-rendering: optimizeLegibility;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  button,
+  a {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--focus-ring);
+    outline-offset: 3px;
+  }
+
+  ::selection {
+    background: color-mix(in srgb, var(--primary) 30%, transparent);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}
