@@ -1,0 +1,51 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.pyright/
+.ruff_cache/
+.hypothesis/
+.coverage
+coverage.xml
+htmlcov/
+.venv/
+dist/
+build/
+*.egg-info/
+
+# JavaScript and TypeScript
+node_modules/
+web/coverage/
+web/playwright-report/
+web/test-results/
+web/.vite/
+
+# Runtime data
+.paritygrid/
+data/
+*.db
+*.db-shm
+*.db-wal
+*.duckdb
+*.parquet
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Editors and operating systems
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Temporary files
+*.tmp
+*.temp
+*.log
