@@ -3,6 +3,8 @@
 from pathlib import Path
 from unittest.mock import patch
 
+from typer.core import TyperGroup, TyperOption
+from typer.main import get_command
 from typer.testing import CliRunner
 
 from paritygrid.cli import app
@@ -52,12 +54,25 @@ def test_database_upgrade_requires_explicit_path() -> None:
     assert result.exception.code == 2
 
 
-def test_database_upgrade_help_describes_explicit_path() -> None:
-    result = runner.invoke(app, ["database", "upgrade", "--help"])
+def test_database_upgrade_declares_required_explicit_path() -> None:
+    root = get_command(app)
+    assert isinstance(root, TyperGroup)
+    root_context = root.make_context("paritygrid", [], resilient_parsing=True)
+    database = root.get_command(root_context, "database")
+    assert isinstance(database, TyperGroup)
+    database_context = database.make_context(
+        "database", [], parent=root_context, resilient_parsing=True
+    )
+    upgrade = database.get_command(database_context, "upgrade")
+    assert upgrade is not None
 
-    assert result.exit_code == 0
-    assert "--database" in result.output
-    assert "Absolute path" in result.output
+    database_path = next(
+        parameter for parameter in upgrade.params if parameter.name == "database_path"
+    )
+    assert isinstance(database_path, TyperOption)
+    assert database_path.required is True
+    assert database_path.opts == ["--database"]
+    assert database_path.help == "Absolute path to the SQLite operational database file."
 
 
 def test_database_upgrade_migrates_absolute_file_and_reports_repeat(tmp_path: Path) -> None:
