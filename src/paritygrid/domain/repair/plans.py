@@ -3,7 +3,7 @@
 from collections.abc import Hashable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import cast
+from typing import ClassVar, cast
 
 from paritygrid.domain.errors import DomainError
 from paritygrid.domain.models import (
@@ -116,6 +116,8 @@ class RepairAction:
 class RepairPlan:
     """An immutable set of safe actions for one exact reconciliation state."""
 
+    MAX_ACTIONS: ClassVar[int] = 10_000
+
     plan_id: RepairPlanId
     state_fingerprint: StateFingerprint
     actions: tuple[RepairAction, ...]
@@ -131,6 +133,8 @@ class RepairPlan:
         if not isinstance(actions_value, tuple):
             raise TypeError("repair plan actions must be a tuple")
         action_values = cast(tuple[object, ...], actions_value)
+        if len(action_values) > self.MAX_ACTIONS:
+            raise ValueError(f"repair plan must contain at most {self.MAX_ACTIONS} actions")
         if not action_values:
             raise ValueError("repair plan requires at least one action")
         if any(not isinstance(action, RepairAction) for action in action_values):

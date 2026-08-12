@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -114,3 +115,23 @@ def test_duplicate_input_order_does_not_change_outcome(keys: list[int]) -> None:
     )
 
     assert ReconciliationOutcome(records, ()) == ReconciliationOutcome(tuple(reversed(records)), ())
+
+
+@given(
+    side=st.sampled_from(("source", "target")),
+    excess=st.integers(min_value=1, max_value=32),
+)
+def test_oversized_duplicate_evidence_is_always_rejected(side: str, excess: int) -> None:
+    record = _record(
+        name="Widget",
+        quantity=1,
+        price_minor_units=100,
+        day=1,
+        color="blue",
+        source_key="duplicate",
+    )
+    records = (record,) * (ReconciliationOutcome.MAX_RECORDS_PER_SIDE + excess)
+    source_records, target_records = (records, ()) if side == "source" else ((), records)
+
+    with pytest.raises(ValueError, match=f"{side} records must contain at most"):
+        ReconciliationOutcome(source_records, target_records)

@@ -159,6 +159,17 @@ def test_outcome_rejects_wrong_containers_records_and_mixed_keys() -> None:
         ReconciliationOutcome((_record(), _record(sku="SKU-002")), ())
 
 
+def test_outcome_bounds_duplicate_evidence_per_side() -> None:
+    record = _record()
+    at_limit = (record,) * ReconciliationOutcome.MAX_RECORDS_PER_SIDE
+
+    outcome = ReconciliationOutcome(at_limit, ())
+
+    assert outcome.classification is ReconciliationClassification.DUPLICATE_SOURCE
+    with pytest.raises(ValueError, match="source records must contain at most"):
+        ReconciliationOutcome((*at_limit, record), ())
+
+
 def test_difference_builder_rejects_wrong_values_and_keys() -> None:
     with pytest.raises(TypeError, match="InventoryRecord"):
         differences_between(_record(), "target")  # type: ignore[arg-type]

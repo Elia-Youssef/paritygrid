@@ -224,6 +224,14 @@ def test_plan_rejects_untrusted_fields(
         RepairPlan(**values)  # type: ignore[arg-type]
 
 
+def test_plan_bounds_the_number_of_actions_before_canonicalization() -> None:
+    action = _create_action()
+    oversized = (action,) * (RepairPlan.MAX_ACTIONS + 1)
+
+    with pytest.raises(ValueError, match="must contain at most"):
+        RepairPlan(RepairPlanId("rpl_inventory-001"), CURRENT, oversized)
+
+
 def test_plan_rejects_stale_actions_and_duplicate_identities_or_keys() -> None:
     first = _create_action(suffix="001", sku="SKU-001")
     with pytest.raises(ValueError, match="state fingerprint"):

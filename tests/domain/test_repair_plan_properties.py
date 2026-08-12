@@ -2,6 +2,7 @@
 
 from decimal import Decimal
 
+import pytest
 from hypothesis import given
 from hypothesis import strategies as st
 
@@ -65,3 +66,13 @@ def test_plan_current_check_uses_exact_fingerprint_bytes(
     plan = RepairPlan(RepairPlanId("rpl_property-001"), expected, (_action(1, expected),))
 
     assert plan.is_current(observed) is (expected_bytes == observed_bytes)
+
+
+@given(st.integers(min_value=1, max_value=32))
+def test_oversized_action_collections_are_always_rejected(excess: int) -> None:
+    fingerprint = StateFingerprint("a" * 64)
+    action = _action(1, fingerprint)
+    actions = (action,) * (RepairPlan.MAX_ACTIONS + excess)
+
+    with pytest.raises(ValueError, match="must contain at most"):
+        RepairPlan(RepairPlanId("rpl_property-001"), fingerprint, actions)

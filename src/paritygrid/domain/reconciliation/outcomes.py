@@ -2,7 +2,7 @@
 
 from dataclasses import dataclass, field
 from enum import StrEnum
-from typing import cast
+from typing import ClassVar, cast
 
 from paritygrid.domain.models import InventoryAttributes, InventoryRecord, Money, UtcTimestamp
 
@@ -68,6 +68,8 @@ class FieldMismatch:
 class ReconciliationOutcome:
     """An immutable, exclusive outcome for one canonical inventory key."""
 
+    MAX_RECORDS_PER_SIDE: ClassVar[int] = 1_024
+
     source_records: tuple[InventoryRecord, ...] = ()
     target_records: tuple[InventoryRecord, ...] = ()
     sku: str = field(init=False)
@@ -127,6 +129,11 @@ def _canonical_records(value: object, *, side: str) -> tuple[InventoryRecord, ..
     if not isinstance(value, tuple):
         raise TypeError(f"{side} records must be a tuple")
     records = cast(tuple[object, ...], value)
+    if len(records) > ReconciliationOutcome.MAX_RECORDS_PER_SIDE:
+        raise ValueError(
+            f"{side} records must contain at most "
+            f"{ReconciliationOutcome.MAX_RECORDS_PER_SIDE} values"
+        )
     if any(not isinstance(record, InventoryRecord) for record in records):
         raise TypeError(f"{side} records must contain only InventoryRecord values")
     trusted = cast(tuple[InventoryRecord, ...], records)
