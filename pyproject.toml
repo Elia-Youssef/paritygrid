@@ -12,6 +12,7 @@ authors = [
   { name = "ParityGrid contributors" },
 ]
 dependencies = [
+  "alembic>=1.17,<2",
   "fastapi>=0.116,<1",
   "pydantic-settings>=2.10,<3",
   "sqlalchemy>=2.0,<3",
