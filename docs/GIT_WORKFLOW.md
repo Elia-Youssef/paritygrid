@@ -11,11 +11,15 @@ The repository uses short-lived topic branches, required pull-request checks, an
 - is current with its target branch;
 - passes all required checks;
 - has no unresolved review conversation;
-- has approval from a maintainer who did not author the change;
-- receives a fresh approval when the reviewed commit changes;
+- has approval from a maintainer who did not author the change when another maintainer is available;
+- receives a fresh approval when the reviewed commit changes and approval is required;
 - uses a merge commit so the accepted phase remains visible as one historical unit.
 
 History rewriting and force pushes are disabled on protected branches. Branch deletion is enabled after a successful merge.
+
+### Solo-maintainer operation
+
+GitHub does not allow a pull-request author to approve their own change. While the repository has one maintainer, rulesets therefore require zero approvals but still require the pull request, current-commit status checks, conversation resolution, and the accepted merge method. Independent acceptance review is recorded in the pull-request evidence before a phase merges. Once a second maintainer participates, rulesets require at least one approval and dismiss it after a new reviewable push.
 
 ## Branch hierarchy
 
@@ -91,7 +95,7 @@ Acceptance evidence describes the exact commit being merged. Evidence from an ol
 
 When the GitHub repository is created, enable repository rulesets for `main` and active `phase/**` branches. Rulesets are preferred because their active constraints are visible to contributors and multiple rulesets combine without silently replacing one another. Configure them to provide:
 
-- pull requests and required approvals;
+- pull requests and approvals when more than one maintainer is available;
 - dismissal of stale approvals after new commits;
 - required conversation resolution;
 - required status checks from the committed workflows;
