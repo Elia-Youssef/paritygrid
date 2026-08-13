@@ -3,9 +3,9 @@
 # pyright: reportPrivateUsage=false
 
 import json
+import shutil
 import sqlite3
 import subprocess
-import sys
 from dataclasses import replace
 from pathlib import Path
 from threading import Event
@@ -371,11 +371,12 @@ def test_external_cwd_cli_writes_database_and_canonical_report(tmp_path: Path) -
     external.mkdir()
     database = external / "cli.db"
     report = external / "cli report.json"
-    executable = Path(sys.executable).with_name("paritygrid.exe")
+    executable = shutil.which("paritygrid")
+    assert executable is not None
 
     completed = subprocess.run(
         [
-            str(executable),
+            executable,
             "stress",
             "wal",
             "--database",
