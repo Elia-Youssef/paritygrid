@@ -1,6 +1,7 @@
 """Rebuildable analytical database adapters."""
 
 from paritygrid.adapters.analytics.duckdb import DuckDBLifecycleCoordinator
+from paritygrid.adapters.analytics.reconciliation import DuckDBReconciliationQueryEngine
 from paritygrid.adapters.analytics.views import (
     DuckDBAnalyticalViewRegistry,
     DuckDBViewColumnDefinition,
@@ -10,6 +11,7 @@ from paritygrid.adapters.analytics.views import (
 __all__ = [
     "DuckDBAnalyticalViewRegistry",
     "DuckDBLifecycleCoordinator",
+    "DuckDBReconciliationQueryEngine",
     "DuckDBViewColumnDefinition",
     "DuckDBViewDefinition",
 ]
