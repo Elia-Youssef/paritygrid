@@ -23,6 +23,19 @@ PRAGMA busy_timeout = 5000;
 
 The runtime must report the SQLite library version and reject the concurrency profiles when the installed library lacks required fixes or capabilities.
 
+ParityGrid supports SQLite 3.35.0 or newer. This baseline includes native `RETURNING`
+support for the operational repositories while retaining the required WAL, foreign-key,
+full-synchronous, and busy-timeout behavior. Startup rejects a library older than this
+baseline or one compiled without thread-safe connection support before opening the
+operational database. The configured database path must be absolute and must not traverse
+symbolic links or junctions. Startup also performs a no-change `user_version` write inside
+a rolled-back transaction so read-only storage is rejected before the application reports
+ready. Explicit startup probes verify the JSON SQL functions used by schema constraints and
+native `RETURNING`; version text alone is not treated as proof that an optional build feature
+is available. Python DB-API thread-safety levels 1 and 3 are supported: connection checkout
+ownership ensures level 1 connections are never used simultaneously by multiple threads,
+while level 0 is rejected.
+
 ### Connection ownership
 
 - A SQLAlchemy `Session` or `AsyncSession` belongs to one task and one transaction scope.
@@ -71,8 +84,13 @@ If commit fails, no notification may describe the result as durable. Retriable d
 ### `connectors`
 
 - Connector kind, display name, and validated configuration JSON.
-- Secret references contain environment-variable names only.
 - Capability and schema-discovery metadata.
+- Secret values are never stored in connector configuration.
+
+### `connector_secret_references`
+
+- Immutable mapping from a connector-local reference name to an environment-variable name.
+- Values contain references only; resolved secret values are prohibited.
 
 ### `runs`
 
@@ -82,6 +100,11 @@ If commit fails, no notification may describe the result as durable. Retriable d
 - Canonical scenario seed where applicable.
 - Start, finish, cancellation, and recovery timestamps.
 - Final reconciliation fingerprint.
+
+### `run_event_counters`
+
+- Next durable event sequence number for one run.
+- A contiguous event range is advanced and populated in the same transaction.
 
 ### `run_nodes`
 
@@ -94,17 +117,26 @@ If commit fails, no notification may describe the result as durable. Retriable d
 - Unique `(run_id, node_id, partition_key)`.
 - State, lease owner, lease expiry, attempt count, and input reference.
 - Checkpoint version expected by the item.
+- Active attempt identity, runner, worker, and lease data while the durable state is `running`.
+- `leased` remains a transient claim-validation state and is never persisted.
 
 ### `work_attempts`
 
 - Immutable attempt history.
 - Start and finish times, runner kind, worker identity, failure classification, and redacted detail.
 - Unique `(work_item_id, attempt_number)`.
+- Rows represent complete results only. Active attempt data remains on the work item until completion
+  or lease-expiry recovery commits the immutable result.
+
+### `checkpoint_heads`
+
+- Current version and optimistic row version for one run, node, and partition.
+- Created with the work item at version zero.
 
 ### `checkpoints`
 
-- Source cursor, output position, and version.
-- Monotonic version per `(run_id, node_id, partition_key)`.
+- Append-only history of source cursors, output positions, and versions.
+- Unique version per `(run_id, node_id, partition_key)`.
 - Checkpoint payload has a versioned schema.
 
 ### `execution_events`
@@ -138,9 +170,14 @@ If commit fails, no notification may describe the result as durable. Retriable d
 
 ### `repair_plans`
 
-- Exact reconciliation fingerprint and immutable status.
+- Exact reconciliation fingerprint, immutable contents, and controlled status.
 - Proposed, approved, applying, applied, rejected, or failed.
-- Approval identity and timestamp when applicable.
+
+### `repair_approvals`
+
+- Immutable approval fact for one exact plan and reconciliation fingerprint.
+- Approver identity, timestamp, correlation ID, schema version, and redacted detail.
+- Plan approval and status advancement commit in one transaction.
 
 ### `repair_actions`
 
@@ -162,9 +199,28 @@ If commit fails, no notification may describe the result as durable. Retriable d
 - Approved repair plans cannot be edited.
 - Checkpoint versions only increase.
 - Event sequences are gap-free within a committed transaction series.
+- Terminal idempotency records, repair plans, and repair actions cannot be mutated.
+- Every checkpoint-head or event-counter update advances its authoritative sequence value.
 - Artifact paths are relative, normalized, and confined to the configured root.
 - Monetary values use signed integer minor units and explicit currency.
 - Timestamps are stored in UTC with explicit parsing and formatting rules.
+- Operational rows cannot be deleted through normal SQL paths. Demo reset removes only an explicitly
+  validated database file.
+
+### Physical storage contract
+
+- UTC timestamps use fixed 27-character text: `YYYY-MM-DDTHH:MM:SS.ffffffZ`.
+- Durations use integer microseconds.
+- SHA-256 digests use 64 lowercase hexadecimal characters.
+- Monetary values use integer minor units, a three-letter currency, and an exponent from zero to six.
+- Structured values use deterministic JSON text with sorted keys, compact separators, NFC strings,
+  and no floating-point values or non-finite numbers.
+- Database checks enforce storage class, basic shape, ranges, JSON validity, and JSON top-level shape.
+  Repositories apply exact domain parsing, normalization, size limits, and lifecycle rules.
+
+Checkpoint-head equality with the maximum checkpoint history version and event-counter equality with
+the maximum event sequence plus one are verified by repository transactions and startup integrity
+checks. SQLite metadata cannot express these cross-row aggregate invariants directly.
 
 ## Migration policy
 

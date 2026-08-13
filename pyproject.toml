@@ -12,8 +12,10 @@ authors = [
   { name = "ParityGrid contributors" },
 ]
 dependencies = [
+  "alembic>=1.17,<2",
   "fastapi>=0.116,<1",
   "pydantic-settings>=2.10,<3",
+  "sqlalchemy>=2.0,<3",
   "typer>=0.16,<1",
   "uvicorn>=0.35,<1",
 ]
@@ -21,6 +23,7 @@ dependencies = [
 [project.scripts]
 paritygrid = "paritygrid.cli:app"
 paritygrid-check-boundaries = "paritygrid.quality.import_boundaries:main"
+paritygrid-freeze-v0001 = "paritygrid.quality.frozen_schema:main"
 
 [dependency-groups]
 dev = [
