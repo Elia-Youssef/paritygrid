@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -562,10 +563,37 @@ def _validate_reopened_database(connection: Connection) -> None:
         raise CrashDatabaseIntegrityError("schema inventory changed after reopen")
 
 
+def _recover_wal_after_crash(database_path: Path) -> None:
+    """Let SQLite recover retained WAL state before production profile inspection."""
+    try:
+        connection = sqlite3.connect(
+            database_path,
+            timeout=5.0,
+            autocommit=True,
+            check_same_thread=False,
+        )
+        try:
+            connection.execute("PRAGMA busy_timeout = 5000")
+            if connection.execute("PRAGMA quick_check").fetchall() != [("ok",)]:
+                raise CrashDatabaseIntegrityError("raw SQLite recovery integrity check failed")
+            if connection.execute("PRAGMA foreign_key_check").fetchall():
+                raise CrashDatabaseIntegrityError("raw SQLite recovery foreign-key check failed")
+            checkpoint = connection.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
+            if checkpoint is None or len(checkpoint) != 3 or checkpoint[0] not in {0, 1}:
+                raise CrashDatabaseIntegrityError("raw SQLite WAL recovery result is invalid")
+        finally:
+            connection.close()
+    except CrashDatabaseIntegrityError:
+        raise
+    except sqlite3.DatabaseError as error:
+        raise CrashDatabaseIntegrityError("raw SQLite WAL recovery failed") from error
+
+
 def classify_crash_database(
     database_path: Path, seed: int
 ) -> tuple[CrashDatabaseOutcome, CrashDatabaseProjection]:
     """Reopen twice and classify only exact old or exact committed state."""
+    _recover_wal_after_crash(database_path)
     database = SQLiteDatabase.open(SQLiteDatabaseConfig(database_path))
     try:
         with database.engine.connect() as connection:
@@ -574,6 +602,7 @@ def classify_crash_database(
             projection = _read_projection(connection)
     finally:
         database.close()
+    _recover_wal_after_crash(database_path)
     reopened = SQLiteDatabase.open(SQLiteDatabaseConfig(database_path))
     try:
         with reopened.engine.connect() as connection:

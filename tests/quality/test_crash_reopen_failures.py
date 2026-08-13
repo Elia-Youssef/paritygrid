@@ -849,3 +849,63 @@ def test_scenario_second_reopen_must_match_first(monkeypatch: pytest.MonkeyPatch
     monkeypatch.setattr(scenario, "_read_projection", lambda _connection: next(projections))
     with pytest.raises(CrashDatabaseIntegrityError, match="across reopen"):
         scenario.classify_crash_database(Path.cwd() / "ignored.sqlite3", 1)
+
+
+def test_raw_wal_recovery_rejects_integrity_foreign_key_and_checkpoint_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class Cursor:
+        def __init__(
+            self,
+            *,
+            rows: list[tuple[object, ...]] | None = None,
+            row: tuple[object, ...] | None = None,
+        ) -> None:
+            self.rows = [] if rows is None else rows
+            self.row = row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self.rows
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self.row
+
+    class Connection:
+        def __init__(self, responses: dict[str, Cursor]) -> None:
+            self.responses = responses
+
+        def execute(self, statement: str) -> Cursor:
+            return next(
+                response for fragment, response in self.responses.items() if fragment in statement
+            )
+
+        def close(self) -> None:
+            return None
+
+    base = {
+        "busy_timeout": Cursor(),
+        "quick_check": Cursor(rows=[("ok",)]),
+        "foreign_key_check": Cursor(rows=[]),
+        "wal_checkpoint": Cursor(row=(0, 0, 0)),
+    }
+    for replacement, message in (
+        ({"quick_check": Cursor(rows=[("bad",)])}, "integrity"),
+        ({"foreign_key_check": Cursor(rows=[("bad",)])}, "foreign-key"),
+        ({"wal_checkpoint": Cursor(row=None)}, "result"),
+        ({"wal_checkpoint": Cursor(row=(2, 0, 0))}, "result"),
+    ):
+        connection = Connection({**base, **replacement})
+        monkeypatch.setattr(
+            scenario.sqlite3,
+            "connect",
+            lambda *_args, selected=connection, **_kwargs: selected,
+        )
+        with pytest.raises(CrashDatabaseIntegrityError, match=message):
+            scenario._recover_wal_after_crash(tmp_path / "scenario.sqlite3")
+    monkeypatch.setattr(
+        scenario.sqlite3,
+        "connect",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(scenario.sqlite3.DatabaseError()),
+    )
+    with pytest.raises(CrashDatabaseIntegrityError, match="recovery failed"):
+        scenario._recover_wal_after_crash(tmp_path / "scenario.sqlite3")
