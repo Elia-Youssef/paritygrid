@@ -21,6 +21,7 @@ from paritygrid.application.ports.analytics import (
 )
 
 type _Parameters = Sequence[object] | None
+type _ParameterRows = Sequence[Sequence[object]]
 
 
 class DuckDBLifecycleCoordinator:
@@ -190,6 +191,18 @@ class DuckDBLifecycleCoordinator:
                 raise AnalyticalDatabaseStorageError(
                     "analytical database statement failed"
                 ) from None
+
+    def _execute_many(self, statement: str, parameters: _ParameterRows) -> None:
+        """Execute one trusted bounded parameter batch on the owner connection."""
+        with self._lock:
+            connection = self._require_open_owner()
+            storage_failure = False
+            try:
+                connection.executemany(statement, parameters)
+            except duckdb.Error, OSError:
+                storage_failure = True
+            if storage_failure:
+                raise AnalyticalDatabaseStorageError("analytical database batch failed") from None
 
     def _fetch_all(
         self, statement: str, parameters: _Parameters = None
