@@ -1,5 +1,6 @@
 """Filesystem artifact adapter boundaries."""
 
+from paritygrid.adapters.artifacts.integrity import FileSystemArtifactIntegrityScanner
 from paritygrid.adapters.artifacts.manifests import FileSystemArtifactManifestRepository
 from paritygrid.adapters.artifacts.parquet import (
     NORMALIZED_INVENTORY_SCHEMA_FINGERPRINT,
@@ -20,6 +21,7 @@ __all__ = [
     "NORMALIZED_INVENTORY_SCHEMA_FINGERPRINT",
     "RAW_INVENTORY_SCHEMA_FINGERPRINT",
     "AtomicParquetPartitionWriter",
+    "FileSystemArtifactIntegrityScanner",
     "FileSystemArtifactManifestRepository",
     "FileSystemArtifactWriter",
     "decode_normalized_inventory_table",
