@@ -1,6 +1,8 @@
 """Stable application-facing infrastructure contracts."""
 
 from paritygrid.application.ports.analytics import (
+    MAX_ANALYTICAL_VIEW_NAME_LENGTH,
+    MAX_ANALYTICAL_VIEW_VERSION,
     MAX_ANALYTICS_MEMORY_BYTES,
     MAX_ANALYTICS_THREADS,
     MIN_ANALYTICS_MEMORY_BYTES,
@@ -13,6 +15,16 @@ from paritygrid.application.ports.analytics import (
     AnalyticalDatabaseState,
     AnalyticalDatabaseStateError,
     AnalyticalDatabaseStorageError,
+    AnalyticalViewCatalogSnapshot,
+    AnalyticalViewColumn,
+    AnalyticalViewConflictError,
+    AnalyticalViewCorruptionError,
+    AnalyticalViewError,
+    AnalyticalViewInvalidError,
+    AnalyticalViewName,
+    AnalyticalViewRecord,
+    AnalyticalViewSchemaError,
+    AnalyticalViewVersion,
 )
 from paritygrid.application.ports.artifacts import (
     MAX_ARTIFACT_CHUNK_BYTES,
@@ -255,6 +267,8 @@ from paritygrid.application.ports.writer import (
 )
 
 __all__ = [
+    "MAX_ANALYTICAL_VIEW_NAME_LENGTH",
+    "MAX_ANALYTICAL_VIEW_VERSION",
     "MAX_ANALYTICS_MEMORY_BYTES",
     "MAX_ANALYTICS_THREADS",
     "MAX_ARTIFACT_CHUNK_BYTES",
@@ -297,6 +311,16 @@ __all__ = [
     "AnalyticalDatabaseState",
     "AnalyticalDatabaseStateError",
     "AnalyticalDatabaseStorageError",
+    "AnalyticalViewCatalogSnapshot",
+    "AnalyticalViewColumn",
+    "AnalyticalViewConflictError",
+    "AnalyticalViewCorruptionError",
+    "AnalyticalViewError",
+    "AnalyticalViewInvalidError",
+    "AnalyticalViewName",
+    "AnalyticalViewRecord",
+    "AnalyticalViewSchemaError",
+    "AnalyticalViewVersion",
     "AppliedRepairAction",
     "ArtifactAlreadyExistsError",
     "ArtifactIntegrityError",
