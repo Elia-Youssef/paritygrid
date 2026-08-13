@@ -1,5 +1,12 @@
 """Stable application-facing infrastructure contracts."""
 
+from paritygrid.application.ports.artifacts import (
+    MAX_ARTIFACT_PATH_SEGMENT_BYTES,
+    MAX_ARTIFACT_PATH_SEGMENTS,
+    MAX_ARTIFACT_RELATIVE_PATH_BYTES,
+    ArtifactPathError,
+    ArtifactRelativePath,
+)
 from paritygrid.application.ports.configuration import (
     MAX_PAGE_SIZE,
     MAX_PIPELINE_DESCRIPTION_LENGTH,
@@ -183,6 +190,9 @@ from paritygrid.application.ports.writer import (
 )
 
 __all__ = [
+    "MAX_ARTIFACT_PATH_SEGMENTS",
+    "MAX_ARTIFACT_PATH_SEGMENT_BYTES",
+    "MAX_ARTIFACT_RELATIVE_PATH_BYTES",
     "MAX_AUDIT_PAGE_SIZE",
     "MAX_CONSISTENCY_PAGE_SIZE",
     "MAX_CONSISTENCY_SEQUENCE",
@@ -193,6 +203,8 @@ __all__ = [
     "MAX_WORK_METRIC",
     "MAX_WRITER_SUBMISSION_ID",
     "AppliedRepairAction",
+    "ArtifactPathError",
+    "ArtifactRelativePath",
     "AttemptOutcome",
     "AuditCorruptionError",
     "AuditEntryRecord",
