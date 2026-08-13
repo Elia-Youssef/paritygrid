@@ -376,6 +376,7 @@ def test_recreate_validates_all_owned_paths_before_removing_database(tmp_path: P
 
     assert config.database_path.is_file()
     assert unsafe_target.read_text(encoding="utf-8") == "preserve"
+    wal.unlink()
     assert coordinator.snapshot().state is AnalyticalDatabaseState.FAILED
 
 
