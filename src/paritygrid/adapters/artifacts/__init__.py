@@ -15,14 +15,20 @@ from paritygrid.adapters.artifacts.parquet import (
     raw_inventory_schema,
 )
 from paritygrid.adapters.artifacts.paths import resolve_artifact_path, resolve_artifact_root
+from paritygrid.adapters.artifacts.streaming import (
+    FileArtifactByteStream,
+    FileSystemArtifactStreamReader,
+)
 from paritygrid.adapters.artifacts.writer import FileSystemArtifactWriter
 
 __all__ = [
     "NORMALIZED_INVENTORY_SCHEMA_FINGERPRINT",
     "RAW_INVENTORY_SCHEMA_FINGERPRINT",
     "AtomicParquetPartitionWriter",
+    "FileArtifactByteStream",
     "FileSystemArtifactIntegrityScanner",
     "FileSystemArtifactManifestRepository",
+    "FileSystemArtifactStreamReader",
     "FileSystemArtifactWriter",
     "decode_normalized_inventory_table",
     "decode_raw_inventory_table",
