@@ -74,6 +74,16 @@ class WriterCommandKind(StrEnum):
     COMPLETE_REPAIR_APPLICATION = "complete_repair_application"
 
 
+class WriterState(StrEnum):
+    """Observable lifecycle states for the transactional writer."""
+
+    NEW = "new"
+    RUNNING = "running"
+    CLOSING = "closing"
+    CLOSED = "closed"
+    FAILED = "failed"
+
+
 @dataclass(frozen=True, slots=True)
 class WriterSettings:
     """Explicit queue, retry, notification, and thread bounds."""
@@ -199,6 +209,73 @@ class WriterCloseResult:
     in_flight: int
 
 
+@dataclass(frozen=True, slots=True)
+class WriterDiagnostics:
+    """Bounded lifecycle and queue counters captured under one writer lock."""
+
+    state: WriterState
+    queue_capacity: int
+    admission_capacity: int
+    accepted: int
+    completed: int
+    queue_depth: int
+    admission_waiters: int
+    in_flight: int
+    max_queue_depth: int
+    max_admission_waiters: int
+    max_resident: int
+    contention_retries: int
+
+    def __post_init__(self) -> None:
+        if type(self.state) is not WriterState:
+            raise TypeError("writer diagnostics state must be a WriterState")
+        values = (
+            self.queue_capacity,
+            self.admission_capacity,
+            self.accepted,
+            self.completed,
+            self.queue_depth,
+            self.admission_waiters,
+            self.in_flight,
+            self.max_queue_depth,
+            self.max_admission_waiters,
+            self.max_resident,
+            self.contention_retries,
+        )
+        if any(type(value) is not int for value in values):
+            raise TypeError("writer diagnostics counters must be integers")
+        if not 1 <= self.queue_capacity <= 10_000:
+            raise ValueError("writer diagnostics queue capacity is invalid")
+        if not 1 <= self.admission_capacity <= 10_000:
+            raise ValueError("writer diagnostics admission capacity is invalid")
+        if any(value < 0 for value in values[2:]):
+            raise ValueError("writer diagnostics counters cannot be negative")
+        if self.completed > self.accepted:
+            raise ValueError("writer diagnostics completed count exceeds accepted count")
+        if self.accepted != self.completed + self.queue_depth + self.in_flight:
+            raise ValueError("writer diagnostics accepted command accounting is inconsistent")
+        if self.queue_depth > self.queue_capacity:
+            raise ValueError("writer diagnostics queue depth exceeds capacity")
+        if self.admission_waiters > self.admission_capacity:
+            raise ValueError("writer diagnostics admission waiters exceed capacity")
+        if self.in_flight not in {0, 1}:
+            raise ValueError("writer diagnostics in-flight count is invalid")
+        if self.max_queue_depth < self.queue_depth or self.max_queue_depth > self.queue_capacity:
+            raise ValueError("writer diagnostics queue high-water mark is invalid")
+        if (
+            self.max_admission_waiters < self.admission_waiters
+            or self.max_admission_waiters > self.admission_capacity
+        ):
+            raise ValueError("writer diagnostics admission high-water mark is invalid")
+        resident = self.queue_depth + self.in_flight
+        if self.max_resident < resident or self.max_resident > self.queue_capacity + 1:
+            raise ValueError("writer diagnostics resident high-water mark is invalid")
+        if self.max_resident < self.max_queue_depth:
+            raise ValueError(
+                "writer diagnostics resident and queue high-water marks are inconsistent"
+            )
+
+
 class WriterTicket(Protocol):
     """Reusable handle for one accepted durable command."""
 
@@ -225,6 +302,8 @@ class TransactionalWriter(Protocol):
     async def submit_async(
         self, command: WriterCommand, *, timeout_seconds: float
     ) -> WriterTicket: ...
+
+    def snapshot(self) -> WriterDiagnostics: ...
 
     def close(self, *, timeout_seconds: float) -> WriterCloseResult: ...
 
@@ -253,6 +332,7 @@ __all__ = [
     "WriterCommandResult",
     "WriterCommitOutcomeUnknownError",
     "WriterDefinitelyNotExecutedError",
+    "WriterDiagnostics",
     "WriterError",
     "WriterFailedError",
     "WriterInvalidRequestError",
@@ -260,6 +340,7 @@ __all__ = [
     "WriterReceipt",
     "WriterResultTimeoutError",
     "WriterSettings",
+    "WriterState",
     "WriterSubmissionId",
     "WriterTicket",
 ]

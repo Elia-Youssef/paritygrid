@@ -13,7 +13,9 @@ from paritygrid.application.ports.writer import (
     WriterCommand,
     WriterCommandKind,
     WriterCommandResult,
+    WriterDiagnostics,
     WriterSettings,
+    WriterState,
     WriterSubmissionId,
 )
 from paritygrid.application.writes.execution import (
@@ -149,3 +151,55 @@ def test_notification_buffer_rejects_invalid_inputs_and_tracks_capacity() -> Non
     assert not buffer.offer(notification)
     assert buffer.take() == notification
     assert buffer.take() is None
+
+
+def diagnostics(**changes: object) -> WriterDiagnostics:
+    values: dict[str, object] = {
+        "state": WriterState.RUNNING,
+        "queue_capacity": 4,
+        "admission_capacity": 3,
+        "accepted": 3,
+        "completed": 1,
+        "queue_depth": 1,
+        "admission_waiters": 1,
+        "in_flight": 1,
+        "max_queue_depth": 2,
+        "max_admission_waiters": 2,
+        "max_resident": 3,
+        "contention_retries": 1,
+    }
+    values.update(changes)
+    return WriterDiagnostics(**values)  # type: ignore[arg-type]
+
+
+def test_writer_diagnostics_validate_exact_types_bounds_and_relationships() -> None:
+    assert diagnostics().state is WriterState.RUNNING
+    invalid: tuple[tuple[dict[str, object], type[Exception]], ...] = (
+        ({"state": "running"}, TypeError),
+        ({"accepted": 1.0}, TypeError),
+        ({"queue_capacity": 0}, ValueError),
+        ({"admission_capacity": 10_001}, ValueError),
+        ({"contention_retries": -1}, ValueError),
+        ({"accepted": 1, "completed": 2}, ValueError),
+        ({"accepted": 2}, ValueError),
+        ({"accepted": 7, "queue_depth": 5}, ValueError),
+        ({"admission_waiters": 4}, ValueError),
+        ({"accepted": 4, "in_flight": 2}, ValueError),
+        ({"max_queue_depth": 0}, ValueError),
+        ({"max_queue_depth": 5}, ValueError),
+        ({"max_admission_waiters": 0}, ValueError),
+        ({"max_admission_waiters": 4}, ValueError),
+        ({"max_resident": 1}, ValueError),
+        ({"max_resident": 6}, ValueError),
+        ({"max_queue_depth": 3, "max_resident": 2}, ValueError),
+    )
+    for changes, expected in invalid:
+        with pytest.raises(expected):
+            diagnostics(**changes)
+
+
+def test_writer_diagnostics_repr_contains_only_bounded_counters() -> None:
+    rendered = repr(diagnostics())
+    assert "WriterDiagnostics" in rendered
+    assert "payload" not in rendered
+    assert "seconds" not in rendered
