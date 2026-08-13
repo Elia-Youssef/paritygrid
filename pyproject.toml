@@ -14,6 +14,7 @@ authors = [
 dependencies = [
   "alembic>=1.17,<2",
   "fastapi>=0.116,<1",
+  "pyarrow>=25,<26",
   "pydantic-settings>=2.10,<3",
   "sqlalchemy>=2.0,<3",
   "typer>=0.16,<1",
@@ -33,6 +34,7 @@ dev = [
   "pytest>=8.4,<10",
   "pytest-cov>=6.2,<8",
   "ruff>=0.12,<1",
+  "pyarrow-stubs>=20.0.0.20260625,<21",
 ]
 
 [tool.hatch.build.targets.wheel]
