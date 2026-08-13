@@ -641,7 +641,8 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
             try:
                 while True:
                     with producer_condition:
-                        turn_deadline = time.monotonic() + workload.timeout_seconds / 2
+                        # Preserve part of the operation bound for coordinated thread shutdown.
+                        turn_deadline = time.monotonic() + workload.timeout_seconds * 0.8
                         while (
                             not producer_abort.is_set()
                             and next_index < workload.work_commands
