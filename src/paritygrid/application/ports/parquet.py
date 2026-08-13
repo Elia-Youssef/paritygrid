@@ -2,10 +2,13 @@
 
 import unicodedata
 from dataclasses import dataclass
-from typing import cast
+from enum import StrEnum
+from typing import Protocol, cast
 
+from paritygrid.application.ports.artifacts import ArtifactWriteReceipt
 from paritygrid.application.ports.consistency import RedactedDocument
-from paritygrid.domain.models import ConnectorId, InventoryRecord, UtcTimestamp
+from paritygrid.domain.models import ConnectorId, InventoryRecord, NodeId, RunId, UtcTimestamp
+from paritygrid.domain.pipeline import PartitionKey
 
 RAW_PARQUET_SCHEMA_VERSION = 1
 NORMALIZED_PARQUET_SCHEMA_VERSION = 1
@@ -18,6 +21,8 @@ MAX_RAW_PAYLOAD_BYTES = 1_048_576
 MAX_NORMALIZED_BATCH_RECORDS = 100_000
 MAX_NORMALIZED_BATCH_VARIABLE_BYTES = 67_108_864
 MAX_NORMALIZED_RECORD_INDEX = 9_223_372_036_854_775_807
+MAX_PARQUET_PARTITION_NUMBER = 2_147_483_647
+PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet"
 
 
 class ParquetSchemaError(RuntimeError):
@@ -34,6 +39,13 @@ class ParquetEncodingError(ParquetSchemaError):
 
 class ParquetDecodingError(ParquetSchemaError):
     """An Arrow or Parquet value violates the frozen schema contract."""
+
+
+class ParquetDatasetKind(StrEnum):
+    """Closed analytical datasets that can be published as partitions."""
+
+    RAW = "raw"
+    NORMALIZED = "normalized"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -144,6 +156,90 @@ class NormalizedInventoryBatch:
         for expected_index, row in enumerate(cast(tuple[NormalizedInventoryRow, ...], trusted)):
             if row.record_index != expected_index:
                 raise ValueError("normalized inventory record indexes must be contiguous from zero")
+
+
+@dataclass(frozen=True, slots=True)
+class ParquetPartitionReceipt:
+    """Manifest-ready identity and content metadata for one partition."""
+
+    run_id: RunId
+    node_id: NodeId
+    partition_key: PartitionKey
+    dataset: ParquetDatasetKind
+    partition_number: int
+    row_count: int
+    schema_version: int
+    schema_fingerprint: str
+    write_receipt: ArtifactWriteReceipt
+
+    def __post_init__(self) -> None:
+        _require_exact(self.run_id, RunId, "partition run")
+        _require_exact(self.node_id, NodeId, "partition node")
+        _require_exact(self.partition_key, PartitionKey, "partition key")
+        _require_exact(self.dataset, ParquetDatasetKind, "partition dataset")
+        _validate_partition_number(self.partition_number)
+        row_count = cast(object, self.row_count)
+        if type(row_count) is not int:
+            raise TypeError("partition row count must be an integer")
+        if not 0 <= row_count <= max(MAX_RAW_BATCH_RECORDS, MAX_NORMALIZED_BATCH_RECORDS):
+            raise ValueError("partition row count is outside the supported range")
+        schema_version = cast(object, self.schema_version)
+        if type(schema_version) is not int or schema_version != 1:
+            raise ValueError("partition schema version is unsupported")
+        fingerprint = cast(object, self.schema_fingerprint)
+        if not isinstance(fingerprint, str):
+            raise TypeError("partition schema fingerprint must be text")
+        if len(fingerprint) != 64 or any(
+            character not in "0123456789abcdef" for character in fingerprint
+        ):
+            raise ValueError("partition schema fingerprint must be lowercase SHA-256")
+        _require_exact(self.write_receipt, ArtifactWriteReceipt, "partition write receipt")
+
+    @property
+    def media_type(self) -> str:
+        """Return the stable media type used by artifact manifests."""
+        return PARQUET_MEDIA_TYPE
+
+
+class ParquetPartitionWriter(Protocol):
+    """Port for deterministic immutable Parquet partition publication."""
+
+    def write_raw(
+        self,
+        *,
+        run_id: RunId,
+        node_id: NodeId,
+        partition_key: PartitionKey,
+        partition_number: int,
+        batch: RawInventoryBatch,
+    ) -> ParquetPartitionReceipt:
+        """Encode and publish one raw inventory partition."""
+        ...
+
+    def write_normalized(
+        self,
+        *,
+        run_id: RunId,
+        node_id: NodeId,
+        partition_key: PartitionKey,
+        partition_number: int,
+        batch: NormalizedInventoryBatch,
+    ) -> ParquetPartitionReceipt:
+        """Encode and publish one normalized inventory partition."""
+        ...
+
+
+def _require_exact(value: object, expected: type[object], subject: str) -> None:
+    if type(value) is not expected:
+        raise TypeError(f"{subject} must use {expected.__name__}")
+
+
+def _validate_partition_number(value: object) -> int:
+    if type(value) is not int:
+        raise TypeError("partition number must be an integer")
+    if not 0 <= value <= MAX_PARQUET_PARTITION_NUMBER:
+        raise ValueError("partition number is outside the supported range")
+    return value
 
 
 def _validate_source_key(value: object) -> str:
