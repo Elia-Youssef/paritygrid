@@ -29,6 +29,7 @@ from paritygrid.quality.wal_stress import (
     WalStressWorkload,
     build_scenario,
     run_wal_stress,
+    validate_report_destination,
     workload_for,
     write_report_atomic,
 )
@@ -53,7 +54,7 @@ def test_ci_profile_sustains_writes_readers_backpressure_and_real_contention(
     assert report.writer.accepted == report.writer.completed == 98
     assert report.writer.max_queue_depth == 8
     assert report.writer.max_resident == 9
-    assert report.writer.max_admission_waiters <= 8
+    assert 0 < report.writer.max_admission_waiters <= 8
     assert report.writer.contention_retries == 1
     assert report.contention_codes == (sqlite3.SQLITE_BUSY_SNAPSHOT,)
     assert report.locked_probe_code == sqlite3.SQLITE_LOCKED
@@ -65,10 +66,18 @@ def test_ci_profile_sustains_writes_readers_backpressure_and_real_contention(
     assert report.checkpoints.truncate_after_release == (0, 0, 0)
     assert report.operational.execution_events == 98
     assert report.operational.next_event_sequence == 99
+    assert report.operational.event_counter_row_version == 99
+    assert report.operational.run_state == "running"
     assert report.operational.run_row_version == 98
     assert report.operational.work_items == 96
     assert report.operational.checkpoint_heads == 96
+    assert report.operational.checkpoints == 0
     assert report.operational.node_work_total == 96
+    assert report.operational.node_work_pending == 96
+    assert report.operational.node_work_distribution == (24, 24, 24, 24)
+    assert report.notifications.offered == 98
+    assert report.notifications.accepted == report.notifications.depth == 8
+    assert report.notifications.dropped == 90
     assert report.integrity.quick_check == "ok"
     assert report.integrity.foreign_key_violations == 0
     assert report.integrity.pool_checked_out == 0
@@ -192,16 +201,17 @@ def test_report_validation_and_mapping_are_closed(
             replace(report, **changes)  # type: ignore[arg-type]
 
 
-def test_atomic_report_is_canonical_utf8_and_replaces_existing_file(
+def test_atomic_report_is_canonical_utf8_and_never_replaces_existing_file(
     ci_report: tuple[WalStressReport, Path], tmp_path: Path
 ) -> None:
     report, _ = ci_report
     target = tmp_path / "evidence %.json"
-    target.write_text("old", encoding="utf-8")
+    database = tmp_path / "separate.db"
 
-    write_report_atomic(report, target)
+    write_report_atomic(report, target, database_path=database)
     first = target.read_bytes()
-    write_report_atomic(report, target)
+    with pytest.raises(WalStressError, match="new file"):
+        write_report_atomic(report, target, database_path=database)
 
     assert target.read_bytes() == first
     assert first.endswith(b"\n")
@@ -212,23 +222,110 @@ def test_atomic_report_is_canonical_utf8_and_replaces_existing_file(
     assert list(tmp_path.glob(".*.tmp")) == []
 
 
+def test_report_destination_rejects_database_alias_existing_and_linked_components(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "database.db"
+    with pytest.raises(WalStressError, match="distinct"):
+        validate_report_destination(database, database)
+
+    existing = tmp_path / "existing.json"
+    existing.write_bytes(b"reserved")
+    with pytest.raises(WalStressError, match="new file"):
+        validate_report_destination(existing, database)
+    assert existing.read_bytes() == b"reserved"
+
+    linked_parent = tmp_path / "linked"
+    linked_target = linked_parent / "report.json"
+    original_is_symlink = Path.is_symlink
+
+    def identifies_link(candidate: Path) -> bool:
+        return candidate == linked_parent or original_is_symlink(candidate)
+
+    monkeypatch.setattr(Path, "is_symlink", identifies_link)
+    with pytest.raises(WalStressError, match="symbolic links"):
+        validate_report_destination(linked_target, database)
+
+
+def test_report_destination_rejects_invalid_types_and_inspection_failures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report = tmp_path / "report.json"
+    database = tmp_path / "database.db"
+    with pytest.raises(TypeError, match="Path values"):
+        validate_report_destination(cast(Path, object()), database)
+
+    original_is_symlink = Path.is_symlink
+
+    def fail_component_inspection(candidate: Path) -> bool:
+        if candidate == report:
+            raise OSError("component unavailable")
+        return original_is_symlink(candidate)
+
+    with monkeypatch.context() as component_context:
+        component_context.setattr(Path, "is_symlink", fail_component_inspection)
+        with pytest.raises(WalStressError, match="could not be inspected"):
+            validate_report_destination(report, database)
+
+    original_resolve = Path.resolve
+
+    def fail_resolution(candidate: Path, *, strict: bool = False) -> Path:
+        if candidate == report:
+            raise OSError("resolution unavailable")
+        return original_resolve(candidate, strict=strict)
+
+    with monkeypatch.context() as resolution_context:
+        resolution_context.setattr(Path, "resolve", fail_resolution)
+        with pytest.raises(WalStressError, match="could not be inspected"):
+            validate_report_destination(report, database)
+
+
+def test_report_publication_race_preserves_competing_destination(
+    ci_report: tuple[WalStressReport, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report, database = ci_report
+    target = tmp_path / "raced.json"
+
+    def lose_creation_race(_source: Path, destination: Path) -> None:
+        destination.write_bytes(b"winner")
+        raise FileExistsError
+
+    monkeypatch.setattr(stress_runtime.os, "link", lose_creation_race)
+    with pytest.raises(WalStressError, match="published"):
+        write_report_atomic(report, target, database_path=database)
+    assert target.read_bytes() == b"winner"
+    assert list(tmp_path.glob(".*.tmp")) == []
+
+
 def test_report_publication_rejects_invalid_targets_and_cleans_candidate(
     ci_report: tuple[WalStressReport, Path], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     report, _ = ci_report
     with pytest.raises(TypeError):
-        write_report_atomic(cast(WalStressReport, object()), tmp_path / "report.json")
+        write_report_atomic(
+            cast(WalStressReport, object()),
+            tmp_path / "report.json",
+            database_path=tmp_path / "database.db",
+        )
     with pytest.raises(ValueError, match="absolute"):
-        write_report_atomic(report, Path("relative.json"))
+        write_report_atomic(report, Path("relative.json"), database_path=tmp_path / "database.db")
     with pytest.raises(WalStressError, match="parent"):
-        write_report_atomic(report, tmp_path / "missing" / "report.json")
+        write_report_atomic(
+            report,
+            tmp_path / "missing" / "report.json",
+            database_path=tmp_path / "database.db",
+        )
 
-    def fail_replace(_source: Path, _target: Path) -> None:
+    def fail_link(_source: Path, _target: Path) -> None:
         raise OSError("publication failed")
 
-    monkeypatch.setattr(stress_runtime.os, "replace", fail_replace)
+    monkeypatch.setattr(stress_runtime.os, "link", fail_link)
     with pytest.raises(WalStressError, match="published"):
-        write_report_atomic(report, tmp_path / "failed.json")
+        write_report_atomic(
+            report,
+            tmp_path / "failed.json",
+            database_path=tmp_path / "database.db",
+        )
     assert list(tmp_path.glob(".*.tmp")) == []
 
 
@@ -400,6 +497,9 @@ def test_snapshot_and_operational_helpers_reject_incoherence() -> None:
         def one(self) -> object:
             return self.value
 
+        def all(self) -> object:
+            return self.value
+
     class ScriptedConnection:
         def __init__(self, values: list[object]) -> None:
             self.values = values
@@ -418,9 +518,47 @@ def test_snapshot_and_operational_helpers_reject_incoherence() -> None:
         stress_runtime._coherent_frontier(cast(Connection, snapshot), "run_test")
     assert snapshot.rolled_back
 
-    operational = ScriptedConnection([(2, 1, 1), 0, 0, 3, 2, 0])
+    operational = ScriptedConnection(
+        [
+            (2, 1, 1),
+            0,
+            0,
+            (3, 3),
+            ("running", 2),
+            0,
+            [(0, 0, 0, 0, 0, 0, 0)] * 4,
+        ]
+    )
     with pytest.raises(WalStressError, match="contiguous"):
         stress_runtime._operational_evidence(cast(Connection, operational), "run_test")
+
+    invalid_cardinality = ScriptedConnection(
+        [
+            (2, 1, 2),
+            0,
+            0,
+            (3, 3),
+            ("running", 2),
+            0,
+            [(0, 0, 0, 0, 0, 0, 0)] * 3,
+        ]
+    )
+    with pytest.raises(WalStressError, match="cardinality"):
+        stress_runtime._operational_evidence(cast(Connection, invalid_cardinality), "run_test")
+
+    invalid_state = ScriptedConnection(
+        [
+            (2, 1, 2),
+            0,
+            0,
+            (3, 3),
+            (object(), 2),
+            0,
+            [(0, 0, 0, 0, 0, 0, 0)] * 4,
+        ]
+    )
+    with pytest.raises(WalStressError, match="run state"):
+        stress_runtime._operational_evidence(cast(Connection, invalid_state), "run_test")
 
 
 def test_pool_helper_requires_file_database_queue_pool() -> None:
@@ -465,15 +603,22 @@ def test_report_hard_gate_failures_are_explicit(
         {"committed": 97},
         {"failures": 1},
         {"writer": replace(report.writer, accepted=97, completed=97)},
-        {"writer": replace(report.writer, completed=97)},
         {"writer": replace(report.writer, contention_retries=0)},
+        {"writer": replace(report.writer, max_queue_depth=7)},
+        {"writer": replace(report.writer, max_admission_waiters=0)},
         {"close": replace(report.close, drained=False)},
         {"operational": replace(report.operational, execution_events=97)},
         {"operational": replace(report.operational, next_event_sequence=98)},
+        {"operational": replace(report.operational, event_counter_row_version=98)},
+        {"operational": replace(report.operational, run_state="queued")},
         {"operational": replace(report.operational, run_row_version=97)},
         {"operational": replace(report.operational, work_items=95)},
         {"operational": replace(report.operational, checkpoint_heads=95)},
+        {"operational": replace(report.operational, checkpoints=1)},
         {"operational": replace(report.operational, node_work_total=95)},
+        {"operational": replace(report.operational, node_work_pending=95)},
+        {"operational": replace(report.operational, node_work_distribution=(23, 25, 24, 24))},
+        {"notifications": replace(report.notifications, failures=1)},
     )
     for changes in command_failures:
         with pytest.raises(WalStressError, match="command or frontier"):
@@ -509,6 +654,10 @@ def test_report_hard_gate_failures_are_explicit(
             "reader progress",
         ),
         ({"pinned_reader_end_frontier": 3}, "pinned"),
+        (
+            {"checkpoints": replace(report.checkpoints, passive_while_pinned=(0, 0, 0))},
+            "checkpoint pressure",
+        ),
         ({"integrity": replace(report.integrity, journal_mode="delete")}, "integrity"),
         ({"elapsed_seconds": 301.0}, "budget"),
     )
@@ -611,6 +760,128 @@ def test_runner_reader_initialization_failures_clean_resources(
     with pytest.raises(WalStressError, match="initialization"):
         run_wal_stress(WalStressConfig(database, seed=88))
     assert not database.exists()
+
+
+@pytest.mark.parametrize("thread_kind", ["reader", "producer"])
+def test_runner_thread_start_failure_stops_started_peers_and_cleans_database(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, thread_kind: str
+) -> None:
+    database = tmp_path / f"{thread_kind}-start-failure.db"
+    original_start = stress_runtime.Thread.start
+
+    def controlled_start(thread: stress_runtime.Thread) -> None:
+        if thread.name == f"paritygrid-wal-{thread_kind}-1":
+            raise RuntimeError(f"{thread_kind} start failed")
+        original_start(thread)
+
+    monkeypatch.setattr(stress_runtime.Thread, "start", controlled_start)
+    with pytest.raises(RuntimeError, match=f"{thread_kind} start failed"):
+        run_wal_stress(WalStressConfig(database, seed=87))
+    assert not database.exists()
+    assert not Path(f"{database}-wal").exists()
+    assert not Path(f"{database}-shm").exists()
+
+
+@pytest.mark.parametrize("thread_kind", ["reader", "producer"])
+def test_runner_tracks_threads_when_start_raises_after_launch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, thread_kind: str
+) -> None:
+    database = tmp_path / f"{thread_kind}-post-launch-failure.db"
+    original_start = stress_runtime.Thread.start
+
+    if thread_kind == "reader":
+
+        def stoppable_reader(
+            _database: object,
+            _run_id: str,
+            _start: object,
+            _ready: object,
+            stop: stress_runtime.Event,
+            _frontier: int,
+            _final_seen: object,
+            _state: object,
+        ) -> None:
+            assert stop.wait(2.0)
+
+        monkeypatch.setattr(stress_runtime, "_reader_loop", stoppable_reader)
+
+    def launch_then_fail(thread: stress_runtime.Thread) -> None:
+        original_start(thread)
+        if thread.name == f"paritygrid-wal-{thread_kind}-1":
+            raise RuntimeError(f"{thread_kind} post-launch failure")
+
+    monkeypatch.setattr(stress_runtime.Thread, "start", launch_then_fail)
+    with pytest.raises(RuntimeError, match=f"{thread_kind} post-launch failure"):
+        run_wal_stress(WalStressConfig(database, seed=92))
+    assert not database.exists()
+
+
+def test_runner_expired_cleanup_budget_skips_reclosing_stopped_writer(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "expired-cleanup-budget.db"
+    writers: list[SQLiteTransactionalWriter] = []
+    original_writer_start = SQLiteTransactionalWriter.start
+    original_thread_start = stress_runtime.Thread.start
+    real_clock = stress_runtime.time.monotonic
+
+    def remember_writer(writer: SQLiteTransactionalWriter) -> None:
+        writers.append(writer)
+        original_writer_start(writer)
+
+    def stop_writer_then_fail(thread: stress_runtime.Thread) -> None:
+        if thread.name == "paritygrid-wal-reader-0":
+            assert writers
+            assert writers[0].close(timeout_seconds=2.0).drained
+            raise RuntimeError("startup failed after cleanup budget")
+        original_thread_start(thread)
+
+    monkeypatch.setattr(SQLiteTransactionalWriter, "start", remember_writer)
+    monkeypatch.setattr(stress_runtime.Thread, "start", stop_writer_then_fail)
+    monkeypatch.setattr(stress_runtime.time, "perf_counter", lambda: real_clock() - 30.0)
+
+    with pytest.raises(RuntimeError, match="startup failed after cleanup budget"):
+        run_wal_stress(WalStressConfig(database, seed=93))
+    assert not database.exists()
+
+
+def test_runner_cleanup_failure_chains_the_original_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "cleanup-failure-chain.db"
+    original_start = stress_runtime.Thread.start
+
+    def fail_first_reader(thread: stress_runtime.Thread) -> None:
+        if thread.name == "paritygrid-wal-reader-0":
+            raise RuntimeError("reader launch failed")
+        original_start(thread)
+
+    def cannot_prove_stop(_threads: list[stress_runtime.Thread], _deadline: float) -> bool:
+        return False
+
+    monkeypatch.setattr(stress_runtime.Thread, "start", fail_first_reader)
+    monkeypatch.setattr(stress_runtime, "_join_threads_until", cannot_prove_stop)
+
+    with pytest.raises(WalStressError, match="cleanup could not stop") as captured:
+        run_wal_stress(WalStressConfig(database, seed=94))
+    assert isinstance(captured.value.__cause__, RuntimeError)
+    assert not database.exists()
+
+
+def test_runner_success_still_requires_cleanup_stop_evidence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "cleanup-verification.db"
+
+    def cannot_prove_stop(_threads: list[stress_runtime.Thread], _deadline: float) -> bool:
+        return False
+
+    monkeypatch.setattr(stress_runtime, "_join_threads_until", cannot_prove_stop)
+
+    with pytest.raises(WalStressError, match="cleanup could not stop") as captured:
+        run_wal_stress(WalStressConfig(database, seed=95))
+    assert captured.value.__cause__ is None
+    assert database.exists()
 
 
 def test_runner_producer_timeout_is_bounded_and_cleans_resources(

@@ -1322,3 +1322,20 @@ def test_last_resort_guard_never_overwrites_a_known_receipt(
     monkeypatch.setattr(SQLiteTransactionalWriter, "_run_loop", fail_loop)
     writer._run()
     assert ticket.result(timeout_seconds=0.0) is receipt
+
+
+def test_last_resort_guard_fails_closed_without_an_active_command(
+    sessions: sessionmaker[Session], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    writer = SQLiteTransactionalWriter(sessions, settings())
+
+    def fail_loop(_writer: SQLiteTransactionalWriter) -> None:
+        raise _FatalSignal
+
+    monkeypatch.setattr(SQLiteTransactionalWriter, "_run_loop", fail_loop)
+    writer._run()
+
+    diagnostics = writer.snapshot()
+    assert diagnostics.state is WriterState.FAILED
+    assert diagnostics.accepted == diagnostics.completed == 0
+    assert diagnostics.in_flight == 0

@@ -14,7 +14,7 @@ from .models import (
     WalStressWorkload,
     workload_for,
 )
-from .runner import run_wal_stress, write_report_atomic
+from .runner import run_wal_stress, validate_report_destination, write_report_atomic
 from .scenario import WalStressScenario, build_scenario
 
 __all__ = [
@@ -32,6 +32,7 @@ __all__ = [
     "WalStressWorkload",
     "build_scenario",
     "run_wal_stress",
+    "validate_report_destination",
     "workload_for",
     "write_report_atomic",
 ]

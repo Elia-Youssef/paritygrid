@@ -338,6 +338,8 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                 active = self._active
                 if active is not None and not active.ticket.resolved:
                     active.ticket.resolve_error(WriterFailedError("Writer lifecycle failed."))
+                if active is not None:
+                    self._completed += 1
                 self._active = None
                 self._in_flight = 0
                 self._state = WriterState.FAILED
@@ -538,6 +540,7 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                     "Accepted command was not executed because the writer failed."
                 )
             )
+            self._completed += 1
 
 
 def _rollback_and_close(

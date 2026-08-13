@@ -130,6 +130,7 @@ def test_wal_stress_command_writes_report_and_summarizes_result(tmp_path: Path) 
 
     with (
         patch("paritygrid.cli.run_wal_stress", return_value=stress_result) as run_stress,
+        patch("paritygrid.cli.validate_report_destination") as validate_report,
         patch("paritygrid.cli.write_report_atomic") as write_report,
     ):
         result = runner.invoke(
@@ -152,7 +153,8 @@ def test_wal_stress_command_writes_report_and_summarizes_result(tmp_path: Path) 
     configuration = run_stress.call_args.args[0]
     assert configuration.database_path == database
     assert configuration.seed == 7
-    write_report.assert_called_once_with(stress_result, report)
+    validate_report.assert_called_once_with(report, database)
+    write_report.assert_called_once_with(stress_result, report, database_path=database)
 
 
 def test_wal_stress_command_reports_safe_failure(tmp_path: Path) -> None:

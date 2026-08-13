@@ -252,6 +252,8 @@ class WriterDiagnostics:
             raise ValueError("writer diagnostics counters cannot be negative")
         if self.completed > self.accepted:
             raise ValueError("writer diagnostics completed count exceeds accepted count")
+        if self.accepted != self.completed + self.queue_depth + self.in_flight:
+            raise ValueError("writer diagnostics accepted command accounting is inconsistent")
         if self.queue_depth > self.queue_capacity:
             raise ValueError("writer diagnostics queue depth exceeds capacity")
         if self.admission_waiters > self.admission_capacity:
@@ -268,6 +270,10 @@ class WriterDiagnostics:
         resident = self.queue_depth + self.in_flight
         if self.max_resident < resident or self.max_resident > self.queue_capacity + 1:
             raise ValueError("writer diagnostics resident high-water mark is invalid")
+        if self.max_resident < self.max_queue_depth:
+            raise ValueError(
+                "writer diagnostics resident and queue high-water marks are inconsistent"
+            )
 
 
 class WriterTicket(Protocol):

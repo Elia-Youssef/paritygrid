@@ -158,7 +158,7 @@ def diagnostics(**changes: object) -> WriterDiagnostics:
         "state": WriterState.RUNNING,
         "queue_capacity": 4,
         "admission_capacity": 3,
-        "accepted": 2,
+        "accepted": 3,
         "completed": 1,
         "queue_depth": 1,
         "admission_waiters": 1,
@@ -181,15 +181,17 @@ def test_writer_diagnostics_validate_exact_types_bounds_and_relationships() -> N
         ({"admission_capacity": 10_001}, ValueError),
         ({"contention_retries": -1}, ValueError),
         ({"accepted": 1, "completed": 2}, ValueError),
-        ({"queue_depth": 5}, ValueError),
+        ({"accepted": 2}, ValueError),
+        ({"accepted": 7, "queue_depth": 5}, ValueError),
         ({"admission_waiters": 4}, ValueError),
-        ({"in_flight": 2}, ValueError),
+        ({"accepted": 4, "in_flight": 2}, ValueError),
         ({"max_queue_depth": 0}, ValueError),
         ({"max_queue_depth": 5}, ValueError),
         ({"max_admission_waiters": 0}, ValueError),
         ({"max_admission_waiters": 4}, ValueError),
         ({"max_resident": 1}, ValueError),
         ({"max_resident": 6}, ValueError),
+        ({"max_queue_depth": 3, "max_resident": 2}, ValueError),
     )
     for changes, expected in invalid:
         with pytest.raises(expected):

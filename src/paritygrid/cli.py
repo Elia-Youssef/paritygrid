@@ -17,6 +17,7 @@ from paritygrid.quality.wal_stress import (
     WalStressError,
     WalStressProfile,
     run_wal_stress,
+    validate_report_destination,
     write_report_atomic,
 )
 from paritygrid.runtime.config import Settings
@@ -131,10 +132,11 @@ def stress_wal(
 ) -> None:
     """Verify SQLite WAL readers, bounded writes, contention, and integrity."""
     try:
+        validate_report_destination(report_path, database_path)
         result = run_wal_stress(
             WalStressConfig(database_path, profile, seed, create_parent=create_parent)
         )
-        write_report_atomic(result, report_path)
+        write_report_atomic(result, report_path, database_path=database_path)
     except (TypeError, ValueError, WalStressError) as error:
         typer.echo(f"WAL stress failed: {error}", err=True)
         raise typer.Exit(code=1) from None

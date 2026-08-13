@@ -102,10 +102,20 @@ class WalCheckpointEvidence:
 class OperationalEvidence:
     execution_events: int
     next_event_sequence: int
+    event_counter_row_version: int
+    run_state: str
     run_row_version: int
     work_items: int
     checkpoint_heads: int
+    checkpoints: int
     node_work_total: int
+    node_work_pending: int
+    node_work_running: int
+    node_work_succeeded: int
+    node_work_failed: int
+    node_work_cancelled: int
+    node_retry_count: int
+    node_work_distribution: tuple[int, ...]
 
 
 @dataclass(frozen=True, slots=True)

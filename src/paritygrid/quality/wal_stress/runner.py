@@ -25,7 +25,7 @@ from paritygrid.adapters.persistence.sqlite import SessionFactory
 from paritygrid.adapters.persistence.writer.contention import is_sqlite_contention
 from paritygrid.adapters.persistence.writer.core import SQLiteTransactionalWriter
 from paritygrid.application.ports.configuration import ConfigurationDocument
-from paritygrid.application.ports.writer import WriterSettings, WriterTicket
+from paritygrid.application.ports.writer import WriterSettings, WriterState, WriterTicket
 
 from .models import (
     WAL_STRESS_REPORT_SCHEMA_VERSION,
@@ -310,25 +310,57 @@ def _operational_evidence(connection: Connection, run_id: str) -> OperationalEvi
     heads = connection.exec_driver_sql(
         "SELECT COUNT(*) FROM checkpoint_heads WHERE run_id = ?", (run_id,)
     ).scalar_one()
-    next_sequence = connection.exec_driver_sql(
-        "SELECT next_sequence_number FROM run_event_counters WHERE run_id = ?", (run_id,)
+    next_sequence, counter_version = connection.exec_driver_sql(
+        "SELECT next_sequence_number, row_version FROM run_event_counters WHERE run_id = ?",
+        (run_id,),
+    ).one()
+    run_state, run_version = connection.exec_driver_sql(
+        "SELECT state, row_version FROM runs WHERE run_id = ?", (run_id,)
+    ).one()
+    checkpoints = connection.exec_driver_sql(
+        "SELECT COUNT(*) FROM checkpoints WHERE run_id = ?", (run_id,)
     ).scalar_one()
-    run_version = connection.exec_driver_sql(
-        "SELECT row_version FROM runs WHERE run_id = ?", (run_id,)
-    ).scalar_one()
-    node_total = connection.exec_driver_sql(
-        "SELECT COALESCE(SUM(work_total), 0) FROM run_nodes WHERE run_id = ?", (run_id,)
-    ).scalar_one()
-    values = (event_count, work_count, heads, next_sequence, run_version, node_total)
+    node_rows = connection.exec_driver_sql(
+        "SELECT work_total, work_pending, work_running, work_succeeded, work_failed, "
+        "work_cancelled, retry_count FROM run_nodes WHERE run_id = ? ORDER BY node_id",
+        (run_id,),
+    ).all()
+    if len(node_rows) != 4:
+        raise WalStressError("final run-node cardinality is invalid")
+    node_columns = tuple(sum(cast(int, row[index]) for row in node_rows) for index in range(7))
+    node_distribution = tuple(cast(int, row[0]) for row in node_rows)
+    values = (
+        event_count,
+        work_count,
+        heads,
+        next_sequence,
+        counter_version,
+        run_version,
+        checkpoints,
+        *node_columns,
+        *node_distribution,
+    )
     if any(type(value) is not int for value in values) or minimum != 1 or maximum != event_count:
         raise WalStressError("final operational frontiers are not contiguous")
+    if type(run_state) is not str:
+        raise WalStressError("final run state is invalid")
     return OperationalEvidence(
         cast(int, event_count),
         cast(int, next_sequence),
+        cast(int, counter_version),
+        run_state,
         cast(int, run_version),
         cast(int, work_count),
         cast(int, heads),
-        cast(int, node_total),
+        cast(int, checkpoints),
+        node_columns[0],
+        node_columns[1],
+        node_columns[2],
+        node_columns[3],
+        node_columns[4],
+        node_columns[5],
+        node_columns[6],
+        node_distribution,
     )
 
 
@@ -341,14 +373,44 @@ def _assert_report_gates(report: WalStressReport) -> None:
         and report.failures == 0
         and report.writer.accepted == expected
         and report.writer.completed == expected
+        and report.writer.state is WriterState.CLOSED
+        and report.writer.queue_capacity == report.workload.queue_capacity
+        and report.writer.admission_capacity == report.workload.admission_capacity
+        and report.writer.queue_depth == 0
+        and report.writer.admission_waiters == 0
+        and report.writer.in_flight == 0
+        and report.writer.max_queue_depth == report.workload.queue_capacity
+        and report.writer.max_resident == report.workload.queue_capacity + 1
+        and 0 < report.writer.max_admission_waiters <= report.workload.admission_capacity
         and report.writer.contention_retries >= 1
         and report.close.drained
+        and report.close.accepted == expected
+        and report.close.completed == expected
+        and report.close.queued == 0
+        and report.close.in_flight == 0
         and report.operational.execution_events == expected
         and report.operational.next_event_sequence == expected + 1
+        and report.operational.event_counter_row_version == expected + 1
+        and report.operational.run_state == "running"
         and report.operational.run_row_version == expected
         and report.operational.work_items == report.workload.work_commands
         and report.operational.checkpoint_heads == report.workload.work_commands
+        and report.operational.checkpoints == 0
         and report.operational.node_work_total == report.workload.work_commands
+        and report.operational.node_work_pending == report.workload.work_commands
+        and report.operational.node_work_running == 0
+        and report.operational.node_work_succeeded == 0
+        and report.operational.node_work_failed == 0
+        and report.operational.node_work_cancelled == 0
+        and report.operational.node_retry_count == 0
+        and report.operational.node_work_distribution == (report.workload.work_commands // 4,) * 4
+        and report.notifications.capacity == report.workload.notification_capacity
+        and report.notifications.depth == report.workload.notification_capacity
+        and report.notifications.offered == expected
+        and report.notifications.accepted == report.workload.notification_capacity
+        and report.notifications.dropped == expected - report.workload.notification_capacity
+        and report.notifications.rejected == 0
+        and report.notifications.failures == 0
     ):
         raise WalStressError("WAL stress command or frontier gates failed")
     if not report.contention_codes or not any(
@@ -357,15 +419,25 @@ def _assert_report_gates(report: WalStressReport) -> None:
         raise WalStressError("WAL stress did not observe SQLITE_BUSY_SNAPSHOT")
     if report.locked_probe_code != sqlite3.SQLITE_LOCKED:
         raise WalStressError("WAL stress did not observe SQLITE_LOCKED")
-    if any(producer.admitted == 0 for producer in report.producers):
+    expected_per_producer = report.workload.work_commands // report.workload.producer_count
+    if (
+        len(report.producers) != report.workload.producer_count
+        or any(producer.admitted != expected_per_producer for producer in report.producers)
+        or sum(producer.admitted for producer in report.producers) != report.workload.work_commands
+    ):
         raise WalStressError("WAL stress producer fairness gate failed")
-    if any(
-        reader.operations < 2 or reader.last_frontier <= reader.first_frontier
+    if len(report.readers) != report.workload.reader_count or any(
+        reader.operations < 2
+        or reader.last_frontier != expected
+        or reader.last_frontier <= reader.first_frontier
         for reader in report.readers
     ):
         raise WalStressError("WAL stress reader progress gate failed")
     if report.pinned_reader_start_frontier != report.pinned_reader_end_frontier:
         raise WalStressError("pinned WAL reader snapshot changed")
+    passive = report.checkpoints.passive_while_pinned
+    if passive[1] <= passive[2] or report.checkpoints.truncate_after_release != (0, 0, 0):
+        raise WalStressError("WAL stress checkpoint pressure gate failed")
     integrity = report.integrity
     if not (
         integrity.journal_mode == "wal"
@@ -403,12 +475,57 @@ def _join_threads(threads: list[Thread], timeout_seconds: float, subject: str) -
         raise WalStressError(f"WAL stress {subject} did not stop within its bound")
 
 
+def _join_threads_until(threads: list[Thread], deadline: float) -> bool:
+    for thread in threads:
+        thread.join(max(0.0, deadline - time.monotonic()))
+    return not any(thread.is_alive() for thread in threads)
+
+
 def _remove_failed_database(path: Path) -> None:
     for candidate in (Path(f"{path}-wal"), Path(f"{path}-shm"), path):
         try:
             candidate.unlink(missing_ok=True)
         except OSError:
             continue
+
+
+def _reject_linked_components(path: Path) -> None:
+    try:
+        for candidate in (path, *path.parents):
+            if candidate.is_symlink() or candidate.is_junction():
+                raise WalStressError(
+                    "WAL stress report paths cannot contain symbolic links or junctions"
+                )
+    except WalStressError:
+        raise
+    except OSError as error:
+        raise WalStressError("WAL stress report path could not be inspected") from error
+
+
+def validate_report_destination(path: Path, database_path: Path) -> Path:
+    """Resolve one new report target that cannot alias the stress database."""
+    path_value = cast(object, path)
+    database_value = cast(object, database_path)
+    if not isinstance(path_value, Path) or not isinstance(database_value, Path):
+        raise TypeError("WAL stress output paths must be Path values")
+    if not path.is_absolute() or not database_path.is_absolute():
+        raise ValueError("WAL stress output paths must be absolute")
+    _reject_linked_components(path)
+    _reject_linked_components(database_path)
+    try:
+        resolved = path.resolve(strict=False)
+        resolved_database = database_path.resolve(strict=False)
+        if resolved == resolved_database:
+            raise WalStressError("WAL stress report and database paths must be distinct")
+        if resolved.exists() or resolved.is_symlink() or resolved.is_junction():
+            raise WalStressError("WAL stress report must be a new file")
+        if not resolved.parent.is_dir():
+            raise WalStressError("WAL stress report parent directory does not exist")
+    except WalStressError:
+        raise
+    except OSError as error:
+        raise WalStressError("WAL stress report path could not be inspected") from error
+    return resolved
 
 
 def run_wal_stress(config: WalStressConfig) -> WalStressReport:
@@ -426,6 +543,10 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
     injector: _BusySnapshotInjector | None = None
     pinned: Connection | None = None
     readers: list[Thread] = []
+    producers: list[Thread] = []
+    reader_ready: Barrier | None = None
+    producer_condition: Condition | None = None
+    producer_abort = Event()
     stop_readers = Event()
     failure: BaseException | None = None
     try:
@@ -489,8 +610,13 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
                 ),
                 daemon=False,
             )
+            try:
+                thread.start()
+            except BaseException:
+                if thread.is_alive():
+                    readers.append(thread)
+                raise
             readers.append(thread)
-            thread.start()
         reader_start.set()
         try:
             reader_ready.wait(workload.timeout_seconds)
@@ -517,13 +643,16 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
                     with producer_condition:
                         turn_deadline = time.monotonic() + workload.timeout_seconds / 2
                         while (
-                            next_index < workload.work_commands
+                            not producer_abort.is_set()
+                            and next_index < workload.work_commands
                             and scenario.owners[next_index] != producer
                         ):
                             remaining = turn_deadline - time.monotonic()
                             if remaining <= 0:
                                 raise WalStressError("producer turn wait timed out")
                             producer_condition.wait(remaining)
+                        if producer_abort.is_set():
+                            return
                         if next_index >= workload.work_commands:
                             return
                         index = next_index
@@ -547,7 +676,7 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
                     resident_ready.set()
                     producer_condition.notify_all()
 
-        producers = [
+        producer_candidates = [
             Thread(
                 target=produce,
                 name=f"paritygrid-wal-producer-{index}",
@@ -556,8 +685,14 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
             )
             for index in range(workload.producer_count)
         ]
-        for thread in producers:
-            thread.start()
+        for thread in producer_candidates:
+            try:
+                thread.start()
+            except BaseException:
+                if thread.is_alive():
+                    producers.append(thread)
+                raise
+            producers.append(thread)
         _join_threads(producers, workload.timeout_seconds, "producer")
         if producer_errors:
             raise WalStressError("WAL stress producer failed") from None
@@ -671,31 +806,44 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
         raise
     finally:
         stop_readers.set()
+        producer_abort.set()
+        if reader_ready is not None:
+            with suppress(BrokenBarrierError):
+                reader_ready.abort()
+        if producer_condition is not None:
+            with producer_condition:
+                producer_condition.notify_all()
         if pinned is not None:
             with suppress(BaseException):
                 pinned.exec_driver_sql("ROLLBACK")
             pinned.close()
-        for thread in readers:
-            thread.join(1.0)
+        cleanup_deadline = started + workload.total_budget_seconds
         if writer is not None:
-            writer.close(timeout_seconds=5.0)
+            remaining = cleanup_deadline - time.monotonic()
+            if remaining > 0:
+                writer.close(timeout_seconds=remaining)
+        peers_stopped = _join_threads_until(producers + readers, cleanup_deadline)
+        writer_stopped = writer is None or writer.thread is None or not writer.thread.is_alive()
+        cleanup_error: WalStressError | None = None
+        if not peers_stopped or not writer_stopped:
+            cleanup_error = WalStressError("WAL stress cleanup could not stop all worker threads")
         if injector is not None:
             injector.remove()
         if database is not None:
             database.close()
         if failure is not None:
             _remove_failed_database(path)
+        if cleanup_error is not None:
+            if failure is not None:
+                raise cleanup_error from failure
+            raise cleanup_error
 
 
-def write_report_atomic(report: WalStressReport, path: Path) -> None:
-    """Publish canonical JSON through an adjacent atomic replacement."""
+def write_report_atomic(report: WalStressReport, path: Path, *, database_path: Path) -> None:
+    """Publish canonical JSON atomically without replacing an existing path."""
     if type(report) is not WalStressReport:
         raise TypeError("WAL stress report is invalid")
-    path_value = cast(object, path)
-    if not isinstance(path_value, Path) or not path.is_absolute():
-        raise ValueError("WAL stress report path must be absolute")
-    if not path.parent.is_dir():
-        raise WalStressError("WAL stress report parent directory does not exist")
+    path = validate_report_destination(path, database_path)
     candidate = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
     encoded = (
         json.dumps(report.to_mapping(), ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -706,10 +854,11 @@ def write_report_atomic(report: WalStressReport, path: Path) -> None:
             stream.write(encoded)
             stream.flush()
             os.fsync(stream.fileno())
-        os.replace(candidate, path)
+        os.link(candidate, path)
+        candidate.unlink()
     except OSError as error:
         candidate.unlink(missing_ok=True)
         raise WalStressError("WAL stress report could not be published") from error
 
 
-__all__ = ["run_wal_stress", "write_report_atomic"]
+__all__ = ["run_wal_stress", "validate_report_destination", "write_report_atomic"]
