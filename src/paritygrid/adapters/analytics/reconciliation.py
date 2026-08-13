@@ -414,6 +414,11 @@ def _require_cursor(value: object) -> ReconciliationQueryCursor | None:
 def _verify_manifest_file(path: Path, manifest: ArtifactManifestRecord) -> None:
     descriptor: int | None = None
     try:
+        initial = os.stat(path, follow_symlinks=False)
+        if not stat.S_ISREG(initial.st_mode):
+            raise ReconciliationQueryIntegrityError(
+                "reconciliation manifest does not reference a regular file"
+            )
         flags = os.O_RDONLY | getattr(os, "O_BINARY", 0) | getattr(os, "O_NOFOLLOW", 0)
         descriptor = os.open(path, flags)
         before = os.fstat(descriptor)
@@ -428,6 +433,20 @@ def _verify_manifest_file(path: Path, manifest: ArtifactManifestRecord) -> None:
             size = _hash_stream(stream, digest)
             after = os.fstat(stream.fileno())
         installed = os.stat(path, follow_symlinks=False)
+        if (
+            initial.st_dev,
+            initial.st_ino,
+            initial.st_size,
+            initial.st_mtime_ns,
+        ) != (
+            before.st_dev,
+            before.st_ino,
+            before.st_size,
+            before.st_mtime_ns,
+        ):
+            raise ReconciliationQueryIntegrityError(
+                "reconciliation artifact changed during verification"
+            )
         expected_identity = (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns)
         if expected_identity != (
             after.st_dev,

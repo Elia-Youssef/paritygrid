@@ -463,7 +463,7 @@ def test_manifest_verifier_rejects_missing_hash_schema_and_nonregular_file(
         adapter._verify_manifest_file(path, manifest)
 
     path.mkdir()
-    with pytest.raises(ReconciliationQueryIntegrityError, match="could not be verified"):
+    with pytest.raises(ReconciliationQueryIntegrityError, match="regular file"):
         adapter._verify_manifest_file(path, manifest)
 
 
@@ -477,7 +477,8 @@ def test_manifest_verifier_detects_identity_change_and_close_failure(
     path = root / str(manifest.relative_path)
     original_stat = os.stat
 
-    monkeypatch.setattr(stat, "S_ISREG", lambda _mode: False)
+    regular_results = iter((True, False))
+    monkeypatch.setattr(stat, "S_ISREG", lambda _mode: next(regular_results))
     with pytest.raises(ReconciliationQueryIntegrityError, match="regular file"):
         adapter._verify_manifest_file(path, manifest)
     monkeypatch.undo()
@@ -489,6 +490,24 @@ def test_manifest_verifier_detects_identity_change_and_close_failure(
         return os.stat_result(values)
 
     monkeypatch.setattr(os, "stat", changed_stat)
+    with pytest.raises(ReconciliationQueryIntegrityError, match="changed"):
+        adapter._verify_manifest_file(path, manifest)
+
+    monkeypatch.undo()
+    original_fstat = os.fstat
+    fstat_calls = 0
+
+    def changed_fstat(descriptor: int) -> os.stat_result:
+        nonlocal fstat_calls
+        result = original_fstat(descriptor)
+        fstat_calls += 1
+        if fstat_calls == 2:
+            values = list(result)
+            values[6] += 1
+            return os.stat_result(values)
+        return result
+
+    monkeypatch.setattr(os, "fstat", changed_fstat)
     with pytest.raises(ReconciliationQueryIntegrityError, match="changed"):
         adapter._verify_manifest_file(path, manifest)
 
