@@ -909,3 +909,67 @@ def test_raw_wal_recovery_rejects_integrity_foreign_key_and_checkpoint_drift(
     )
     with pytest.raises(CrashDatabaseIntegrityError, match="recovery failed"):
         scenario._recover_wal_after_crash(tmp_path / "scenario.sqlite3")
+
+
+def test_raw_wal_recovery_discards_only_the_transient_wal_index(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "scenario.sqlite3"
+    database_path.write_bytes(b"database")
+    wal_path = Path(f"{database_path}-wal")
+    wal_path.write_bytes(b"durable-wal")
+    wal_index_path = Path(f"{database_path}-shm")
+    wal_index_path.write_bytes(b"transient-index")
+
+    class Cursor:
+        def __init__(
+            self,
+            *,
+            rows: list[tuple[object, ...]] | None = None,
+            row: tuple[object, ...] | None = None,
+        ) -> None:
+            self.rows = [] if rows is None else rows
+            self.row = row
+
+        def fetchall(self) -> list[tuple[object, ...]]:
+            return self.rows
+
+        def fetchone(self) -> tuple[object, ...] | None:
+            return self.row
+
+    class Connection:
+        def execute(self, statement: str) -> Cursor:
+            if "quick_check" in statement:
+                return Cursor(rows=[("ok",)])
+            if "foreign_key_check" in statement:
+                return Cursor(rows=[])
+            if "wal_checkpoint" in statement:
+                return Cursor(row=(0, 0, 0))
+            return Cursor()
+
+        def close(self) -> None:
+            return None
+
+    monkeypatch.setattr(scenario.sqlite3, "connect", lambda *_args, **_kwargs: Connection())
+    scenario._recover_wal_after_crash(database_path)
+
+    assert database_path.read_bytes() == b"database"
+    assert wal_path.read_bytes() == b"durable-wal"
+    assert not wal_index_path.exists()
+
+
+def test_raw_wal_recovery_fails_closed_when_wal_index_cannot_be_removed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database_path = tmp_path / "scenario.sqlite3"
+    wal_index_path = Path(f"{database_path}-shm")
+    original_unlink = Path.unlink
+
+    def fail_target(path: Path, *, missing_ok: bool = False) -> None:
+        if path == wal_index_path:
+            raise OSError("injected")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(Path, "unlink", fail_target)
+    with pytest.raises(CrashDatabaseIntegrityError, match="WAL index cleanup"):
+        scenario._recover_wal_after_crash(database_path)

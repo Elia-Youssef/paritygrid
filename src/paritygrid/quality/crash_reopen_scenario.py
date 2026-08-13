@@ -565,7 +565,9 @@ def _validate_reopened_database(connection: Connection) -> None:
 
 def _recover_wal_after_crash(database_path: Path) -> None:
     """Let SQLite recover retained WAL state before production profile inspection."""
+    wal_index_path = Path(f"{database_path}-shm")
     try:
+        wal_index_path.unlink(missing_ok=True)
         connection = sqlite3.connect(
             database_path,
             timeout=5.0,
@@ -585,6 +587,8 @@ def _recover_wal_after_crash(database_path: Path) -> None:
             connection.close()
     except CrashDatabaseIntegrityError:
         raise
+    except OSError as error:
+        raise CrashDatabaseIntegrityError("transient SQLite WAL index cleanup failed") from error
     except sqlite3.DatabaseError as error:
         raise CrashDatabaseIntegrityError("raw SQLite WAL recovery failed") from error
 
