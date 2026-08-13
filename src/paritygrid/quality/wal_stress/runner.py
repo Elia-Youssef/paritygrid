@@ -694,7 +694,11 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
                     producers.append(thread)
                 raise
             producers.append(thread)
-        _join_threads(producers, workload.timeout_seconds, "producer")
+        # Each admission remains bounded by the operation timeout, while the
+        # complete 96-command producer phase uses the workload's finite total
+        # budget so coverage and loaded CI runners cannot turn normal progress
+        # into a false thread-leak result.
+        _join_threads(producers, workload.total_budget_seconds, "producer")
         if producer_errors:
             raise WalStressError("WAL stress producer failed") from None
 

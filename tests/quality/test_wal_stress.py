@@ -907,6 +907,27 @@ def test_runner_producer_timeout_is_bounded_and_cleans_resources(
     assert not database.exists()
 
 
+def test_runner_producer_phase_uses_the_finite_total_budget(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    database = tmp_path / "producer phase budget.db"
+    observed: list[tuple[float, str]] = []
+    original_join = stress_runtime._join_threads
+
+    def record_join(
+        threads: list[stress_runtime.Thread], timeout_seconds: float, subject: str
+    ) -> None:
+        observed.append((timeout_seconds, subject))
+        original_join(threads, timeout_seconds, subject)
+
+    monkeypatch.setattr(stress_runtime, "_join_threads", record_join)
+    report = run_wal_stress(WalStressConfig(database, seed=96))
+
+    workload = workload_for(WalStressProfile.CI)
+    assert (workload.total_budget_seconds, "producer") in observed
+    assert report.committed == 98
+
+
 def test_runner_command_failure_is_counted_and_cleans_resources(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
