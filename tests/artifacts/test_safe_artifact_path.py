@@ -125,6 +125,21 @@ def test_resolution_rejects_a_resolver_escape_defensively(
         resolve_artifact_path(tmp_path, ArtifactRelativePath("runs/file.json"))
 
 
+def test_resolution_translates_a_candidate_resolution_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = Path.resolve
+
+    def fail_candidate(candidate: Path, *, strict: bool = False) -> Path:
+        if candidate.name == "file.json":
+            raise OSError("candidate failure")
+        return original(candidate, strict=strict)
+
+    monkeypatch.setattr(Path, "resolve", fail_candidate)
+    with pytest.raises(ArtifactPathError, match="could not be resolved safely"):
+        resolve_artifact_path(tmp_path, ArtifactRelativePath("runs/file.json"))
+
+
 def test_resolution_does_not_create_or_change_filesystem_state(tmp_path: Path) -> None:
     before = tuple(os.scandir(tmp_path))
     resolved = resolve_artifact_path(tmp_path, ArtifactRelativePath("runs/file.json"))

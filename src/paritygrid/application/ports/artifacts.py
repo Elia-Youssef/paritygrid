@@ -2,12 +2,15 @@
 
 import re
 import unicodedata
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Self, cast
+from typing import Protocol, Self, cast
 
 MAX_ARTIFACT_RELATIVE_PATH_BYTES = 1_024
 MAX_ARTIFACT_PATH_SEGMENT_BYTES = 255
 MAX_ARTIFACT_PATH_SEGMENTS = 32
+MAX_ARTIFACT_WRITE_BYTES = 1_099_511_627_776
+MAX_ARTIFACT_CHUNK_BYTES = 8_388_608
 
 _UNSAFE_PORTABLE_CHARACTERS = frozenset('<>:"\\|?*')
 _WINDOWS_DEVICE_NAME = re.compile(
@@ -18,6 +21,30 @@ _WINDOWS_DEVICE_NAME = re.compile(
 
 class ArtifactPathError(ValueError):
     """Base failure for an unsafe or noncanonical artifact path."""
+
+
+class ArtifactWriteError(RuntimeError):
+    """Base failure while staging or publishing an artifact file."""
+
+
+class ArtifactInvalidWriteError(ArtifactWriteError):
+    """The requested write violates the bounded writer contract."""
+
+
+class ArtifactSizeLimitError(ArtifactWriteError):
+    """The streamed artifact exceeds its configured byte limit."""
+
+
+class ArtifactAlreadyExistsError(ArtifactWriteError):
+    """The immutable destination already exists."""
+
+
+class ArtifactStorageError(ArtifactWriteError):
+    """The filesystem rejected a write before publication."""
+
+
+class ArtifactPublishOutcomeUnknownError(ArtifactWriteError):
+    """Publication succeeded but its final durability step failed."""
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -60,6 +87,42 @@ class ArtifactRelativePath:
 
     def __str__(self) -> str:
         return self.value
+
+
+@dataclass(frozen=True, slots=True)
+class ArtifactWriteReceipt:
+    """Content identity and size of one atomically published file."""
+
+    relative_path: ArtifactRelativePath
+    byte_size: int
+    sha256: str
+
+    def __post_init__(self) -> None:
+        relative_path = cast(object, self.relative_path)
+        byte_size = cast(object, self.byte_size)
+        sha256 = cast(object, self.sha256)
+        if not isinstance(relative_path, ArtifactRelativePath):
+            raise TypeError("artifact receipt path must be validated")
+        if isinstance(byte_size, bool) or not isinstance(byte_size, int):
+            raise TypeError("artifact receipt byte size must be an integer")
+        if not 0 <= byte_size <= MAX_ARTIFACT_WRITE_BYTES:
+            raise ValueError("artifact receipt byte size is outside the supported range")
+        if not isinstance(sha256, str):
+            raise TypeError("artifact receipt SHA-256 must be text")
+        if re.fullmatch(r"[0-9a-f]{64}", sha256, flags=re.ASCII) is None:
+            raise ValueError("artifact receipt SHA-256 must be canonical lowercase hexadecimal")
+
+
+class ArtifactWriter(Protocol):
+    """Port for bounded immutable artifact publication."""
+
+    def write(
+        self,
+        relative_path: ArtifactRelativePath,
+        chunks: Iterable[bytes],
+    ) -> ArtifactWriteReceipt:
+        """Publish one new artifact without replacing an existing destination."""
+        ...
 
 
 def _validate_relative_path(value: object) -> str:

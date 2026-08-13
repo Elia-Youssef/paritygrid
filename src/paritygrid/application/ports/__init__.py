@@ -1,11 +1,21 @@
 """Stable application-facing infrastructure contracts."""
 
 from paritygrid.application.ports.artifacts import (
+    MAX_ARTIFACT_CHUNK_BYTES,
     MAX_ARTIFACT_PATH_SEGMENT_BYTES,
     MAX_ARTIFACT_PATH_SEGMENTS,
     MAX_ARTIFACT_RELATIVE_PATH_BYTES,
+    MAX_ARTIFACT_WRITE_BYTES,
+    ArtifactAlreadyExistsError,
+    ArtifactInvalidWriteError,
     ArtifactPathError,
+    ArtifactPublishOutcomeUnknownError,
     ArtifactRelativePath,
+    ArtifactSizeLimitError,
+    ArtifactStorageError,
+    ArtifactWriteError,
+    ArtifactWriter,
+    ArtifactWriteReceipt,
 )
 from paritygrid.application.ports.configuration import (
     MAX_PAGE_SIZE,
@@ -190,9 +200,11 @@ from paritygrid.application.ports.writer import (
 )
 
 __all__ = [
+    "MAX_ARTIFACT_CHUNK_BYTES",
     "MAX_ARTIFACT_PATH_SEGMENTS",
     "MAX_ARTIFACT_PATH_SEGMENT_BYTES",
     "MAX_ARTIFACT_RELATIVE_PATH_BYTES",
+    "MAX_ARTIFACT_WRITE_BYTES",
     "MAX_AUDIT_PAGE_SIZE",
     "MAX_CONSISTENCY_PAGE_SIZE",
     "MAX_CONSISTENCY_SEQUENCE",
@@ -203,8 +215,16 @@ __all__ = [
     "MAX_WORK_METRIC",
     "MAX_WRITER_SUBMISSION_ID",
     "AppliedRepairAction",
+    "ArtifactAlreadyExistsError",
+    "ArtifactInvalidWriteError",
     "ArtifactPathError",
+    "ArtifactPublishOutcomeUnknownError",
     "ArtifactRelativePath",
+    "ArtifactSizeLimitError",
+    "ArtifactStorageError",
+    "ArtifactWriteError",
+    "ArtifactWriteReceipt",
+    "ArtifactWriter",
     "AttemptOutcome",
     "AuditCorruptionError",
     "AuditEntryRecord",
