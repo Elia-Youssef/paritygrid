@@ -13,6 +13,7 @@ authors = [
 ]
 dependencies = [
   "alembic>=1.17,<2",
+  "duckdb>=1.5.5,<1.6",
   "fastapi>=0.116,<1",
   "pyarrow>=25,<26",
   "pydantic-settings>=2.10,<3",

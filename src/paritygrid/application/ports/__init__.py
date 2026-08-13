@@ -1,5 +1,19 @@
 """Stable application-facing infrastructure contracts."""
 
+from paritygrid.application.ports.analytics import (
+    MAX_ANALYTICS_MEMORY_BYTES,
+    MAX_ANALYTICS_THREADS,
+    MIN_ANALYTICS_MEMORY_BYTES,
+    AnalyticalDatabaseConfig,
+    AnalyticalDatabaseError,
+    AnalyticalDatabaseInvalidError,
+    AnalyticalDatabaseLifecycle,
+    AnalyticalDatabaseOwnershipError,
+    AnalyticalDatabaseSnapshot,
+    AnalyticalDatabaseState,
+    AnalyticalDatabaseStateError,
+    AnalyticalDatabaseStorageError,
+)
 from paritygrid.application.ports.artifacts import (
     MAX_ARTIFACT_CHUNK_BYTES,
     MAX_ARTIFACT_PAGE_SIZE,
@@ -241,6 +255,8 @@ from paritygrid.application.ports.writer import (
 )
 
 __all__ = [
+    "MAX_ANALYTICS_MEMORY_BYTES",
+    "MAX_ANALYTICS_THREADS",
     "MAX_ARTIFACT_CHUNK_BYTES",
     "MAX_ARTIFACT_PAGE_SIZE",
     "MAX_ARTIFACT_PATH_SEGMENTS",
@@ -268,9 +284,19 @@ __all__ = [
     "MAX_REPAIR_PAGE_SIZE",
     "MAX_WORK_METRIC",
     "MAX_WRITER_SUBMISSION_ID",
+    "MIN_ANALYTICS_MEMORY_BYTES",
     "NORMALIZED_PARQUET_SCHEMA_VERSION",
     "PARQUET_MEDIA_TYPE",
     "RAW_PARQUET_SCHEMA_VERSION",
+    "AnalyticalDatabaseConfig",
+    "AnalyticalDatabaseError",
+    "AnalyticalDatabaseInvalidError",
+    "AnalyticalDatabaseLifecycle",
+    "AnalyticalDatabaseOwnershipError",
+    "AnalyticalDatabaseSnapshot",
+    "AnalyticalDatabaseState",
+    "AnalyticalDatabaseStateError",
+    "AnalyticalDatabaseStorageError",
     "AppliedRepairAction",
     "ArtifactAlreadyExistsError",
     "ArtifactIntegrityError",
