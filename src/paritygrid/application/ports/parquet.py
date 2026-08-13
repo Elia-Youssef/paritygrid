@@ -5,15 +5,19 @@ from dataclasses import dataclass
 from typing import cast
 
 from paritygrid.application.ports.consistency import RedactedDocument
-from paritygrid.domain.models import ConnectorId, UtcTimestamp
+from paritygrid.domain.models import ConnectorId, InventoryRecord, UtcTimestamp
 
 RAW_PARQUET_SCHEMA_VERSION = 1
+NORMALIZED_PARQUET_SCHEMA_VERSION = 1
 MAX_RAW_BATCH_RECORDS = 100_000
 MAX_RAW_BATCH_PAYLOAD_BYTES = 67_108_864
 MAX_RAW_RECORD_INDEX = 9_223_372_036_854_775_807
 MAX_RAW_SOURCE_KEY_CHARACTERS = 128
 MAX_RAW_SOURCE_KEY_BYTES = 256
 MAX_RAW_PAYLOAD_BYTES = 1_048_576
+MAX_NORMALIZED_BATCH_RECORDS = 100_000
+MAX_NORMALIZED_BATCH_VARIABLE_BYTES = 67_108_864
+MAX_NORMALIZED_RECORD_INDEX = 9_223_372_036_854_775_807
 
 
 class ParquetSchemaError(RuntimeError):
@@ -94,6 +98,52 @@ class RawInventoryBatch:
         for expected_index, record in enumerate(cast(tuple[RawInventoryRecord, ...], trusted)):
             if record.record_index != expected_index:
                 raise ValueError("raw inventory record indexes must be contiguous from zero")
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedInventoryRow:
+    """One canonically ordered normalized inventory record."""
+
+    record_index: int
+    record: InventoryRecord
+
+    def __post_init__(self) -> None:
+        index = cast(object, self.record_index)
+        record = cast(object, self.record)
+        if type(index) is not int:
+            raise TypeError("normalized record index must be an integer")
+        if not 0 <= index <= MAX_NORMALIZED_RECORD_INDEX:
+            raise ValueError("normalized record index is outside the supported range")
+        if type(record) is not InventoryRecord:
+            raise TypeError("normalized record must be an InventoryRecord")
+
+
+@dataclass(frozen=True, slots=True)
+class NormalizedInventoryBatch:
+    """One immutable normalized partition in canonical row order."""
+
+    records: tuple[NormalizedInventoryRow, ...]
+    schema_version: int = NORMALIZED_PARQUET_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        records = cast(object, self.records)
+        version = cast(object, self.schema_version)
+        if not isinstance(records, tuple):
+            raise TypeError("normalized inventory batch records must be a tuple")
+        trusted = cast(tuple[object, ...], records)
+        if len(trusted) > MAX_NORMALIZED_BATCH_RECORDS:
+            raise ValueError("normalized inventory batch exceeds the row limit")
+        if any(type(record) is not NormalizedInventoryRow for record in trusted):
+            raise TypeError("normalized inventory batch contains an invalid record")
+        if type(version) is not int:
+            raise TypeError("normalized inventory schema version must be an integer")
+        if version != NORMALIZED_PARQUET_SCHEMA_VERSION:
+            raise UnsupportedParquetSchemaVersionError(
+                "normalized inventory schema version is unsupported"
+            )
+        for expected_index, row in enumerate(cast(tuple[NormalizedInventoryRow, ...], trusted)):
+            if row.record_index != expected_index:
+                raise ValueError("normalized inventory record indexes must be contiguous from zero")
 
 
 def _validate_source_key(value: object) -> str:
