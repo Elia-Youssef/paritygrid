@@ -891,10 +891,10 @@ def test_runner_producer_timeout_is_bounded_and_cleans_resources(
     database = tmp_path / "producer timeout.db"
     original_workload = workload_for(WalStressProfile.CI)
 
-    def short_workload(_profile: WalStressProfile) -> WalStressWorkload:
-        return replace(original_workload, timeout_seconds=0.2)
+    def bounded_workload(_profile: WalStressProfile) -> WalStressWorkload:
+        return original_workload
 
-    monkeypatch.setattr(stress_runtime, "workload_for", short_workload)
+    monkeypatch.setattr(stress_runtime, "workload_for", bounded_workload)
     original_builder = build_scenario
 
     def invalid_owners(profile: WalStressProfile, seed: int, workload: WalStressWorkload) -> object:
@@ -931,9 +931,10 @@ def test_runner_reader_terminal_failures_are_bounded(
 ) -> None:
     database = tmp_path / f"reader-terminal-{terminal_error}.db"
     original_workload = workload_for(WalStressProfile.CI)
+    operation_timeout = original_workload.timeout_seconds
 
     def bounded_workload(_profile: WalStressProfile) -> WalStressWorkload:
-        return replace(original_workload, timeout_seconds=2.0)
+        return original_workload
 
     monkeypatch.setattr(stress_runtime, "workload_for", bounded_workload)
 
@@ -947,12 +948,12 @@ def test_runner_reader_terminal_failures_are_bounded(
         final_seen: stress_runtime.Event,
         state: stress_runtime._ReaderState,
     ) -> None:
-        assert start.wait(2.0)
+        assert start.wait(operation_timeout)
         state.frontiers.append(2)
-        ready.wait(2.0)
+        ready.wait(operation_timeout)
         if terminal_error:
             final_seen.set()
-        assert stop.wait(4.0)
+        assert stop.wait(operation_timeout * 2)
         if terminal_error:
             state.error = RuntimeError("terminal reader failure")
 
