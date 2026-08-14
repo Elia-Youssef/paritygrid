@@ -14,8 +14,11 @@ from paritygrid.application.ports.consistency import (
     ConsistencyStaleRowVersionError,
     ConsistencyStateConflictError,
     EventSequence,
+    EventSubjectKind,
     ExecutionEventBatch,
     ExecutionEventRecord,
+    PendingExecutionEvent,
+    RedactedDocument,
 )
 from paritygrid.application.ports.execution import (
     ExecutionDuplicateError,
@@ -41,6 +44,7 @@ from paritygrid.application.ports.writer import (
     WriterTicket,
 )
 from paritygrid.application.writes import (
+    WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
     ClaimWork,
     ClaimWorkResult,
     RenewWorkClaim,
@@ -163,7 +167,7 @@ class WorkLeaseSettings:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class AcquireWorkLeaseRequest:
-    """Exact durable parents, owner metadata, and event frontier for one claim."""
+    """Exact durable parents, owner metadata, event frontier, and correlation."""
 
     run_id: RunId
     node_id: NodeId
@@ -211,7 +215,7 @@ class AcquireWorkLeaseRequest:
 
 @dataclass(frozen=True, slots=True, repr=False)
 class RenewWorkLeaseRequest:
-    """Exact run revision and event frontier for one owned renewal."""
+    """Exact run revision, event frontier, and correlation for one renewal."""
 
     expected_run_row_version: int
     event: EventAppendRequest
@@ -444,6 +448,7 @@ class WorkLeaseService:
                 run_id=request.run_id,
                 node_id=request.node_id,
                 work_item_id=work_item_id,
+                expected_attempt_number=request.expected_attempt_number,
                 expected_work_row_version=request.expected_work_row_version,
                 expected_node_row_version=request.expected_node_row_version,
                 expected_run_row_version=request.expected_run_row_version,
@@ -452,7 +457,16 @@ class WorkLeaseService:
                 lease_expires_at=lease_expires_at,
                 runner_kind=request.runner_kind,
                 worker_identity=request.worker_identity,
-                event=request.event,
+                event=_work_lease_event(
+                    request.event,
+                    event_kind="work_claimed",
+                    occurred_at=started_at,
+                    work_item_id=work_item_id,
+                    attempt_number=request.expected_attempt_number,
+                    node_id=request.node_id,
+                    lease_expires_at=lease_expires_at,
+                    runner_kind=request.runner_kind,
+                ),
             )
             outcome_unknown = True
             receipt = self._execute(command, work_item_id)
@@ -497,7 +511,16 @@ class WorkLeaseService:
                 expected_run_row_version=request.expected_run_row_version,
                 renewed_at=renewed_at,
                 lease_expires_at=lease_expires_at,
-                event=request.event,
+                event=_work_lease_event(
+                    request.event,
+                    event_kind="work_claim_renewed",
+                    occurred_at=renewed_at,
+                    work_item_id=lease.claim.work_item_id,
+                    attempt_number=lease.claim.attempt_number,
+                    node_id=lease.node.node_id,
+                    lease_expires_at=lease_expires_at,
+                    runner_kind=lease.claim.runner_kind,
+                ),
             )
             outcome_unknown = True
             receipt = self._execute(command, work_item_id)
@@ -846,6 +869,40 @@ def _validate_event_frontier(request: EventAppendRequest) -> None:
     if int(request.expected_next_sequence) >= MAX_LEASE_ROW_VERSION:
         raise WorkLeaseInvalidRequestError("lease event sequence cannot advance")
     _validate_row_version(request.expected_counter_row_version, "lease event counter row version")
+    _require_exact(request.event, PendingExecutionEvent, "lease pending event")
+
+
+def _work_lease_event(
+    frontier: EventAppendRequest,
+    *,
+    event_kind: str,
+    occurred_at: UtcTimestamp,
+    work_item_id: WorkItemId,
+    attempt_number: AttemptNumber,
+    node_id: NodeId,
+    lease_expires_at: UtcTimestamp,
+    runner_kind: str,
+) -> EventAppendRequest:
+    return EventAppendRequest(
+        expected_next_sequence=frontier.expected_next_sequence,
+        expected_counter_row_version=frontier.expected_counter_row_version,
+        event=PendingExecutionEvent(
+            event_kind=event_kind,
+            occurred_at=occurred_at,
+            subject_kind=EventSubjectKind.WORK_ITEM,
+            subject_id=work_item_id,
+            correlation_id=frontier.event.correlation_id,
+            payload_schema_version=WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
+            payload=RedactedDocument.from_mapping(
+                {
+                    "attempt_number": int(attempt_number),
+                    "lease_expires_at": str(lease_expires_at),
+                    "node_id": str(node_id),
+                    "runner_kind": runner_kind,
+                }
+            ),
+        ),
+    )
 
 
 def _validate_timeout(value: object, subject: str) -> None:

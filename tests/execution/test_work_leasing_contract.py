@@ -69,6 +69,7 @@ from paritygrid.application.ports.writer import (
     WriterSubmissionId,
 )
 from paritygrid.application.writes import (
+    WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
     ClaimWork,
     ClaimWorkResult,
     RenewWorkClaim,
@@ -498,7 +499,25 @@ def test_service_requires_structural_writer_clock_and_exact_settings() -> None:
 def test_acquire_renew_retire_preserve_exact_writer_capability_and_bounds() -> None:
     settings = WorkLeaseSettings(Duration(5_000_000), 0.25, 0.75)
     service, writer = _service(settings=settings)
-    lease = service.acquire(_acquire_request())
+    request = _acquire_request()
+    request = replace(
+        request,
+        event=replace(
+            request.event,
+            event=PendingExecutionEvent(
+                event_kind="caller_untrusted",
+                occurred_at=_timestamp(0),
+                subject_kind=EventSubjectKind.RUN,
+                subject_id=RUN_ID,
+                correlation_id="corr-work-leasing",
+                payload_schema_version=99,
+                payload=RedactedDocument.from_mapping(
+                    {"message": "credential-canary-must-not-persist"}
+                ),
+            ),
+        ),
+    )
+    lease = service.acquire(request)
     assert service.snapshot() == WorkLeaseServiceSnapshot(1, 0, 0)
     assert (
         lease.claim
@@ -513,6 +532,20 @@ def test_acquire_renew_retire_preserve_exact_writer_capability_and_bounds() -> N
     command = cast(ClaimWork, writer.commands[0])
     assert command.started_at == _timestamp(3)
     assert command.lease_expires_at == _timestamp(8)
+    assert command.expected_attempt_number == AttemptNumber(1)
+    assert command.event.event.event_kind == "work_claimed"
+    assert command.event.event.occurred_at == command.started_at
+    assert command.event.event.payload_schema_version == WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION
+    assert command.event.event.payload.to_mapping() == {
+        "attempt_number": 1,
+        "lease_expires_at": str(command.lease_expires_at),
+        "node_id": str(NODE_ID),
+        "runner_kind": "sequential",
+    }
+    assert "scheduler-secret-owner" not in repr(command.event.event)
+    assert "machine-secret-worker" not in repr(command.event.event)
+    assert "credential-canary-must-not-persist" not in repr(command.event.event)
+    assert "credential-canary-must-not-persist" not in str(command.event.event.payload.to_mapping())
     assert writer.admission_timeouts == [0.25]
     assert writer.tickets[0].result_timeouts == [0.75]
     renewed = service.renew(lease, _renew_request())
@@ -524,6 +557,16 @@ def test_acquire_renew_retire_preserve_exact_writer_capability_and_bounds() -> N
     assert renewed.run.row_version == 5
     assert renewed.claim.row_version == 3
     assert renewed.claim.lease_expires_at == _timestamp(9)
+    renewal = cast(RenewWorkClaim, writer.commands[1])
+    assert renewal.event.event.event_kind == "work_claim_renewed"
+    assert renewal.event.event.occurred_at == renewal.renewed_at
+    assert renewal.event.event.payload_schema_version == WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION
+    assert renewal.event.event.payload.to_mapping() == {
+        "attempt_number": 1,
+        "lease_expires_at": str(renewal.lease_expires_at),
+        "node_id": str(NODE_ID),
+        "runner_kind": "sequential",
+    }
     with pytest.raises(WorkLeaseOwnershipError, match="active"):
         service.renew(lease, _renew_request())
     with pytest.raises(WorkLeaseOwnershipError, match="active"):
@@ -540,6 +583,7 @@ def test_work_lease_constructor_is_service_only_and_validates_exact_inputs() -> 
         RUN_ID,
         NODE_ID,
         WORK_ID,
+        AttemptNumber(1),
         1,
         2,
         3,
