@@ -41,6 +41,7 @@ from paritygrid.application.execution import (
 )
 from paritygrid.application.ports.configuration import ConfigurationDocument
 from paritygrid.application.ports.consistency import (
+    ConsistencyStaleRowVersionError,
     EventSequence,
     EventSubjectKind,
     ExecutionEventBatch,
@@ -49,6 +50,7 @@ from paritygrid.application.ports.consistency import (
     RedactedDocument,
 )
 from paritygrid.application.ports.execution import (
+    ExecutionStaleRowVersionError,
     RunNodeRecord,
     RunNodeStatus,
     RunRecord,
@@ -817,6 +819,8 @@ def test_pre_admission_writer_failures_are_typed_redacted_and_retryable(
         (WriterCommitOutcomeUnknownError("secret"), WorkLeaseOutcomeUnknownError, True),
         (WriterDefinitelyNotExecutedError("secret"), WorkLeaseWriterError, False),
         (WriterClosedError("secret"), WorkLeaseWriterError, False),
+        (ExecutionStaleRowVersionError("secret"), WorkLeaseWriterError, False),
+        (ConsistencyStaleRowVersionError("secret"), WorkLeaseWriterError, False),
         (RuntimeError("secret"), WorkLeaseProtocolError, True),
     ],
 )

@@ -9,11 +9,21 @@ from threading import Lock
 from typing import Protocol, cast, runtime_checkable
 
 from paritygrid.application.ports.consistency import (
+    ConsistencyInvalidRequestError,
+    ConsistencyRecordNotFoundError,
+    ConsistencyStaleRowVersionError,
+    ConsistencyStateConflictError,
     EventSequence,
     ExecutionEventBatch,
     ExecutionEventRecord,
 )
 from paritygrid.application.ports.execution import (
+    ExecutionDuplicateError,
+    ExecutionInvalidRequestError,
+    ExecutionLeaseLostError,
+    ExecutionRecordNotFoundError,
+    ExecutionStaleRowVersionError,
+    ExecutionStateConflictError,
     RunNodeRecord,
     RunRecord,
     WorkClaim,
@@ -53,6 +63,19 @@ MAX_WORKER_IDENTITY_LENGTH = 128
 MAX_LEASE_ROW_VERSION = 2_147_483_647
 MAX_LEASE_WRITER_TIMEOUT_SECONDS = 86_400.0
 MAX_LEASE_CONTENTION_ATTEMPTS = 9
+
+_LEASE_REJECTION_TYPES: tuple[type[Exception], ...] = (
+    ExecutionInvalidRequestError,
+    ExecutionDuplicateError,
+    ExecutionRecordNotFoundError,
+    ExecutionLeaseLostError,
+    ExecutionStaleRowVersionError,
+    ExecutionStateConflictError,
+    ConsistencyInvalidRequestError,
+    ConsistencyRecordNotFoundError,
+    ConsistencyStaleRowVersionError,
+    ConsistencyStateConflictError,
+)
 
 
 class WorkLeaseError(RuntimeError):
@@ -619,6 +642,9 @@ class WorkLeaseService:
             ambiguous = True
             receipt = None
         except WriterDefinitelyNotExecutedError:
+            definitely_not_executed = True
+            receipt = None
+        except _LEASE_REJECTION_TYPES:
             definitely_not_executed = True
             receipt = None
         except WriterError:

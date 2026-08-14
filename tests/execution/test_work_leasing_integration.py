@@ -3,6 +3,7 @@
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from sqlalchemy import text
 
 from paritygrid.adapters.persistence import (
@@ -22,6 +23,7 @@ from paritygrid.application.execution import (
     WorkLeaseService,
     WorkLeaseServiceSnapshot,
     WorkLeaseSettings,
+    WorkLeaseWriterError,
 )
 from paritygrid.application.ports.configuration import ConfigurationDocument
 from paritygrid.application.ports.consistency import (
@@ -178,7 +180,7 @@ def test_acquire_and_renew_commit_atomically_and_survive_database_restart(tmp_pa
 
         service = WorkLeaseService(
             writer,
-            _Clock(_timestamp(3), _timestamp(4)),
+            _Clock(_timestamp(3), _timestamp(4), _timestamp(5)),
             settings=WorkLeaseSettings(Duration(5_000_000), 5.0, 5.0),
         )
         lease = service.acquire(
@@ -196,25 +198,34 @@ def test_acquire_and_renew_commit_atomically_and_survive_database_restart(tmp_pa
                 event=_event(4, "work_claimed", WORK_ID, 3),
             )
         )
+        with pytest.raises(WorkLeaseWriterError, match="not committed"):
+            service.renew(
+                lease,
+                RenewWorkLeaseRequest(
+                    expected_run_row_version=3,
+                    event=_event(5, "work_claim_renewed", WORK_ID, 4),
+                ),
+            )
+        assert service.snapshot() == WorkLeaseServiceSnapshot(1, 0, 0)
         renewed = service.renew(
             lease,
             RenewWorkLeaseRequest(
                 expected_run_row_version=4,
-                event=_event(5, "work_claim_renewed", WORK_ID, 4),
+                event=_event(5, "work_claim_renewed", WORK_ID, 5),
             ),
         )
         assert renewed.claim.attempt_number == AttemptNumber(1)
         assert renewed.claim.row_version == 3
-        assert renewed.claim.lease_expires_at == _timestamp(9)
+        assert renewed.claim.lease_expires_at == _timestamp(10)
         assert service.snapshot() == WorkLeaseServiceSnapshot(1, 0, 0)
         diagnostics = writer.snapshot()
         assert diagnostics.state is WriterState.RUNNING
-        assert diagnostics.accepted == diagnostics.completed == 5
+        assert diagnostics.accepted == diagnostics.completed == 6
         assert diagnostics.in_flight == diagnostics.queue_depth == 0
 
         closed = writer.close(timeout_seconds=5.0)
         assert closed.drained
-        assert closed.accepted == closed.completed == 5
+        assert closed.accepted == closed.completed == 6
         writer = None
     finally:
         if writer is not None:
@@ -233,7 +244,7 @@ def test_acquire_and_renew_commit_atomically_and_survive_database_restart(tmp_pa
             assert work.row_version == 3
             assert work.active_attempt_number == AttemptNumber(1)
             assert work.lease_owner == "scheduler-01"
-            assert work.lease_expires_at == _timestamp(9)
+            assert work.lease_expires_at == _timestamp(10)
             assert work.active_runner_kind == "sequential"
             assert work.active_worker_identity == "worker-01"
 
