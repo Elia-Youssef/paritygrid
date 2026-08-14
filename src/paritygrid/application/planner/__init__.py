@@ -69,6 +69,7 @@ from paritygrid.application.planner.plan_fingerprint import (
     InvalidPlanFingerprintError,
     PlanFingerprint,
     PlanFingerprintError,
+    fingerprint_execution_plan,
 )
 from paritygrid.application.planner.port_validation import (
     ports_are_compatible,
@@ -261,6 +262,7 @@ __all__ = [
     "connector_capabilities_from_document",
     "decode_pipeline_document",
     "encode_pipeline_document",
+    "fingerprint_execution_plan",
     "parse_resource_policy",
     "partition_strategy_from_configuration",
     "ports_are_compatible",

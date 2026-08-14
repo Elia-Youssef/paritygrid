@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
+from hashlib import sha256
 from typing import Self, cast
+
+from paritygrid.application.planner.execution_plan import ExecutionPlan
 
 PLAN_FINGERPRINT_VERSION = 1
 PLAN_FINGERPRINT_ALGORITHM = "sha256"
@@ -14,6 +18,8 @@ _PLAN_FINGERPRINT_PATTERN = re.compile(
     rf"[0-9a-f]{{{PLAN_FINGERPRINT_HEX_LENGTH}}}",
     flags=re.ASCII,
 )
+_PLAN_FINGERPRINT_DOMAIN = b"paritygrid:logical-execution-plan:v1\0"
+_LENGTH_BYTES = 8
 
 
 class PlanFingerprintError(ValueError):
@@ -67,3 +73,18 @@ class PlanFingerprint:
 
     def __str__(self) -> str:
         return self.value
+
+
+def fingerprint_execution_plan(plan: ExecutionPlan) -> PlanFingerprint:
+    """Hash the complete logical plan while excluding visual pipeline layout."""
+    if type(plan) is not ExecutionPlan:
+        raise TypeError("logical plan fingerprint input must use ExecutionPlan")
+    canonical = json.dumps(
+        plan.to_mapping(),
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    framed = len(canonical).to_bytes(_LENGTH_BYTES, byteorder="big") + canonical
+    return PlanFingerprint(sha256(_PLAN_FINGERPRINT_DOMAIN + framed).hexdigest())
