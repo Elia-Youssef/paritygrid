@@ -707,6 +707,18 @@ def _mutated_duration(value: Duration) -> Duration:
     return copied
 
 
+def _invalid_partition_key() -> PartitionKey:
+    value = PartitionKey("partition-valid")
+    object.__setattr__(value, "value", "not canonical")
+    return value
+
+
+def _invalid_configuration_document() -> ConfigurationDocument:
+    value = _document(ok=1)
+    object.__setattr__(value, "items", (("ok", 1.5),))
+    return value
+
+
 def _with_event_record(receipt: WriterReceipt, **changes: object) -> WriterReceipt:
     event = replace(
         _command_result(receipt).events.items[0],
@@ -1221,21 +1233,37 @@ def test_arbitrary_local_enum_is_rejected_without_property_execution() -> None:
     "changes",
     [
         {"partition_key": cast(PartitionKey, 1)},
+        {"partition_key": _invalid_partition_key()},
         {"input_reference": cast(ConfigurationDocument, ())},
+        {"input_reference": _invalid_configuration_document()},
         {"created_at": cast(UtcTimestamp, 1)},
+        {"created_at": _timestamp(4)},
         {"created_at": _timestamp(6)},
     ],
 )
 def test_omitted_work_fields_still_require_closed_safe_contracts(
     changes: dict[str, object],
 ) -> None:
-    submission = _submission(_success)
+    submission = _submission(_retry)
 
     def malformed(command: WriterCommand) -> WriterReceipt:
         return _with_work(_receipt(command, submission), **changes)
 
     with pytest.raises(CheckpointCommitProtocolError):
         TransactionalCheckpointResultSink(_Writer(malformed)).submit(submission)
+
+
+def test_omitted_work_document_accepts_canonical_evidence() -> None:
+    submission = _submission(_retry)
+
+    def committed(command: WriterCommand) -> WriterReceipt:
+        return _with_work(
+            _receipt(command, submission),
+            input_reference=_document(offset=1),
+        )
+
+    outcome = TransactionalCheckpointResultSink(_Writer(committed)).submit(submission)
+    assert type(outcome) is ResultSinkCommitted
 
 
 @pytest.mark.parametrize("field", ["event", "completion", "metrics"])

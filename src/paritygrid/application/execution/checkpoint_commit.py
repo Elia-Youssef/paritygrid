@@ -603,6 +603,7 @@ def _validate_completed(completed: object, expectation: _CommitExpectation) -> N
         or not 0 <= work.expected_checkpoint_version <= MAX_CONSISTENCY_SEQUENCE
     ):
         raise CheckpointCommitProtocolError("checkpoint attempt evidence is invalid")
+    _validate_omitted_work_evidence(work, expectation.claim)
     expected_work = (
         context.work_item_id,
         context.run_id,
@@ -673,6 +674,21 @@ def _validate_completed(completed: object, expectation: _CommitExpectation) -> N
     )
     if not _matches_exact_value(observed_attempt, expected_attempt):
         raise CheckpointCommitProtocolError("checkpoint attempt evidence is inconsistent")
+
+
+def _validate_omitted_work_evidence(work: WorkItemRecord, claim: WorkClaim) -> None:
+    """Re-run value invariants for receipt fields omitted from semantic equality."""
+    try:
+        PartitionKey(work.partition_key.value)
+        if work.input_reference is not None:
+            ConfigurationDocument(work.input_reference.items)
+        UtcTimestamp(work.created_at.value)
+    except TypeError, ValueError:
+        raise CheckpointCommitProtocolError(
+            "checkpoint work metadata evidence is invalid"
+        ) from None
+    if not work.created_at.value <= claim.started_at.value <= work.updated_at.value:
+        raise CheckpointCommitProtocolError("checkpoint work chronology is inconsistent")
 
 
 def _validate_checkpoint(
