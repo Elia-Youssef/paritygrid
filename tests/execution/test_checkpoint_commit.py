@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
+from enum import Enum
 from pathlib import Path
 from typing import cast
 
 import pytest
 
+import paritygrid.application.execution.checkpoint_commit as checkpoint_commit_module
 from paritygrid.adapters.persistence import (
     SQLiteDatabase,
     SQLiteDatabaseConfig,
@@ -155,6 +157,52 @@ SUBMISSION_ID = WriterSubmissionId(41)
 
 class _Fatal(BaseException):
     pass
+
+
+_EVIL_OPERATIONS: list[str] = []
+
+
+class _EvilInt(int):
+    def __eq__(self, other: object) -> bool:
+        _EVIL_OPERATIONS.append("int equality")
+        return bool(int.__eq__(self, other))
+
+    def __ne__(self, other: object) -> bool:
+        _EVIL_OPERATIONS.append("int inequality")
+        return bool(int.__ne__(self, other))
+
+    def __add__(self, other: object) -> int:
+        _EVIL_OPERATIONS.append("int addition")
+        return int(self) + cast(int, other)
+
+
+class _EvilStr(str):
+    def __eq__(self, other: object) -> bool:
+        _EVIL_OPERATIONS.append("text equality")
+        return bool(str.__eq__(self, other))
+
+    def __ne__(self, other: object) -> bool:
+        _EVIL_OPERATIONS.append("text inequality")
+        return bool(str.__ne__(self, other))
+
+
+@dataclass
+class _EvilDataclass:
+    value: int
+
+    def __getattribute__(self, name: str) -> object:
+        if name == "value":
+            _EVIL_OPERATIONS.append("dataclass attribute")
+        return object.__getattribute__(self, name)
+
+
+class _EvilEnum(Enum):
+    VALUE = "value"
+
+    @property
+    def microseconds(self) -> int:
+        _EVIL_OPERATIONS.append("enum property")
+        return 0
 
 
 class _Ticket:
@@ -641,6 +689,32 @@ def _with_event_batch(receipt: WriterReceipt, **changes: object) -> WriterReceip
     )
 
 
+def _mutated_submission_id() -> WriterSubmissionId:
+    value = WriterSubmissionId(SUBMISSION_ID.number)
+    object.__setattr__(value, "number", _EvilInt(SUBMISSION_ID.number))
+    return value
+
+
+def _mutated_work_id() -> WorkItemId:
+    value = WorkItemId(str(WORK_ID))
+    object.__setattr__(value, "value", _EvilStr(str(WORK_ID)))
+    return value
+
+
+def _mutated_duration(value: Duration) -> Duration:
+    copied = Duration(value.microseconds)
+    object.__setattr__(copied, "microseconds", _EvilInt(value.microseconds))
+    return copied
+
+
+def _with_event_record(receipt: WriterReceipt, **changes: object) -> WriterReceipt:
+    event = replace(
+        _command_result(receipt).events.items[0],
+        **changes,  # type: ignore[arg-type]
+    )
+    return _with_event_batch(receipt, items=(event,))
+
+
 @pytest.mark.parametrize(
     ("factory", "kind", "command_type", "target"),
     [
@@ -884,6 +958,39 @@ def test_changed_evidence_between_snapshot_and_command_is_rejected(
     assert writer.commands == []
 
 
+@pytest.mark.parametrize("subject", ["claim", "node", "run", "events"])
+def test_malformed_local_evidence_is_rejected_before_writer_handoff(
+    monkeypatch: pytest.MonkeyPatch,
+    subject: str,
+) -> None:
+    submission = _submission(_success)
+    if subject == "claim":
+        object.__setattr__(submission.lease.claim, "worker_identity", _EvilStr("worker"))
+    elif subject == "node":
+        object.__setattr__(submission.lease.node, "records_read", _EvilInt(0))
+    elif subject == "run":
+        object.__setattr__(
+            submission.lease.run,
+            "runner_kind",
+            _EvilStr(PlannerRunnerKind.SEQUENTIAL.value),
+        )
+    else:
+        object.__setattr__(submission.lease.events, "counter_row_version", _EvilInt(4))
+
+    def selected_snapshot(_submission: ResultSubmission) -> ResultSubmission:
+        return submission
+
+    monkeypatch.setattr(
+        checkpoint_commit_module,
+        "snapshot_result_submission",
+        selected_snapshot,
+    )
+    writer = _Writer(WriterDefinitelyNotExecutedError("safe"))
+    with pytest.raises(CheckpointCommitInvalidRequestError):
+        TransactionalCheckpointResultSink(writer).submit(submission)
+    assert writer.commands == []
+
+
 def test_optional_lease_evidence_is_snapshotted_without_durable_action() -> None:
     lease = _lease()
     node = replace(lease.node, started_at=None, finished_at=_timestamp(4))
@@ -935,6 +1042,20 @@ def test_malformed_receipt_header_is_protocol_unknown(
 def test_non_receipt_result_is_protocol_unknown() -> None:
     with pytest.raises(CheckpointCommitProtocolError):
         TransactionalCheckpointResultSink(_Writer(object())).submit(_submission(_success))
+
+
+def test_ticket_identity_nested_scalar_is_rejected_without_executing_it() -> None:
+    _EVIL_OPERATIONS.clear()
+    submission = _submission(_success)
+    writer = _Writer(
+        lambda command: _receipt(command, submission),
+        submission_id=_mutated_submission_id(),
+    )
+    with pytest.raises(CheckpointCommitProtocolError) as captured:
+        TransactionalCheckpointResultSink(writer).submit(submission)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert _EVIL_OPERATIONS == []
 
 
 _NESTED_RECEIPT_MUTATORS: list[Callable[[WriterReceipt], WriterReceipt]] = [
@@ -1013,6 +1134,131 @@ def test_nested_receipt_evidence_is_exact(
         TransactionalCheckpointResultSink(_Writer(malformed)).submit(submission)
     assert captured.value.__cause__ is None
     assert captured.value.__context__ is None
+
+
+_REFLECTIVE_RECEIPT_MUTATORS: list[Callable[[WriterReceipt], WriterReceipt]] = [
+    lambda receipt: replace(receipt, submission_id=_mutated_submission_id()),
+    lambda receipt: _with_attempt(receipt, work_item_id=_mutated_work_id()),
+    lambda receipt: _with_attempt(
+        receipt,
+        worker_identity=_EvilStr("reference-worker"),
+    ),
+    lambda receipt: _with_attempt(
+        receipt,
+        duration=_mutated_duration(_command_result(receipt).completed.attempt.duration),
+    ),
+    lambda receipt: _with_work(receipt, expected_checkpoint_version=_EvilInt(0)),
+    lambda receipt: _with_checkpoint_part(
+        receipt,
+        "checkpoint",
+        payload_schema_version=_EvilInt(1),
+    ),
+    lambda receipt: _with_event_record(
+        receipt,
+        event_kind=_EvilStr("checkpoint_committed"),
+    ),
+    lambda receipt: _with_result(
+        receipt,
+        node=replace(
+            _command_result(receipt).node,
+            records_read=_EvilInt(_command_result(receipt).node.records_read),
+        ),
+    ),
+    lambda receipt: _with_result(
+        receipt,
+        run=replace(
+            _command_result(receipt).run,
+            runner_kind=_EvilStr(PlannerRunnerKind.SEQUENTIAL.value),
+        ),
+    ),
+]
+
+
+@pytest.mark.parametrize("mutator", _REFLECTIVE_RECEIPT_MUTATORS)
+def test_reflective_receipt_scalars_are_rejected_without_execution(
+    mutator: Callable[[WriterReceipt], WriterReceipt],
+) -> None:
+    _EVIL_OPERATIONS.clear()
+    submission = _submission(_success)
+
+    def malformed(command: WriterCommand) -> WriterReceipt:
+        return mutator(_receipt(command, submission))
+
+    with pytest.raises(CheckpointCommitProtocolError) as captured:
+        TransactionalCheckpointResultSink(_Writer(malformed)).submit(submission)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert _EVIL_OPERATIONS == []
+
+
+def test_arbitrary_receipt_dataclass_is_rejected_without_attribute_execution() -> None:
+    _EVIL_OPERATIONS.clear()
+    submission = _submission(_success)
+
+    def malformed(command: WriterCommand) -> WriterReceipt:
+        return _with_work(
+            _receipt(command, submission),
+            input_reference=cast(ConfigurationDocument, _EvilDataclass(1)),
+        )
+
+    with pytest.raises(CheckpointCommitProtocolError):
+        TransactionalCheckpointResultSink(_Writer(malformed)).submit(submission)
+    assert _EVIL_OPERATIONS == []
+
+
+def test_arbitrary_local_enum_is_rejected_without_property_execution() -> None:
+    _EVIL_OPERATIONS.clear()
+    submission = _submission(_success)
+    object.__setattr__(submission.lease.node, "duration", _EvilEnum.VALUE)
+    writer = _Writer(WriterDefinitelyNotExecutedError("safe"))
+    with pytest.raises(CheckpointCommitInvalidRequestError):
+        TransactionalCheckpointResultSink(writer).submit(submission)
+    assert writer.commands == []
+    assert _EVIL_OPERATIONS == []
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"partition_key": cast(PartitionKey, 1)},
+        {"input_reference": cast(ConfigurationDocument, ())},
+        {"created_at": cast(UtcTimestamp, 1)},
+        {"created_at": _timestamp(6)},
+    ],
+)
+def test_omitted_work_fields_still_require_closed_safe_contracts(
+    changes: dict[str, object],
+) -> None:
+    submission = _submission(_success)
+
+    def malformed(command: WriterCommand) -> WriterReceipt:
+        return _with_work(_receipt(command, submission), **changes)
+
+    with pytest.raises(CheckpointCommitProtocolError):
+        TransactionalCheckpointResultSink(_Writer(malformed)).submit(submission)
+
+
+@pytest.mark.parametrize("field", ["event", "completion", "metrics"])
+def test_borrowed_writer_cannot_mutate_private_command_expectation(field: str) -> None:
+    submission = _submission(_success)
+
+    def mutate(command: WriterCommand) -> WriterReceipt:
+        selected = cast(CommitWorkWithCheckpoint, command)
+        if field == "event":
+            object.__setattr__(selected.event.event, "event_kind", "checkpoint_forged")
+            return _receipt(selected, submission)
+        if field == "completion":
+            object.__setattr__(selected.completion, "redacted_detail", "forged detail")
+            return _receipt(selected, submission)
+        object.__setattr__(selected.metrics, "records_read", 99)
+        receipt = _receipt(selected, submission)
+        return _with_result(
+            receipt,
+            node=replace(_command_result(receipt).node, records_read=99),
+        )
+
+    with pytest.raises(CheckpointCommitProtocolError):
+        TransactionalCheckpointResultSink(_Writer(mutate)).submit(submission)
 
 
 def test_unsuccessful_receipt_cannot_carry_checkpoint() -> None:
@@ -1203,6 +1449,207 @@ class _CommitThenTimeoutWriter:
         return _CommitThenTimeoutTicket(
             self._writer.submit(command, timeout_seconds=timeout_seconds)
         )
+
+
+def test_mutated_service_lease_node_is_rejected_before_sink_admission(tmp_path: Path) -> None:
+    database, writer, service, lease = _prepare_real_lease(tmp_path / "mutated lease.db")
+    accepted = writer.snapshot().accepted
+    object.__setattr__(lease.node, "work_running", 0)
+    submission = ResultSubmission(lease, _success(lease))
+    try:
+        with pytest.raises(ResultSinkInvalidResultError):
+            submit_work_result(
+                TransactionalCheckpointResultSink(writer),
+                submission,
+                lease_service=service,
+            )
+        assert writer.snapshot().accepted == accepted
+        snapshot = service.snapshot()
+        assert (snapshot.active, snapshot.unknown, snapshot.in_flight) == (1, 0, 0)
+    finally:
+        writer.close(timeout_seconds=5.0)
+        database.close()
+
+
+def test_terminal_node_accepts_authoritative_maximum_attempt_finish(tmp_path: Path) -> None:
+    late_work = WorkItemId("wrk_checkpoint-late")
+    early_work = WorkItemId("wrk_checkpoint-early")
+    late_partition = PartitionKey("partition-late")
+    early_partition = PartitionKey("partition-early")
+    database = SQLiteDatabase.open(SQLiteDatabaseConfig(tmp_path / "nonmonotonic finish.db"))
+    with database.engine.connect() as connection:
+        upgrade_to_head(connection)
+    with database.transaction() as session:
+        pipelines = SqlAlchemyPipelineRepository(session)
+        pipelines.create(
+            pipeline_id=PipelineId("pip_checkpoint-commit"),
+            display_name="Checkpoint commit pipeline",
+            description=None,
+            created_at=_timestamp(0),
+        )
+        pipelines.publish_version(
+            pipeline_id=PipelineId("pip_checkpoint-commit"),
+            expected_latest_version=None,
+            specification=_document(nodes=[]),
+            planner_format_version=1,
+            published_at=_timestamp(0),
+        )
+    writer = SQLiteTransactionalWriter(
+        create_session_factory(database.engine),
+        WriterSettings(contention_delay_seconds=0.0),
+    )
+    writer.start()
+
+    def acquire(
+        work_item_id: WorkItemId,
+        *,
+        sequence: int,
+        node_row_version: int,
+        run_row_version: int,
+    ) -> WorkLease:
+        expiry = _timestamp(33)
+        return service.acquire(
+            AcquireWorkLeaseRequest(
+                RUN_ID,
+                NODE_ID,
+                work_item_id,
+                AttemptNumber(1),
+                1,
+                node_row_version,
+                run_row_version,
+                f"owner-{sequence}",
+                PlannerRunnerKind.SEQUENTIAL.value,
+                f"worker-{sequence}",
+                _event_request(
+                    sequence,
+                    "work_claimed",
+                    work_item_id,
+                    _timestamp(3),
+                    payload_schema_version=WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
+                    payload=RedactedDocument.from_mapping(
+                        {
+                            "attempt_number": 1,
+                            "lease_expires_at": str(expiry),
+                            "node_id": str(NODE_ID),
+                            "runner_kind": PlannerRunnerKind.SEQUENTIAL.value,
+                        }
+                    ),
+                ),
+            )
+        )
+
+    def result_for(
+        lease: WorkLease,
+        work_item_id: WorkItemId,
+        partition: PartitionKey,
+        finished_at: UtcTimestamp,
+    ) -> SuccessfulWorkResult:
+        return SuccessfulWorkResult(
+            AttemptSucceeded(
+                AttemptEventContext(
+                    RUN_ID,
+                    NODE_ID,
+                    work_item_id,
+                    AttemptNumber(1),
+                    lease.claim.started_at,
+                    PlannerRunnerKind.SEQUENTIAL,
+                    lease.claim.worker_identity,
+                    "corr-checkpoint",
+                ),
+                finished_at,
+            ),
+            ResultCheckpoint(partition, 1, None, None, None),
+            ResultMetrics(1, 1, WorkMetricDelta(1, 1, 0, 1, 1)),
+        )
+
+    try:
+        _submit_writer(
+            writer,
+            CreateCapturedRun(
+                RUN_ID,
+                PipelineId("pip_checkpoint-commit"),
+                PipelineVersion(1),
+                PlannerRunnerKind.SEQUENTIAL.value,
+                _document(mode="reference"),
+                7,
+                (NODE_ID,),
+                _timestamp(1),
+                _event_request(1, "run_created", RUN_ID, _timestamp(1)),
+            ),
+        )
+        _submit_writer(
+            writer,
+            TransitionRun(
+                RUN_ID,
+                1,
+                RunState.RUNNING,
+                _timestamp(2),
+                None,
+                _event_request(2, "run_started", RUN_ID, _timestamp(2)),
+            ),
+        )
+        for index, (work_item_id, partition) in enumerate(
+            ((late_work, late_partition), (early_work, early_partition))
+        ):
+            _submit_writer(
+                writer,
+                BootstrapWork(
+                    RUN_ID,
+                    NODE_ID,
+                    work_item_id,
+                    partition,
+                    None,
+                    _timestamp(2),
+                    1 + index,
+                    2 + index,
+                    _event_request(3 + index, "work_created", work_item_id, _timestamp(2)),
+                ),
+            )
+        service = WorkLeaseService(
+            writer,
+            _Clock(),
+            settings=WorkLeaseSettings(Duration(30_000_000), 2.0, 2.0),
+        )
+        sink = TransactionalCheckpointResultSink(writer)
+        late_lease = acquire(
+            late_work,
+            sequence=5,
+            node_row_version=3,
+            run_row_version=4,
+        )
+        late_outcome = submit_work_result(
+            sink,
+            ResultSubmission(
+                late_lease,
+                result_for(late_lease, late_work, late_partition, _timestamp(10)),
+            ),
+            lease_service=service,
+        )
+        assert type(late_outcome) is ResultSinkCommitted
+
+        early_lease = acquire(
+            early_work,
+            sequence=7,
+            node_row_version=5,
+            run_row_version=6,
+        )
+        early_outcome = submit_work_result(
+            sink,
+            ResultSubmission(
+                early_lease,
+                result_for(early_lease, early_work, early_partition, _timestamp(5)),
+            ),
+            lease_service=service,
+        )
+        assert type(early_outcome) is ResultSinkCommitted
+        with database.transaction() as session:
+            node = SqlAlchemyRunRepository(session).get_node(RUN_ID, NODE_ID)
+            assert node is not None
+            assert node.status is RunNodeStatus.SUCCEEDED
+            assert node.finished_at == _timestamp(10)
+    finally:
+        writer.close(timeout_seconds=5.0)
+        database.close()
 
 
 def test_before_commit_definite_nonexecution_retains_exact_lease(tmp_path: Path) -> None:

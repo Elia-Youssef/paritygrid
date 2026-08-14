@@ -5,8 +5,9 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import FrozenInstanceError, replace
+from dataclasses import FrozenInstanceError, dataclass, replace
 from datetime import UTC, datetime, timedelta
+from enum import Enum
 from threading import Event, Thread
 from traceback import format_exception
 from typing import Any, cast
@@ -640,6 +641,36 @@ def test_in_place_reflective_claim_mutation_cannot_reuse_issued_authority() -> N
     assert service.snapshot() == WorkLeaseServiceSnapshot(1, 0, 0)
 
 
+def test_renewal_revalidates_capability_after_external_clock_boundary() -> None:
+    other_work_id = WorkItemId("wrk_work-leasing-other")
+    service, writer = _service(clock=_Clock(_timestamp(3), _timestamp(3)))
+    first = service.acquire(_acquire_request())
+    second = service.acquire(
+        replace(
+            _acquire_request(),
+            work_item_id=other_work_id,
+            lease_owner="other-owner",
+            worker_identity="other-worker",
+        )
+    )
+
+    class MutatingClock:
+        def now(self) -> UtcTimestamp:
+            object.__setattr__(first.claim, "work_item_id", other_work_id)
+            return _timestamp(4)
+
+    object.__setattr__(service, "_clock", MutatingClock())
+    with pytest.raises(WorkLeaseOwnershipError, match="changed"):
+        service.renew(first, _renew_request())
+    assert len(writer.commands) == 2
+    assert service.snapshot() == WorkLeaseServiceSnapshot(2, 0, 0)
+
+    object.__setattr__(service, "_clock", _Clock(_timestamp(4)))
+    renewed = service.renew(second, _renew_request())
+    assert renewed.claim.work_item_id == other_work_id
+    assert len(writer.commands) == 3
+
+
 def test_invalid_reflective_claim_shape_cannot_be_recaptured_or_renewed() -> None:
     service, writer = _service()
     lease = service.acquire(_acquire_request())
@@ -657,6 +688,74 @@ def test_invalid_reflective_timestamp_shape_cannot_reuse_issued_authority() -> N
     object.__setattr__(lease.claim.started_at, "value", object())
     with pytest.raises(WorkLeaseOwnershipError, match="active"):
         service.renew(lease, _renew_request())
+    assert len(writer.commands) == 1
+
+
+def test_non_utc_nested_claim_timestamp_cannot_reuse_issued_authority() -> None:
+    service, writer = _service()
+    lease = service.acquire(_acquire_request())
+    object.__setattr__(
+        lease.claim.started_at,
+        "value",
+        datetime(2026, 8, 12, 12, 0, 3),
+    )
+    with pytest.raises(WorkLeaseOwnershipError, match="active"):
+        service.renew(lease, _renew_request())
+    assert len(writer.commands) == 1
+
+
+def test_non_utc_nested_node_timestamp_cannot_reuse_issued_authority() -> None:
+    service, writer = _service()
+    lease = service.acquire(_acquire_request())
+    assert lease.node.started_at is not None
+    object.__setattr__(
+        lease.node.started_at,
+        "value",
+        datetime(2026, 8, 12, 12, 0, 3),
+    )
+    with pytest.raises(WorkLeaseOwnershipError, match="active"):
+        service.renew(lease, _renew_request())
+    assert len(writer.commands) == 1
+
+
+def test_arbitrary_nested_dataclass_cannot_execute_during_authority_check() -> None:
+    calls: list[str] = []
+
+    @dataclass
+    class EvilDataclass:
+        value: int
+
+        def __getattribute__(self, name: str) -> object:
+            if name == "value":
+                calls.append("attribute")
+            return object.__getattribute__(self, name)
+
+    service, writer = _service()
+    lease = service.acquire(_acquire_request())
+    object.__setattr__(lease.node, "duration", EvilDataclass(1))
+    with pytest.raises(WorkLeaseOwnershipError, match="active"):
+        service.renew(lease, _renew_request())
+    assert calls == []
+    assert len(writer.commands) == 1
+
+
+def test_arbitrary_nested_enum_cannot_execute_during_authority_check() -> None:
+    calls: list[str] = []
+
+    class EvilEnum(Enum):
+        VALUE = "value"
+
+        @property
+        def microseconds(self) -> int:
+            calls.append("property")
+            return 0
+
+    service, writer = _service()
+    lease = service.acquire(_acquire_request())
+    object.__setattr__(lease.node, "duration", EvilEnum.VALUE)
+    with pytest.raises(WorkLeaseOwnershipError, match="active"):
+        service.renew(lease, _renew_request())
+    assert calls == []
     assert len(writer.commands) == 1
 
 

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
+from datetime import UTC, datetime
+from enum import Enum
 from typing import Protocol, cast, runtime_checkable
 
 from paritygrid.application.execution.result_sink import (
@@ -20,10 +22,16 @@ from paritygrid.application.execution.result_sink import (
     UnsuccessfulWorkResult,
     WorkResult,
     snapshot_result_submission,
+    snapshot_work_result,
 )
 from paritygrid.application.execution.retry_policy import RetryScheduledDecision
-from paritygrid.application.ports.configuration import ConfigurationDocument
+from paritygrid.application.ports.configuration import (
+    ConfigurationDocument,
+    DocumentArray,
+    NestedDocumentObject,
+)
 from paritygrid.application.ports.consistency import (
+    MAX_CONSISTENCY_SEQUENCE,
     CheckpointCommit,
     CheckpointHeadRecord,
     CheckpointRecord,
@@ -32,6 +40,7 @@ from paritygrid.application.ports.consistency import (
     ConsistencyRecordNotFoundError,
     ConsistencyStaleRowVersionError,
     ConsistencyStateConflictError,
+    EventSequence,
     EventSubjectKind,
     ExecutionEventBatch,
     ExecutionEventRecord,
@@ -75,8 +84,20 @@ from paritygrid.application.writes import (
     CommitWorkResult,
     CommitWorkWithCheckpoint,
 )
-from paritygrid.domain.execution import WorkItemState
-from paritygrid.domain.models import Duration, NodeId, RunId, UtcTimestamp, WorkItemId
+from paritygrid.domain.execution import FailureClassification, RunState, WorkItemState
+from paritygrid.domain.models import (
+    ArtifactId,
+    AttemptNumber,
+    Duration,
+    NodeId,
+    PipelineId,
+    PipelineVersion,
+    RunId,
+    StateFingerprint,
+    UtcTimestamp,
+    WorkItemId,
+)
+from paritygrid.domain.pipeline import PartitionKey
 
 CHECKPOINT_COMMIT_EVENT_PAYLOAD_SCHEMA_VERSION = WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION
 MAX_CHECKPOINT_COMMIT_TIMEOUT_SECONDS = 86_400.0
@@ -103,6 +124,46 @@ _TARGET_OUTCOMES = {
     WorkItemState.FAILED: AttemptOutcome.FAILED,
     WorkItemState.CANCELLED: AttemptOutcome.CANCELLED,
 }
+_CLOSED_RECEIPT_DATACLASSES = (
+    ArtifactId,
+    AttemptNumber,
+    CheckpointCommit,
+    CheckpointHeadRecord,
+    CheckpointRecord,
+    CheckpointVersion,
+    CompletedWork,
+    ConfigurationDocument,
+    DocumentArray,
+    Duration,
+    EventSequence,
+    ExecutionEventBatch,
+    ExecutionEventRecord,
+    NestedDocumentObject,
+    NodeId,
+    PartitionKey,
+    PipelineId,
+    PipelineVersion,
+    RedactedDocument,
+    RunId,
+    RunNodeRecord,
+    RunRecord,
+    StateFingerprint,
+    UpdatedWorkCheckpoint,
+    UtcTimestamp,
+    WorkAttemptRecord,
+    WorkClaim,
+    WorkItemId,
+    WorkItemRecord,
+    WriterSubmissionId,
+)
+_CLOSED_RECEIPT_ENUMS = (
+    AttemptOutcome,
+    EventSubjectKind,
+    FailureClassification,
+    RunNodeStatus,
+    RunState,
+    WorkItemState,
+)
 
 
 class CheckpointCommitError(ResultSinkError):
@@ -166,6 +227,7 @@ class CheckpointCommitSettings:
 @dataclass(frozen=True, slots=True, repr=False)
 class _CommitExpectation:
     command: CommitWorkAttempt | CommitWorkWithCheckpoint
+    expected_command: CommitWorkAttempt | CommitWorkWithCheckpoint
     result: WorkResult
     claim: WorkClaim
     node: RunNodeRecord
@@ -210,7 +272,7 @@ class TransactionalCheckpointResultSink:
             raise CheckpointCommitProtocolError("checkpoint writer receipt is invalid")
         context = expectation.result.terminal.context
         return ResultSinkCommitted(
-            receipt.submission_id,
+            submission_id,
             expectation.result.kind,
             context.run_id,
             context.node_id,
@@ -295,6 +357,14 @@ def _prepare_commit(submission: object) -> _CommitExpectation:
         node = _snapshot_node(selected.lease.node)
         run = _snapshot_run(selected.lease.run)
         command = _command_for(selected)
+        result = snapshot_work_result(selected.result)
+        expected_command = _command_for_evidence(
+            result,
+            claim,
+            node,
+            run,
+            _snapshot_event_frontier(selected.lease.events),
+        )
         if not selected.has_current_lease_evidence():
             invalid = True
     except Exception:
@@ -304,6 +374,8 @@ def _prepare_commit(submission: object) -> _CommitExpectation:
         node = None
         run = None
         command = None
+        result = None
+        expected_command = None
     if invalid:
         raise CheckpointCommitInvalidRequestError("checkpoint submission is invalid")
     assert selected is not None
@@ -311,15 +383,31 @@ def _prepare_commit(submission: object) -> _CommitExpectation:
     assert node is not None
     assert run is not None
     assert command is not None
-    return _CommitExpectation(command, selected.result, claim, node, run)
+    assert result is not None
+    assert expected_command is not None
+    return _CommitExpectation(command, expected_command, result, claim, node, run)
 
 
 def _command_for(submission: ResultSubmission) -> CommitWorkAttempt | CommitWorkWithCheckpoint:
-    result = submission.result
+    return _command_for_evidence(
+        submission.result,
+        submission.lease.claim,
+        submission.lease.node,
+        submission.lease.run,
+        submission.lease.events,
+    )
+
+
+def _command_for_evidence(
+    result: WorkResult,
+    claim: WorkClaim,
+    node: RunNodeRecord,
+    run: RunRecord,
+    events: ExecutionEventBatch,
+) -> CommitWorkAttempt | CommitWorkWithCheckpoint:
     context = result.terminal.context
-    claim = submission.lease.claim
     completion = _completion_for(result)
-    event = _event_for(submission)
+    event = _event_for(result, events)
     common = (
         context.run_id,
         context.node_id,
@@ -328,8 +416,8 @@ def _command_for(submission: ResultSubmission) -> CommitWorkAttempt | CommitWork
     )
     companions = (
         result.metrics.aggregate_delta,
-        submission.lease.node.row_version,
-        submission.lease.run.row_version,
+        node.row_version,
+        run.row_version,
         event,
     )
     if type(result) is SuccessfulWorkResult:
@@ -379,8 +467,7 @@ def _completion_for(result: WorkResult) -> WorkCompletion:
     )
 
 
-def _event_for(submission: ResultSubmission) -> EventAppendRequest:
-    result = submission.result
+def _event_for(result: WorkResult, events: ExecutionEventBatch) -> EventAppendRequest:
     context = result.terminal.context
     target = _completion_for(result).target_state
     event_kind = (
@@ -408,8 +495,8 @@ def _event_for(submission: ResultSubmission) -> EventAppendRequest:
             }
         )
     return EventAppendRequest(
-        submission.lease.events.next_sequence,
-        submission.lease.events.counter_row_version,
+        EventSequence(events.next_sequence.number),
+        events.counter_row_version,
         PendingExecutionEvent(
             event_kind,
             result.terminal.finished_at,
@@ -426,12 +513,22 @@ def _ticket_identity(ticket: WriterTicket) -> WriterSubmissionId:
     failed = False
     try:
         submission_id = cast(object, ticket.submission_id)
+        if type(submission_id) is not WriterSubmissionId:
+            failed = True
+            clean = None
+        else:
+            number = submission_id.number
+            if type(number) is not int:
+                failed = True
+                clean = None
+            else:
+                clean = WriterSubmissionId(number)
     except Exception:
         failed = True
-        submission_id = None
-    if failed or type(submission_id) is not WriterSubmissionId:
+        clean = None
+    if failed or clean is None:
         raise CheckpointCommitProtocolError("checkpoint writer ticket identity is invalid")
-    return WriterSubmissionId(submission_id.number)
+    return clean
 
 
 def _rejection(
@@ -456,11 +553,11 @@ def _validate_receipt(
     submission_id: WriterSubmissionId,
     expectation: _CommitExpectation,
 ) -> CheckpointVersion | None:
-    command = expectation.command
+    command = expectation.expected_command
     if (
-        receipt.submission_id != submission_id
+        not _matches_exact_value(receipt.submission_id, submission_id)
         or receipt.command_kind is not command.kind
-        or receipt.run_id != command.run_id
+        or not _matches_exact_value(receipt.run_id, command.run_id)
         or type(receipt.contention_attempts) is not int
         or not 0 <= receipt.contention_attempts <= MAX_CHECKPOINT_COMMIT_CONTENTION_ATTEMPTS
         or receipt.mutated is not True
@@ -483,8 +580,28 @@ def _validate_completed(completed: object, expectation: _CommitExpectation) -> N
     attempt = completed.attempt
     result = expectation.result
     context = result.terminal.context
-    completion = expectation.command.completion
-    if type(work) is not WorkItemRecord or type(attempt) is not WorkAttemptRecord:
+    completion = expectation.expected_command.completion
+    if (
+        type(work) is not WorkItemRecord
+        or type(attempt) is not WorkAttemptRecord
+        or not _matches_exact_value(work, work)
+        or not _matches_exact_value(attempt, attempt)
+        or type(work.partition_key) is not PartitionKey
+        or type(work.partition_key.value) is not str
+        or (
+            work.input_reference is not None
+            and type(work.input_reference) is not ConfigurationDocument
+        )
+        or (
+            work.input_reference is not None
+            and not _matches_exact_value(work.input_reference, work.input_reference)
+        )
+        or type(work.created_at) is not UtcTimestamp
+        or not _matches_exact_value(work.created_at, work.created_at)
+        or work.created_at.value > work.updated_at.value
+        or type(work.expected_checkpoint_version) is not int
+        or not 0 <= work.expected_checkpoint_version <= MAX_CONSISTENCY_SEQUENCE
+    ):
         raise CheckpointCommitProtocolError("checkpoint attempt evidence is invalid")
     expected_work = (
         context.work_item_id,
@@ -518,11 +635,10 @@ def _validate_completed(completed: object, expectation: _CommitExpectation) -> N
         work.active_worker_identity,
         work.updated_at,
     )
-    if observed_work != expected_work:
+    if not _matches_exact_value(observed_work, expected_work):
         raise CheckpointCommitProtocolError("checkpoint work evidence is inconsistent")
-    if (
-        type(result) is SuccessfulWorkResult
-        and work.partition_key != result.checkpoint.partition_key
+    if type(result) is SuccessfulWorkResult and not _matches_exact_value(
+        work.partition_key, result.checkpoint.partition_key
     ):
         raise CheckpointCommitProtocolError("checkpoint work partition evidence is inconsistent")
     expected_attempt = (
@@ -555,7 +671,7 @@ def _validate_completed(completed: object, expectation: _CommitExpectation) -> N
         attempt.bytes_processed,
         attempt.duration,
     )
-    if observed_attempt != expected_attempt:
+    if not _matches_exact_value(observed_attempt, expected_attempt):
         raise CheckpointCommitProtocolError("checkpoint attempt evidence is inconsistent")
 
 
@@ -579,7 +695,7 @@ def _validate_checkpoint(
         raise CheckpointCommitProtocolError("checkpoint commit evidence is invalid")
     current = CheckpointVersion(completed.work_item.expected_checkpoint_version)
     version = current.next()
-    command = cast(CommitWorkWithCheckpoint, expectation.command)
+    command = cast(CommitWorkWithCheckpoint, expectation.expected_command)
     successful = cast(SuccessfulWorkResult, result)
     checkpoint_input = successful.checkpoint
     artifact_id = (
@@ -593,26 +709,38 @@ def _validate_checkpoint(
         result.terminal.context.node_id,
         checkpoint_input.partition_key,
     )
+    expected_head = CheckpointHeadRecord(
+        *expected_parent,
+        version,
+        result.terminal.finished_at,
+        current.number + 2,
+    )
+    expected_record = CheckpointRecord(
+        *expected_parent,
+        version,
+        checkpoint_input.payload_schema_version,
+        checkpoint_input.source_cursor,
+        checkpoint_input.output_position,
+        artifact_id,
+        result.terminal.finished_at,
+    )
+    expected_work = UpdatedWorkCheckpoint(
+        result.terminal.context.work_item_id,
+        *expected_parent,
+        version,
+        completed.work_item.row_version + 1,
+    )
     if (
-        (head.run_id, head.node_id, head.partition_key) != expected_parent
-        or head.current_version != version
-        or head.updated_at != result.terminal.finished_at
-        or head.row_version != current.number + 2
-        or (record.run_id, record.node_id, record.partition_key) != expected_parent
-        or record.version != version
-        or record.payload_schema_version != checkpoint_input.payload_schema_version
-        or record.source_cursor != checkpoint_input.source_cursor
-        or record.output_position != checkpoint_input.output_position
-        or record.artifact_id != artifact_id
-        or record.committed_at != result.terminal.finished_at
-        or (work.run_id, work.node_id, work.partition_key) != expected_parent
-        or work.work_item_id != result.terminal.context.work_item_id
-        or work.expected_checkpoint_version != version
-        or work.row_version != completed.work_item.row_version + 1
-        or command.checkpoint.expected_partition_key != checkpoint_input.partition_key
+        not _matches_exact_value(head, expected_head)
+        or not _matches_exact_value(record, expected_record)
+        or not _matches_exact_value(work, expected_work)
+        or not _matches_exact_value(
+            command.checkpoint.expected_partition_key,
+            checkpoint_input.partition_key,
+        )
     ):
         raise CheckpointCommitProtocolError("checkpoint commit evidence is inconsistent")
-    return record.version
+    return CheckpointVersion(record.version.number)
 
 
 def _validate_events(batch: object, run_id: RunId, request: EventAppendRequest) -> None:
@@ -632,11 +760,12 @@ def _validate_events(batch: object, run_id: RunId, request: EventAppendRequest) 
         pending.payload_schema_version,
         pending.payload,
     )
-    if (
-        batch.items[0] != expected
-        or batch.next_sequence != request.expected_next_sequence.advance(1)
-        or batch.counter_row_version != request.expected_counter_row_version + 1
-    ):
+    expected_batch = ExecutionEventBatch(
+        (expected,),
+        request.expected_next_sequence.advance(1),
+        request.expected_counter_row_version + 1,
+    )
+    if not _matches_exact_value(batch, expected_batch):
         raise CheckpointCommitProtocolError("checkpoint event evidence is inconsistent")
 
 
@@ -645,7 +774,7 @@ def _validate_node(node: object, expectation: _CommitExpectation) -> None:
         raise CheckpointCommitProtocolError("checkpoint node evidence is invalid")
     previous = expectation.node
     result = expectation.result
-    target = expectation.command.completion.target_state
+    target = expectation.expected_command.completion.target_state
     counts = {
         "pending": previous.work_pending,
         "running": previous.work_running - 1,
@@ -686,7 +815,18 @@ def _validate_node(node: object, expectation: _CommitExpectation) -> None:
         previous.started_at,
         None if status is RunNodeStatus.RUNNING else result.terminal.finished_at,
     )
-    if node != expected:
+    if status is RunNodeStatus.RUNNING:
+        matches = _matches_exact_value(node, expected)
+    else:
+        finished_at = node.finished_at
+        matches = (
+            type(finished_at) is UtcTimestamp
+            and _matches_exact_value(finished_at, finished_at)
+            and _matches_exact_value(node, replace(expected, finished_at=finished_at))
+            and finished_at.value >= result.terminal.finished_at.value
+            and (previous.started_at is None or finished_at.value >= previous.started_at.value)
+        )
+    if not matches:
         raise CheckpointCommitProtocolError("checkpoint node evidence is inconsistent")
 
 
@@ -703,11 +843,16 @@ def _node_status(total: int, counts: dict[str, int]) -> RunNodeStatus:
 
 
 def _validate_run(run: object, previous: RunRecord) -> None:
-    if type(run) is not RunRecord or run != replace(previous, row_version=previous.row_version + 1):
+    if type(run) is not RunRecord or not _matches_exact_value(
+        run,
+        replace(previous, row_version=previous.row_version + 1),
+    ):
         raise CheckpointCommitProtocolError("checkpoint run evidence is inconsistent")
 
 
 def _snapshot_claim(claim: WorkClaim) -> WorkClaim:
+    if not _matches_exact_value(claim, claim):
+        raise TypeError("work claim evidence is invalid")
     return WorkClaim(
         WorkItemId(str(claim.work_item_id)),
         type(claim.attempt_number)(int(claim.attempt_number)),
@@ -721,6 +866,8 @@ def _snapshot_claim(claim: WorkClaim) -> WorkClaim:
 
 
 def _snapshot_node(node: RunNodeRecord) -> RunNodeRecord:
+    if not _matches_exact_value(node, node):
+        raise TypeError("run node evidence is invalid")
     return RunNodeRecord(
         RunId(str(node.run_id)),
         NodeId(str(node.node_id)),
@@ -746,10 +893,12 @@ def _snapshot_node(node: RunNodeRecord) -> RunNodeRecord:
 
 
 def _snapshot_run(run: RunRecord) -> RunRecord:
+    if not _matches_exact_value(run, run):
+        raise TypeError("run evidence is invalid")
     return RunRecord(
         RunId(str(run.run_id)),
-        run.pipeline_id,
-        run.pipeline_version,
+        PipelineId(str(run.pipeline_id)),
+        PipelineVersion(run.pipeline_version.number),
         run.runner_kind,
         ConfigurationDocument.from_mapping(run.runner_configuration.to_mapping()),
         run.state,
@@ -767,8 +916,78 @@ def _snapshot_run(run: RunRecord) -> RunRecord:
         if run.recovery_started_at is None
         else UtcTimestamp.parse(str(run.recovery_started_at)),
         None if run.recovered_at is None else UtcTimestamp.parse(str(run.recovered_at)),
-        run.final_reconciliation_fingerprint,
+        (
+            None
+            if run.final_reconciliation_fingerprint is None
+            else StateFingerprint(run.final_reconciliation_fingerprint.value)
+        ),
     )
+
+
+def _snapshot_event_frontier(events: ExecutionEventBatch) -> ExecutionEventBatch:
+    if not _matches_exact_value(events, events):
+        raise TypeError("event frontier evidence is invalid")
+    return ExecutionEventBatch(
+        (),
+        EventSequence(events.next_sequence.number),
+        events.counter_row_version,
+    )
+
+
+def _matches_exact_value(observed: object, expected: object) -> bool:
+    """Compare a closed contract graph without invoking attacker-defined equality."""
+    if type(observed) is not type(expected):
+        return False
+    value_type = type(expected)
+    if expected is None:
+        return True
+    if value_type in (bool, int, str, bytes, float):
+        return observed == expected
+    if value_type is datetime:
+        observed_time = cast(datetime, observed)
+        expected_time = cast(datetime, expected)
+        return (
+            observed_time.tzinfo is UTC
+            and expected_time.tzinfo is UTC
+            and (
+                observed_time.year,
+                observed_time.month,
+                observed_time.day,
+                observed_time.hour,
+                observed_time.minute,
+                observed_time.second,
+                observed_time.microsecond,
+                observed_time.fold,
+            )
+            == (
+                expected_time.year,
+                expected_time.month,
+                expected_time.day,
+                expected_time.hour,
+                expected_time.minute,
+                expected_time.second,
+                expected_time.microsecond,
+                expected_time.fold,
+            )
+        )
+    if value_type in _CLOSED_RECEIPT_ENUMS and isinstance(expected, Enum):
+        return observed is expected
+    if value_type is tuple:
+        observed_items = cast(tuple[object, ...], observed)
+        expected_items = cast(tuple[object, ...], expected)
+        return len(observed_items) == len(expected_items) and all(
+            _matches_exact_value(observed_item, expected_item)
+            for observed_item, expected_item in zip(observed_items, expected_items, strict=True)
+        )
+    if value_type in _CLOSED_RECEIPT_DATACLASSES and is_dataclass(expected):
+        return all(
+            _matches_exact_value(
+                getattr(observed, field.name),
+                getattr(expected, field.name),
+            )
+            for field in fields(expected)
+        )
+    return False
 
 
 def _validate_timeout(value: object, subject: str) -> float:
