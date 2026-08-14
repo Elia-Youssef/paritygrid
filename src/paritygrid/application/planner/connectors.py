@@ -7,8 +7,18 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
 
-from paritygrid.application.ports.configuration import ConfigurationDocument
+from paritygrid.application.planner.documents import PipelineDocument
+from paritygrid.application.planner.registry import (
+    ConnectorRequirement,
+    registered_node_definition,
+)
+from paritygrid.application.ports.configuration import (
+    ConfigurationDocument,
+    ConnectorRecord,
+    ConnectorSecretReference,
+)
 from paritygrid.domain.models import ConnectorId
+from paritygrid.domain.pipeline import NodeKind
 
 MAX_CONNECTOR_SNAPSHOT_REFERENCES = 64
 MAX_CONNECTOR_KIND_LENGTH = 96
@@ -211,3 +221,101 @@ def _require_exact_tuple[T](value: object, item_type: type[T], subject: str) -> 
     if any(type(item) is not item_type for item in items):
         raise TypeError(f"{subject} contains an invalid value")
     return cast(tuple[T, ...], items)
+
+
+_CAPABILITY_FIELDS = frozenset(capability.value for capability in ConnectorCapability)
+_REQUIRED_CAPABILITIES = {
+    "reconcile.target": (ConnectorCapability.READ,),
+    "repair.apply": (ConnectorCapability.IDEMPOTENCY, ConnectorCapability.WRITE),
+    "source.csv": (ConnectorCapability.READ,),
+    "source.http.async": (ConnectorCapability.ASYNC_IO, ConnectorCapability.READ),
+    "source.http.blocking": (ConnectorCapability.BLOCKING_IO, ConnectorCapability.READ),
+    "source.jsonl": (ConnectorCapability.READ,),
+    "verify.target": (ConnectorCapability.READ,),
+}
+
+
+def connector_capabilities_from_document(
+    document: ConfigurationDocument,
+) -> ConnectorCapabilitySet:
+    """Parse one exact boolean capability object and reject extensions."""
+    _require_exact(document, ConfigurationDocument, "connector capability document")
+    mapping = document.to_mapping()
+    if frozenset(mapping) - _CAPABILITY_FIELDS:
+        raise InvalidConnectorSnapshotError("connector capability document has unknown fields")
+    if any(type(value) is not bool for value in mapping.values()):
+        raise InvalidConnectorSnapshotError("connector capabilities must be booleans")
+    return ConnectorCapabilitySet(
+        tuple(
+            capability for capability in ConnectorCapability if mapping.get(capability.value, False)
+        )
+    )
+
+
+def required_connector_capabilities(kind: NodeKind) -> tuple[ConnectorCapability, ...]:
+    """Return the frozen capability requirements for one node kind."""
+    _require_exact(kind, NodeKind, "node kind")
+    return _REQUIRED_CAPABILITIES.get(str(kind), ())
+
+
+def validate_connector_capabilities(
+    document: PipelineDocument,
+    records: tuple[ConnectorRecord, ...],
+) -> tuple[ConnectorBindingSnapshot, ...]:
+    """Validate exact node bindings and return immutable referenced snapshots."""
+    _require_exact(document, PipelineDocument, "pipeline document")
+    connectors = _require_exact_tuple(records, ConnectorRecord, "connector records")
+    identities = tuple(record.connector_id for record in connectors)
+    if len(set(identities)) != len(identities):
+        raise InvalidConnectorSnapshotError("connector records contain duplicate identities")
+    by_id = {record.connector_id: record for record in connectors}
+    snapshots: dict[ConnectorId, ConnectorBindingSnapshot] = {}
+    for node in document.nodes:
+        definition = registered_node_definition(node.kind, node.configuration_version)
+        if definition.connector_requirement is ConnectorRequirement.NONE:
+            if node.connector_id is not None:
+                raise ConnectorValidationError("pipeline node does not permit a connector binding")
+            continue
+        if node.connector_id is None:
+            raise MissingConnectorError("pipeline node requires a connector binding")
+        record = by_id.get(node.connector_id)
+        if record is None or record.archived_at is not None:
+            raise MissingConnectorError("pipeline connector binding is unavailable")
+        snapshot = snapshots.get(node.connector_id)
+        if snapshot is None:
+            snapshot = _snapshot_record(record)
+            snapshots[node.connector_id] = snapshot
+        required = required_connector_capabilities(node.kind)
+        if any(not snapshot.capabilities.supports(capability) for capability in required):
+            raise MissingConnectorCapabilityError("pipeline connector lacks a required capability")
+    return tuple(sorted(snapshots.values(), key=lambda snapshot: str(snapshot.connector_id)))
+
+
+def _snapshot_record(record: ConnectorRecord) -> ConnectorBindingSnapshot:
+    capabilities = connector_capabilities_from_document(record.capabilities)
+    if record.schema_discovery is not None and not capabilities.supports(
+        ConnectorCapability.SCHEMA_DISCOVERY
+    ):
+        raise InvalidConnectorSnapshotError(
+            "connector schema metadata requires schema discovery capability"
+        )
+    references = _require_exact_tuple(
+        record.secret_references,
+        ConnectorSecretReference,
+        "connector secret references",
+    )
+    return ConnectorBindingSnapshot(
+        connector_id=record.connector_id,
+        kind=record.kind,
+        revision=record.revision,
+        configuration=record.configuration,
+        capabilities=capabilities,
+        schema_discovery=record.schema_discovery,
+        secret_references=tuple(
+            ConnectorReferenceSnapshot(
+                reference.reference_name,
+                reference.environment_variable_name,
+            )
+            for reference in references
+        ),
+    )
