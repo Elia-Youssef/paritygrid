@@ -161,6 +161,7 @@ from paritygrid.application.planner.validation_errors import (
     PipelineValidationFailedError,
     PipelineValidationIssue,
     PipelineValidationReport,
+    validate_pipeline,
 )
 
 __all__ = [
@@ -294,6 +295,7 @@ __all__ = [
     "validate_acyclic_graph",
     "validate_connector_capabilities",
     "validate_graph_reachability",
+    "validate_pipeline",
     "validate_registered_nodes",
     "validate_repair_safety",
     "validate_resource_policy",

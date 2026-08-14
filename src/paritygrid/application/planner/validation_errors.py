@@ -8,6 +8,30 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
 
+from paritygrid.application.planner.connectors import (
+    ConnectorValidationError,
+    MissingConnectorCapabilityError,
+    MissingConnectorError,
+    validate_connector_capabilities,
+)
+from paritygrid.application.planner.documents import PipelineDocument
+from paritygrid.application.planner.graph import PipelineCycleError, validate_acyclic_graph
+from paritygrid.application.planner.reachability import (
+    DisconnectedPipelineError,
+    InvalidPipelineTerminalError,
+    validate_graph_reachability,
+)
+from paritygrid.application.planner.repair_safety import (
+    RepairSafetyError,
+    UnapprovedRepairEffectError,
+    validate_repair_safety,
+)
+from paritygrid.application.planner.resources import (
+    ResourcePolicyError,
+    validate_resource_policy,
+)
+from paritygrid.application.ports.configuration import ConnectorRecord
+
 VALIDATION_REPORT_VERSION = 1
 MAX_VALIDATION_ISSUES = 64
 MAX_VALIDATION_PATH_LENGTH = 256
@@ -42,6 +66,44 @@ class PipelineValidationCode(StrEnum):
 
 
 _VALIDATION_CODE_ORDER = {code: index for index, code in enumerate(PipelineValidationCode)}
+_ISSUE_DETAILS: dict[PipelineValidationCode, tuple[str, str]] = {
+    PipelineValidationCode.GRAPH_CYCLE: (
+        "/edges",
+        "Pipeline graph must not contain a directed cycle.",
+    ),
+    PipelineValidationCode.GRAPH_DISCONNECTED: (
+        "/nodes",
+        "Every pipeline node must belong to one source-reachable component.",
+    ),
+    PipelineValidationCode.GRAPH_INVALID_TERMINAL: (
+        "/nodes",
+        "Every dead-end node must be an approved pipeline terminal.",
+    ),
+    PipelineValidationCode.CONNECTOR_MISSING: (
+        "/nodes",
+        "Every connector-requiring node must reference an available connector.",
+    ),
+    PipelineValidationCode.CONNECTOR_CAPABILITY_MISSING: (
+        "/nodes",
+        "Referenced connectors must provide every capability required by their nodes.",
+    ),
+    PipelineValidationCode.CONNECTOR_INVALID: (
+        "/connector_bindings",
+        "Connector definitions must satisfy the immutable connector contract.",
+    ),
+    PipelineValidationCode.RESOURCE_POLICY_INVALID: (
+        "/resource_policy",
+        "Resource policy values must satisfy the supported bounds and relationships.",
+    ),
+    PipelineValidationCode.REPAIR_APPROVAL_REQUIRED: (
+        "/nodes",
+        "Every repair effect must be downstream of an approval on every incoming path.",
+    ),
+    PipelineValidationCode.REPAIR_POLICY_INVALID: (
+        "/nodes",
+        "Repair safety metadata must satisfy the supported graph contract.",
+    ),
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -152,5 +214,65 @@ class PipelineValidationReport:
         }
 
 
+def validate_pipeline(
+    document: PipelineDocument,
+    connector_records: tuple[ConnectorRecord, ...],
+) -> PipelineValidationReport:
+    """Run Phase 5 validators and return only stable, non-sensitive display issues."""
+    if type(document) is not PipelineDocument:
+        raise TypeError("pipeline validation document must use PipelineDocument")
+    if type(connector_records) is not tuple:
+        raise TypeError("pipeline validation connector records must be a tuple")
+    records = cast(tuple[object, ...], connector_records)
+    if any(type(record) is not ConnectorRecord for record in records):
+        raise TypeError("pipeline validation connector records contain an invalid value")
+    typed_records = cast(tuple[ConnectorRecord, ...], records)
+    issues: list[PipelineValidationIssue] = []
+
+    try:
+        validate_acyclic_graph(document)
+    except PipelineCycleError:
+        issues.append(_canonical_issue(PipelineValidationCode.GRAPH_CYCLE))
+
+    try:
+        validate_graph_reachability(document)
+    except PipelineCycleError:
+        pass
+    except DisconnectedPipelineError:
+        issues.append(_canonical_issue(PipelineValidationCode.GRAPH_DISCONNECTED))
+    except InvalidPipelineTerminalError:
+        issues.append(_canonical_issue(PipelineValidationCode.GRAPH_INVALID_TERMINAL))
+
+    try:
+        validate_connector_capabilities(document, typed_records)
+    except MissingConnectorError:
+        issues.append(_canonical_issue(PipelineValidationCode.CONNECTOR_MISSING))
+    except MissingConnectorCapabilityError:
+        issues.append(_canonical_issue(PipelineValidationCode.CONNECTOR_CAPABILITY_MISSING))
+    except ConnectorValidationError, TypeError:
+        issues.append(_canonical_issue(PipelineValidationCode.CONNECTOR_INVALID))
+
+    try:
+        validate_resource_policy(document)
+    except ResourcePolicyError, TypeError:
+        issues.append(_canonical_issue(PipelineValidationCode.RESOURCE_POLICY_INVALID))
+
+    try:
+        validate_repair_safety(document)
+    except PipelineCycleError:
+        pass
+    except UnapprovedRepairEffectError:
+        issues.append(_canonical_issue(PipelineValidationCode.REPAIR_APPROVAL_REQUIRED))
+    except RepairSafetyError:
+        issues.append(_canonical_issue(PipelineValidationCode.REPAIR_POLICY_INVALID))
+
+    return PipelineValidationReport(tuple(issues))
+
+
 def _issue_key(issue: PipelineValidationIssue) -> tuple[int, str]:
     return (_VALIDATION_CODE_ORDER[issue.code], issue.path)
+
+
+def _canonical_issue(code: PipelineValidationCode) -> PipelineValidationIssue:
+    path, message = _ISSUE_DETAILS[code]
+    return PipelineValidationIssue(code, path, message)
