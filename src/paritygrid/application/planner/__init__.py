@@ -60,6 +60,7 @@ from paritygrid.application.planner.publication import (
     PUBLISHED_PIPELINE_SPECIFICATION_VERSION,
     InvalidPublishedSpecificationError,
     PipelinePublicationError,
+    PipelinePublicationService,
     PublishedPipelineSpecification,
 )
 from paritygrid.application.planner.reachability import (
@@ -186,6 +187,7 @@ __all__ = [
     "PipelineNodeLayout",
     "PipelineNodeSpecification",
     "PipelinePublicationError",
+    "PipelinePublicationService",
     "PipelineReachabilityError",
     "PlannerRunnerKind",
     "PortContractError",
