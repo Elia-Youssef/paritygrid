@@ -56,6 +56,13 @@ from paritygrid.application.planner.ports import (
     PortContractError,
     PortValueType,
 )
+from paritygrid.application.planner.publication import (
+    PUBLISHED_PIPELINE_SPECIFICATION_VERSION,
+    InvalidPublishedSpecificationError,
+    PipelinePublicationError,
+    PipelinePublicationService,
+    PublishedPipelineSpecification,
+)
 from paritygrid.application.planner.reachability import (
     MAX_REACHABILITY_ENDPOINTS,
     DisconnectedPipelineError,
@@ -147,6 +154,7 @@ __all__ = [
     "NODE_REGISTRY_VERSION",
     "PIPELINE_DOCUMENT_SCHEMA_VERSION",
     "PIPELINE_PLANNER_FORMAT_VERSION",
+    "PUBLISHED_PIPELINE_SPECIFICATION_VERSION",
     "ConnectorBindingSnapshot",
     "ConnectorCapability",
     "ConnectorCapabilitySet",
@@ -161,6 +169,7 @@ __all__ = [
     "InvalidPipelineDocumentError",
     "InvalidPipelineTerminalError",
     "InvalidPortConnectionError",
+    "InvalidPublishedSpecificationError",
     "MissingConnectorCapabilityError",
     "MissingConnectorError",
     "NodeConfigurationField",
@@ -177,10 +186,13 @@ __all__ = [
     "PipelineGraphError",
     "PipelineNodeLayout",
     "PipelineNodeSpecification",
+    "PipelinePublicationError",
+    "PipelinePublicationService",
     "PipelineReachabilityError",
     "PlannerRunnerKind",
     "PortContractError",
     "PortValueType",
+    "PublishedPipelineSpecification",
     "RepairSafetyError",
     "RepairSafetySummary",
     "ResourcePolicy",
