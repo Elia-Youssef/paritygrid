@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import cast
+
+from paritygrid.application.planner.documents import PipelineDocument
+from paritygrid.application.ports.configuration import ConfigurationDocument
 
 MEBIBYTE = 1_048_576
 MIN_RESOURCE_CONCURRENCY = 1
@@ -88,3 +92,26 @@ def _validate_integer(value: object, minimum: int, maximum: int, subject: str) -
 
 
 DEFAULT_RESOURCE_POLICY = ResourcePolicy()
+
+_RESOURCE_POLICY_FIELDS = frozenset(DEFAULT_RESOURCE_POLICY.to_mapping())
+
+
+def parse_resource_policy(document: ConfigurationDocument) -> ResourcePolicy:
+    """Apply deterministic defaults to one exact partial resource object."""
+    if type(document) is not ConfigurationDocument:
+        raise TypeError("resource policy must use ConfigurationDocument")
+    mapping = document.to_mapping()
+    if frozenset(mapping) - _RESOURCE_POLICY_FIELDS:
+        raise ResourcePolicyError("resource policy contains unknown fields")
+    if any(type(value) is not int for value in mapping.values()):
+        raise TypeError("resource policy values must be integers")
+    values = DEFAULT_RESOURCE_POLICY.to_mapping()
+    values.update({key: cast(int, value) for key, value in mapping.items()})
+    return ResourcePolicy(**values)
+
+
+def validate_resource_policy(document: PipelineDocument) -> ResourcePolicy:
+    """Validate and materialize the total resource policy for one pipeline."""
+    if type(document) is not PipelineDocument:
+        raise TypeError("pipeline document must use PipelineDocument")
+    return parse_resource_policy(document.resource_policy)

@@ -101,6 +101,8 @@ from paritygrid.application.planner.resources import (
     MIN_RESOURCE_TIMEOUT_SECONDS,
     ResourcePolicy,
     ResourcePolicyError,
+    parse_resource_policy,
+    validate_resource_policy,
 )
 
 __all__ = [
@@ -181,6 +183,7 @@ __all__ = [
     "connector_capabilities_from_document",
     "decode_pipeline_document",
     "encode_pipeline_document",
+    "parse_resource_policy",
     "ports_are_compatible",
     "registered_node_definition",
     "required_connector_capabilities",
@@ -189,5 +192,6 @@ __all__ = [
     "validate_connector_capabilities",
     "validate_graph_reachability",
     "validate_registered_nodes",
+    "validate_resource_policy",
     "validate_typed_ports",
 ]
