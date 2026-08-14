@@ -56,6 +56,30 @@ class _Fatal(BaseException):
     pass
 
 
+class _EvilInt(int):
+    def __str__(self) -> str:
+        raise RuntimeError("credential=seed-canary")
+
+    def __add__(self, other: object) -> int:
+        del other
+        raise RuntimeError("credential=duration-canary")
+
+
+class _EvilStr(str):
+    def encode(self, encoding: str = "utf-8", errors: str = "strict") -> bytes:
+        del encoding, errors
+        raise RuntimeError("credential=identity-canary")
+
+
+class _EvilBorrowedInt(int):
+    touched = False
+
+    def __radd__(self, other: object) -> int:
+        del other
+        type(self).touched = True
+        raise RuntimeError("credential=borrowed-jitter-canary")
+
+
 class _Clock:
     def __init__(self, value: object) -> None:
         self.value = value
@@ -203,6 +227,7 @@ def test_policy_exhaustively_uses_the_authoritative_classification_mapping(
         assert decision.kind is RetryDecisionKind.SCHEDULED
         assert decision.disposition is FailureDisposition.RETRY
         assert decision.exhausted is False
+        assert decision.jitter == Duration(0)
         expected = (
             SQLITE_RETRY_INITIAL_MICROSECONDS
             if classification is FailureClassification.SQLITE_CONTENTION
@@ -275,6 +300,8 @@ def test_second_attempt_uses_exact_integer_backoff_and_maximum_additive_jitter(
     decision = policy.decide(_request(classification, attempt=2, http_429_delay=http_delay))
     assert type(decision) is RetryScheduledDecision
     assert decision.delay == Duration(expected_base + expected_jitter)
+    assert decision.jitter == Duration(expected_jitter)
+    assert decision.http_429_delay == http_delay
     assert jitter.calls == [
         (
             _WORK_ITEM_ID,
@@ -450,6 +477,12 @@ def test_seeded_jitter_rejects_non_integer_seed(seed: object) -> None:
         SeededRetryJitterSource(cast(Any, seed))
 
 
+def test_seeded_jitter_rejects_executable_integer_subclasses_without_running_them() -> None:
+    with pytest.raises(TypeError, match="integer") as captured:
+        SeededRetryJitterSource(cast(Any, _EvilInt(1)))
+    assert "credential" not in str(captured.value)
+
+
 @pytest.mark.parametrize("seed", [-1, MAX_RETRY_JITTER_SEED + 1])
 def test_seeded_jitter_rejects_out_of_range_seed(seed: int) -> None:
     with pytest.raises(RetryPolicyInvalidRequestError, match="bounds"):
@@ -501,6 +534,50 @@ def test_seeded_jitter_revalidates_a_reflectively_mutated_seed() -> None:
             upper_bound=Duration(1),
         )
     assert "credential" not in str(captured.value)
+
+
+def test_seeded_jitter_rejects_executable_nested_identity_and_duration_scalars() -> None:
+    source = SeededRetryJitterSource(0)
+    bad_identity = WorkItemId(_EvilStr("wrk_retry-item"))
+    with pytest.raises(RetryPolicyInvalidRequestError, match="identity") as identity_error:
+        source.sample(
+            work_item_id=bad_identity,
+            classification=FailureClassification.CONNECTION,
+            attempt_number=AttemptNumber(1),
+            upper_bound=Duration(1),
+        )
+    assert "credential" not in str(identity_error.value)
+
+    bad_duration = Duration(_EvilInt(1))
+    with pytest.raises(RetryPolicyInvalidRequestError, match="upper bound") as duration_error:
+        source.sample(
+            work_item_id=_WORK_ITEM_ID,
+            classification=FailureClassification.CONNECTION,
+            attempt_number=AttemptNumber(1),
+            upper_bound=bad_duration,
+        )
+    assert "credential" not in str(duration_error.value)
+
+
+def test_requests_and_decisions_reject_executable_nested_scalars() -> None:
+    with pytest.raises(RetryPolicyInvalidRequestError, match="identity"):
+        RetryPolicyRequest(
+            WorkItemId(_EvilStr("wrk_retry-item")),
+            AttemptNumber(1),
+            FailureClassification.CONNECTION,
+            _timestamp(),
+        )
+    with pytest.raises(RetryPolicyInvalidRequestError, match="attempt"):
+        RetryPolicyRequest(
+            _WORK_ITEM_ID,
+            AttemptNumber(_EvilInt(1)),
+            FailureClassification.CONNECTION,
+            _timestamp(),
+        )
+    with pytest.raises(RetryPolicyInvalidRequestError, match="HTTP 429"):
+        Http429RetryDelay(Duration(_EvilInt(1)))
+    with pytest.raises(RetryPolicyInvalidRequestError, match="jitter"):
+        _scheduled(jitter=Duration(_EvilInt(0)))
 
 
 def test_policy_requires_exact_borrowed_ports() -> None:
@@ -577,6 +654,17 @@ def test_jitter_must_not_exceed_bound_and_corruption_is_redacted() -> None:
     assert "credential" not in str(captured.value)
 
 
+def test_borrowed_jitter_rejects_executable_nested_duration_scalar() -> None:
+    _EvilBorrowedInt.touched = False
+    policy, _, _ = _policy(jitter=_Jitter(Duration(_EvilBorrowedInt(0))))
+    with pytest.raises(RetryPolicyJitterError, match="source failed") as captured:
+        policy.decide(_request())
+    assert _EvilBorrowedInt.touched is False
+    assert "credential" not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
 def test_jitter_base_exception_propagates_without_conversion() -> None:
     fatal = _Fatal("stop")
     policy, _, _ = _policy(jitter=_Jitter(fatal))
@@ -615,6 +703,8 @@ def _scheduled(**changes: object) -> RetryScheduledDecision:
         "classification": FailureClassification.CONNECTION,
         "failed_at": _timestamp(),
         "observed_at": _timestamp(1_000_000),
+        "http_429_delay": None,
+        "jitter": Duration(0),
         "delay": Duration(1_000_000),
         "retry_available_at": _timestamp(2_000_000),
     }
@@ -641,6 +731,8 @@ def test_scheduled_decision_is_frozen_self_validating_and_payload_free() -> None
         {"classification": "connection"},
         {"failed_at": _BASE},
         {"observed_at": _BASE},
+        {"http_429_delay": "1"},
+        {"jitter": 1},
         {"delay": 1_000_000},
         {"retry_available_at": _BASE},
     ],
@@ -657,6 +749,11 @@ def test_scheduled_decision_rejects_substituted_types(changes: dict[str, object]
         {"attempt_number": AttemptNumber(MAX_RETRY_ATTEMPTS)},
         {"observed_at": _timestamp(), "failed_at": _timestamp(1)},
         {"delay": Duration(0), "retry_available_at": _timestamp(1_000_000)},
+        {
+            "jitter": Duration(250_001),
+            "delay": Duration(1_250_001),
+            "retry_available_at": _timestamp(2_250_001),
+        },
         {
             "delay": Duration(STANDARD_RETRY_MAX_MICROSECONDS + 1),
             "retry_available_at": _timestamp(1_000_000 + STANDARD_RETRY_MAX_MICROSECONDS + 1),
@@ -677,14 +774,32 @@ def test_scheduled_decision_rejects_incoherent_values(changes: dict[str, object]
 def test_scheduled_decision_accepts_http_and_sqlite_delay_bounds() -> None:
     assert _scheduled(
         classification=FailureClassification.HTTP_429,
+        http_429_delay=Http429RetryDelay(Duration(MAX_HTTP_429_RETRY_DELAY_MICROSECONDS)),
         delay=Duration(MAX_HTTP_429_RETRY_DELAY_MICROSECONDS),
         retry_available_at=_timestamp(1_000_000 + MAX_HTTP_429_RETRY_DELAY_MICROSECONDS),
     ).delay == Duration(MAX_HTTP_429_RETRY_DELAY_MICROSECONDS)
     assert _scheduled(
         classification=FailureClassification.SQLITE_CONTENTION,
-        delay=Duration(SQLITE_RETRY_MAX_MICROSECONDS),
-        retry_available_at=_timestamp(1_000_000 + SQLITE_RETRY_MAX_MICROSECONDS),
-    ).delay == Duration(SQLITE_RETRY_MAX_MICROSECONDS)
+        attempt_number=AttemptNumber(2),
+        jitter=Duration(5_000),
+        delay=Duration(25_000),
+        retry_available_at=_timestamp(1_025_000),
+    ).delay == Duration(25_000)
+
+
+@pytest.mark.parametrize(
+    "classification",
+    [FailureClassification.CONNECTION, FailureClassification.HTTP_429],
+)
+def test_public_scheduled_decision_rejects_forged_one_microsecond_delay(
+    classification: FailureClassification,
+) -> None:
+    with pytest.raises(RetryPolicyInvalidRequestError, match="arithmetic"):
+        _scheduled(
+            classification=classification,
+            delay=Duration(1),
+            retry_available_at=_timestamp(1_000_001),
+        )
 
 
 def test_direct_scheduled_decision_rejects_timestamp_overflow() -> None:
