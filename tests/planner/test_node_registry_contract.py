@@ -9,6 +9,7 @@ from typing import Any, cast
 import pytest
 
 from paritygrid.application.planner import (
+    EMPTY_NODE_PORT_SCHEMA,
     MAX_NODE_CONFIGURATION_FIELD_LENGTH,
     NODE_REGISTRY_VERSION,
     ConnectorRequirement,
@@ -59,6 +60,7 @@ def _definition(
         NodeKind(kind),
         role,
         schema or _schema(),
+        EMPTY_NODE_PORT_SCHEMA,
         connector,
         runners,
         retry,
@@ -186,6 +188,8 @@ def test_definition_canonicalizes_runners_and_enforces_repair_safety() -> None:
         replace(definition, role="source")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="NodeConfigurationSchema"):
         replace(definition, configuration_schema={})  # type: ignore[arg-type]
+    with pytest.raises(TypeError, match="NodePortSchema"):
+        replace(definition, port_schema={})  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="ConnectorRequirement"):
         replace(definition, connector_requirement="source")  # type: ignore[arg-type]
     with pytest.raises(TypeError, match="tuple"):

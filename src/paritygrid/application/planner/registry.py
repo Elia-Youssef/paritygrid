@@ -8,8 +8,14 @@ from enum import StrEnum
 from typing import cast
 
 from paritygrid.application.planner.documents import PipelineDocument
+from paritygrid.application.planner.ports import (
+    InputPortDefinition,
+    NodePortSchema,
+    OutputPortDefinition,
+    PortValueType,
+)
 from paritygrid.application.ports.configuration import ConfigurationDocument
-from paritygrid.domain.pipeline import NodeKind
+from paritygrid.domain.pipeline import NodeKind, PortName
 
 NODE_REGISTRY_VERSION = 1
 MAX_NODE_REGISTRY_DEFINITIONS = 128
@@ -165,6 +171,7 @@ class NodeDefinition:
     kind: NodeKind
     role: NodeRole
     configuration_schema: NodeConfigurationSchema
+    port_schema: NodePortSchema
     connector_requirement: ConnectorRequirement
     supported_runners: tuple[PlannerRunnerKind, ...]
     retry_behavior: RetryBehavior
@@ -178,6 +185,7 @@ class NodeDefinition:
             NodeConfigurationSchema,
             "node definition configuration schema",
         )
+        _require_exact(self.port_schema, NodePortSchema, "node definition port schema")
         _require_exact(
             self.connector_requirement,
             ConnectorRequirement,
@@ -317,10 +325,76 @@ _EXPORT_CONFIGURATION_V1 = NodeConfigurationSchema(
 )
 
 
+def _input(
+    name: str,
+    *accepted_types: PortValueType,
+) -> InputPortDefinition:
+    return InputPortDefinition(PortName(name), accepted_types)
+
+
+def _output(name: str, value_type: PortValueType) -> OutputPortDefinition:
+    return OutputPortDefinition(PortName(name), value_type)
+
+
+_SOURCE_PORTS = NodePortSchema((), (_output("records", PortValueType.RAW_RECORDS),))
+_NORMALIZE_PORTS = NodePortSchema(
+    (_input("records", PortValueType.RAW_RECORDS),),
+    (_output("records", PortValueType.NORMALIZED_RECORDS),),
+)
+_VALIDATE_PORTS = NodePortSchema(
+    (_input("records", PortValueType.NORMALIZED_RECORDS),),
+    (_output("records", PortValueType.VALIDATED_RECORDS),),
+)
+_PARTITION_PORTS = NodePortSchema(
+    (_input("records", PortValueType.VALIDATED_RECORDS),),
+    (_output("records", PortValueType.PARTITIONED_RECORDS),),
+)
+_RECONCILE_PORTS = NodePortSchema(
+    (
+        _input(
+            "records",
+            PortValueType.NORMALIZED_RECORDS,
+            PortValueType.VALIDATED_RECORDS,
+            PortValueType.PARTITIONED_RECORDS,
+        ),
+    ),
+    (_output("reconciliation", PortValueType.RECONCILIATION),),
+)
+_REPAIR_GENERATE_PORTS = NodePortSchema(
+    (_input("reconciliation", PortValueType.RECONCILIATION),),
+    (_output("repair-plan", PortValueType.REPAIR_PLAN),),
+)
+_REPAIR_APPROVAL_PORTS = NodePortSchema(
+    (_input("repair-plan", PortValueType.REPAIR_PLAN),),
+    (_output("approved-plan", PortValueType.APPROVED_REPAIR_PLAN),),
+)
+_REPAIR_APPLY_PORTS = NodePortSchema(
+    (_input("approved-plan", PortValueType.APPROVED_REPAIR_PLAN),),
+    (_output("repair-result", PortValueType.REPAIR_RESULT),),
+)
+_VERIFY_PORTS = NodePortSchema(
+    (_input("repair-result", PortValueType.REPAIR_RESULT),),
+    (_output("verification", PortValueType.VERIFICATION),),
+)
+_EXPORT_PORTS = NodePortSchema(
+    (
+        _input(
+            "records",
+            PortValueType.RAW_RECORDS,
+            PortValueType.NORMALIZED_RECORDS,
+            PortValueType.VALIDATED_RECORDS,
+            PortValueType.PARTITIONED_RECORDS,
+        ),
+    ),
+    (),
+)
+
+
 def _definition(
     kind: str,
     role: NodeRole,
     configuration_schema: NodeConfigurationSchema,
+    port_schema: NodePortSchema,
     connector_requirement: ConnectorRequirement,
     supported_runners: tuple[PlannerRunnerKind, ...],
     retry_behavior: RetryBehavior,
@@ -331,6 +405,7 @@ def _definition(
         NodeKind(kind),
         role,
         configuration_schema,
+        port_schema,
         connector_requirement,
         supported_runners,
         retry_behavior,
@@ -344,6 +419,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "source.http.async",
             NodeRole.SOURCE,
             _HTTP_SOURCE_CONFIGURATION_V1,
+            _SOURCE_PORTS,
             ConnectorRequirement.SOURCE,
             _STANDARD_RUNNERS,
             RetryBehavior.CONNECTOR,
@@ -352,6 +428,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "source.http.blocking",
             NodeRole.SOURCE,
             _HTTP_SOURCE_CONFIGURATION_V1,
+            _SOURCE_PORTS,
             ConnectorRequirement.SOURCE,
             _STANDARD_RUNNERS,
             RetryBehavior.CONNECTOR,
@@ -360,6 +437,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "source.csv",
             NodeRole.SOURCE,
             _CSV_SOURCE_CONFIGURATION_V1,
+            _SOURCE_PORTS,
             ConnectorRequirement.SOURCE,
             _STANDARD_RUNNERS,
             RetryBehavior.CONNECTOR,
@@ -368,6 +446,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "source.jsonl",
             NodeRole.SOURCE,
             _JSONL_SOURCE_CONFIGURATION_V1,
+            _SOURCE_PORTS,
             ConnectorRequirement.SOURCE,
             _STANDARD_RUNNERS,
             RetryBehavior.CONNECTOR,
@@ -376,6 +455,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "transform.normalize",
             NodeRole.TRANSFORM,
             _EMPTY_CONFIGURATION_V1,
+            _NORMALIZE_PORTS,
             ConnectorRequirement.NONE,
             _CPU_RUNNERS,
             RetryBehavior.NEVER,
@@ -384,6 +464,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "transform.validate",
             NodeRole.TRANSFORM,
             _EMPTY_CONFIGURATION_V1,
+            _VALIDATE_PORTS,
             ConnectorRequirement.NONE,
             _CPU_RUNNERS,
             RetryBehavior.NEVER,
@@ -392,6 +473,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "transform.partition",
             NodeRole.TRANSFORM,
             _PARTITION_CONFIGURATION_V1,
+            _PARTITION_PORTS,
             ConnectorRequirement.NONE,
             _CPU_RUNNERS,
             RetryBehavior.NEVER,
@@ -400,6 +482,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "reconcile.target",
             NodeRole.RECONCILIATION,
             _EMPTY_CONFIGURATION_V1,
+            _RECONCILE_PORTS,
             ConnectorRequirement.TARGET,
             _STANDARD_RUNNERS,
             RetryBehavior.CONNECTOR,
@@ -408,6 +491,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "repair.generate",
             NodeRole.REPAIR_PLAN,
             _EMPTY_CONFIGURATION_V1,
+            _REPAIR_GENERATE_PORTS,
             ConnectorRequirement.NONE,
             _CPU_RUNNERS,
             RetryBehavior.NEVER,
@@ -416,6 +500,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "repair.approval",
             NodeRole.APPROVAL,
             _EMPTY_CONFIGURATION_V1,
+            _REPAIR_APPROVAL_PORTS,
             ConnectorRequirement.NONE,
             _STANDARD_RUNNERS,
             RetryBehavior.NEVER,
@@ -424,6 +509,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "repair.apply",
             NodeRole.REPAIR_EFFECT,
             _EMPTY_CONFIGURATION_V1,
+            _REPAIR_APPLY_PORTS,
             ConnectorRequirement.TARGET,
             _STANDARD_RUNNERS,
             RetryBehavior.CONNECTOR,
@@ -433,6 +519,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "verify.target",
             NodeRole.VERIFICATION,
             _EMPTY_CONFIGURATION_V1,
+            _VERIFY_PORTS,
             ConnectorRequirement.TARGET,
             _STANDARD_RUNNERS,
             RetryBehavior.CONNECTOR,
@@ -441,6 +528,7 @@ BUILTIN_NODE_REGISTRY = NodeRegistry(
             "export.parquet",
             NodeRole.EXPORT,
             _EXPORT_CONFIGURATION_V1,
+            _EXPORT_PORTS,
             ConnectorRequirement.NONE,
             _STANDARD_RUNNERS,
             RetryBehavior.NEVER,
