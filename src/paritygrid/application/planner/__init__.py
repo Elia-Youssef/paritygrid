@@ -16,6 +16,8 @@ from paritygrid.application.planner.documents import (
     encode_pipeline_document,
 )
 from paritygrid.application.planner.registry import (
+    BUILTIN_NODE_DEFINITIONS,
+    BUILTIN_NODE_REGISTRY,
     MAX_NODE_CONFIGURATION_FIELD_LENGTH,
     MAX_NODE_CONFIGURATION_FIELDS,
     MAX_NODE_REGISTRY_DEFINITIONS,
@@ -33,9 +35,13 @@ from paritygrid.application.planner.registry import (
     RetryBehavior,
     UnknownNodeKindError,
     UnsupportedNodeConfigurationVersionError,
+    registered_node_definition,
+    validate_registered_nodes,
 )
 
 __all__ = [
+    "BUILTIN_NODE_DEFINITIONS",
+    "BUILTIN_NODE_REGISTRY",
     "MAX_NODE_CONFIGURATION_FIELDS",
     "MAX_NODE_CONFIGURATION_FIELD_LENGTH",
     "MAX_NODE_REGISTRY_DEFINITIONS",
@@ -66,4 +72,6 @@ __all__ = [
     "UnsupportedPipelineDocumentVersionError",
     "decode_pipeline_document",
     "encode_pipeline_document",
+    "registered_node_definition",
+    "validate_registered_nodes",
 ]

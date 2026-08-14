@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
 
+from paritygrid.application.planner.documents import PipelineDocument
 from paritygrid.application.ports.configuration import ConfigurationDocument
 from paritygrid.domain.pipeline import NodeKind
 
@@ -282,3 +283,184 @@ def _require_exact_tuple[T](value: object, item_type: type[T], subject: str) -> 
 def _require_unique(values: tuple[object, ...], subject: str) -> None:
     if len(set(values)) != len(values):
         raise NodeRegistryError(f"{subject} must be unique")
+
+
+_STANDARD_RUNNERS = (
+    PlannerRunnerKind.SEQUENTIAL,
+    PlannerRunnerKind.THREADED,
+    PlannerRunnerKind.ASYNCIO,
+)
+_CPU_RUNNERS = (*_STANDARD_RUNNERS, PlannerRunnerKind.PROCESS)
+_EMPTY_CONFIGURATION_V1 = NodeConfigurationSchema(1, ())
+_HTTP_SOURCE_CONFIGURATION_V1 = NodeConfigurationSchema(
+    1,
+    (NodeConfigurationField("page_size", NodeConfigurationValueKind.INTEGER, False),),
+)
+_CSV_SOURCE_CONFIGURATION_V1 = NodeConfigurationSchema(
+    1,
+    (
+        NodeConfigurationField("encoding", NodeConfigurationValueKind.TEXT, False),
+        NodeConfigurationField("header", NodeConfigurationValueKind.BOOLEAN, False),
+    ),
+)
+_JSONL_SOURCE_CONFIGURATION_V1 = NodeConfigurationSchema(
+    1,
+    (NodeConfigurationField("encoding", NodeConfigurationValueKind.TEXT, False),),
+)
+_PARTITION_CONFIGURATION_V1 = NodeConfigurationSchema(
+    1,
+    (NodeConfigurationField("partition_count", NodeConfigurationValueKind.INTEGER, False),),
+)
+_EXPORT_CONFIGURATION_V1 = NodeConfigurationSchema(
+    1,
+    (NodeConfigurationField("compression", NodeConfigurationValueKind.TEXT, False),),
+)
+
+
+def _definition(
+    kind: str,
+    role: NodeRole,
+    configuration_schema: NodeConfigurationSchema,
+    connector_requirement: ConnectorRequirement,
+    supported_runners: tuple[PlannerRunnerKind, ...],
+    retry_behavior: RetryBehavior,
+    *,
+    requires_idempotency: bool = False,
+) -> NodeDefinition:
+    return NodeDefinition(
+        NodeKind(kind),
+        role,
+        configuration_schema,
+        connector_requirement,
+        supported_runners,
+        retry_behavior,
+        requires_idempotency,
+    )
+
+
+BUILTIN_NODE_REGISTRY = NodeRegistry(
+    (
+        _definition(
+            "source.http.async",
+            NodeRole.SOURCE,
+            _HTTP_SOURCE_CONFIGURATION_V1,
+            ConnectorRequirement.SOURCE,
+            _STANDARD_RUNNERS,
+            RetryBehavior.CONNECTOR,
+        ),
+        _definition(
+            "source.http.blocking",
+            NodeRole.SOURCE,
+            _HTTP_SOURCE_CONFIGURATION_V1,
+            ConnectorRequirement.SOURCE,
+            _STANDARD_RUNNERS,
+            RetryBehavior.CONNECTOR,
+        ),
+        _definition(
+            "source.csv",
+            NodeRole.SOURCE,
+            _CSV_SOURCE_CONFIGURATION_V1,
+            ConnectorRequirement.SOURCE,
+            _STANDARD_RUNNERS,
+            RetryBehavior.CONNECTOR,
+        ),
+        _definition(
+            "source.jsonl",
+            NodeRole.SOURCE,
+            _JSONL_SOURCE_CONFIGURATION_V1,
+            ConnectorRequirement.SOURCE,
+            _STANDARD_RUNNERS,
+            RetryBehavior.CONNECTOR,
+        ),
+        _definition(
+            "transform.normalize",
+            NodeRole.TRANSFORM,
+            _EMPTY_CONFIGURATION_V1,
+            ConnectorRequirement.NONE,
+            _CPU_RUNNERS,
+            RetryBehavior.NEVER,
+        ),
+        _definition(
+            "transform.validate",
+            NodeRole.TRANSFORM,
+            _EMPTY_CONFIGURATION_V1,
+            ConnectorRequirement.NONE,
+            _CPU_RUNNERS,
+            RetryBehavior.NEVER,
+        ),
+        _definition(
+            "transform.partition",
+            NodeRole.TRANSFORM,
+            _PARTITION_CONFIGURATION_V1,
+            ConnectorRequirement.NONE,
+            _CPU_RUNNERS,
+            RetryBehavior.NEVER,
+        ),
+        _definition(
+            "reconcile.target",
+            NodeRole.RECONCILIATION,
+            _EMPTY_CONFIGURATION_V1,
+            ConnectorRequirement.TARGET,
+            _STANDARD_RUNNERS,
+            RetryBehavior.CONNECTOR,
+        ),
+        _definition(
+            "repair.generate",
+            NodeRole.REPAIR_PLAN,
+            _EMPTY_CONFIGURATION_V1,
+            ConnectorRequirement.NONE,
+            _CPU_RUNNERS,
+            RetryBehavior.NEVER,
+        ),
+        _definition(
+            "repair.approval",
+            NodeRole.APPROVAL,
+            _EMPTY_CONFIGURATION_V1,
+            ConnectorRequirement.NONE,
+            _STANDARD_RUNNERS,
+            RetryBehavior.NEVER,
+        ),
+        _definition(
+            "repair.apply",
+            NodeRole.REPAIR_EFFECT,
+            _EMPTY_CONFIGURATION_V1,
+            ConnectorRequirement.TARGET,
+            _STANDARD_RUNNERS,
+            RetryBehavior.CONNECTOR,
+            requires_idempotency=True,
+        ),
+        _definition(
+            "verify.target",
+            NodeRole.VERIFICATION,
+            _EMPTY_CONFIGURATION_V1,
+            ConnectorRequirement.TARGET,
+            _STANDARD_RUNNERS,
+            RetryBehavior.CONNECTOR,
+        ),
+        _definition(
+            "export.parquet",
+            NodeRole.EXPORT,
+            _EXPORT_CONFIGURATION_V1,
+            ConnectorRequirement.NONE,
+            _STANDARD_RUNNERS,
+            RetryBehavior.NEVER,
+        ),
+    )
+)
+BUILTIN_NODE_DEFINITIONS = BUILTIN_NODE_REGISTRY.definitions
+
+
+def registered_node_definition(
+    kind: NodeKind,
+    configuration_version: int,
+) -> NodeDefinition:
+    """Resolve one kind only from the immutable built-in registry."""
+    return BUILTIN_NODE_REGISTRY.require(kind, configuration_version)
+
+
+def validate_registered_nodes(document: PipelineDocument) -> None:
+    """Reject unknown kinds, versions, and configuration shapes in one draft."""
+    _require_exact(document, PipelineDocument, "pipeline document")
+    for node in document.nodes:
+        definition = registered_node_definition(node.kind, node.configuration_version)
+        definition.configuration_schema.validate(node.configuration)
