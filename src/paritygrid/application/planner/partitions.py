@@ -6,12 +6,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import cast
 
-from paritygrid.domain.pipeline import PartitionKey
+from paritygrid.application.ports.configuration import ConfigurationDocument
+from paritygrid.domain.pipeline import NodeKind, PartitionKey
 
 PARTITION_STRATEGY_VERSION = 1
 MIN_PARTITION_COUNT = 1
 MAX_PARTITION_COUNT = 1_024
 PARTITION_KEY_DIGITS = 8
+PARTITION_NODE_KIND = NodeKind("transform.partition")
 
 
 class PartitionStrategyError(ValueError):
@@ -78,3 +80,22 @@ class PartitionStrategy:
 
 
 SINGLE_PARTITION_STRATEGY = PartitionStrategy(PartitionStrategyKind.SINGLE, 1)
+
+
+def partition_strategy_from_configuration(
+    kind: NodeKind,
+    configuration: ConfigurationDocument,
+) -> PartitionStrategy:
+    """Derive a logical strategy without depending on an execution backend."""
+    if type(kind) is not NodeKind:
+        raise TypeError("partition strategy node kind must use NodeKind")
+    if type(configuration) is not ConfigurationDocument:
+        raise TypeError("partition strategy configuration must use ConfigurationDocument")
+    if kind != PARTITION_NODE_KIND:
+        return SINGLE_PARTITION_STRATEGY
+    count = configuration.to_mapping().get("partition_count", 1)
+    if type(count) is not int:
+        raise TypeError("partition count must be an integer")
+    if count == 1:
+        return SINGLE_PARTITION_STRATEGY
+    return PartitionStrategy(PartitionStrategyKind.FIXED, count)

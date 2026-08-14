@@ -18,6 +18,7 @@ from paritygrid.application.planner.graph import topological_node_order, validat
 from paritygrid.application.planner.partitions import (
     SINGLE_PARTITION_STRATEGY,
     PartitionStrategy,
+    partition_strategy_from_configuration,
 )
 from paritygrid.application.planner.port_validation import validate_typed_ports
 from paritygrid.application.planner.publication import PublishedPipelineSpecification
@@ -249,6 +250,10 @@ def compile_execution_plan(specification: PublishedPipelineSpecification) -> Exe
                 supported_runners=definition.supported_runners,
                 retry_behavior=definition.retry_behavior,
                 requires_idempotency=definition.requires_idempotency,
+                partition_strategy=partition_strategy_from_configuration(
+                    node.kind,
+                    node.configuration,
+                ),
             )
         )
     return ExecutionPlan(

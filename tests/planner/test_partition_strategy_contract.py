@@ -10,14 +10,17 @@ from paritygrid.application.planner import (
     MAX_PARTITION_COUNT,
     MIN_PARTITION_COUNT,
     PARTITION_KEY_DIGITS,
+    PARTITION_NODE_KIND,
     PARTITION_STRATEGY_VERSION,
     SINGLE_PARTITION_STRATEGY,
     InvalidPartitionIndexError,
     PartitionStrategy,
     PartitionStrategyError,
     PartitionStrategyKind,
+    partition_strategy_from_configuration,
 )
-from paritygrid.domain.pipeline import PartitionKey
+from paritygrid.application.ports.configuration import ConfigurationDocument
+from paritygrid.domain.pipeline import NodeKind, PartitionKey
 
 
 def test_partition_constants_enum_and_error_family_are_frozen() -> None:
@@ -25,6 +28,7 @@ def test_partition_constants_enum_and_error_family_are_frozen() -> None:
     assert MIN_PARTITION_COUNT == 1
     assert MAX_PARTITION_COUNT == 1_024
     assert PARTITION_KEY_DIGITS == 8
+    assert NodeKind("transform.partition") == PARTITION_NODE_KIND
     assert tuple(PartitionStrategyKind) == (
         PartitionStrategyKind.SINGLE,
         PartitionStrategyKind.FIXED,
@@ -97,3 +101,59 @@ def test_partition_key_index_is_exact_and_bounded() -> None:
 def test_partition_strategy_is_immutable() -> None:
     with pytest.raises(FrozenInstanceError):
         SINGLE_PARTITION_STRATEGY.partition_count = 2  # type: ignore[misc]
+
+
+def test_partition_strategy_derivation_defaults_non_partition_and_empty_nodes_to_single() -> None:
+    empty = ConfigurationDocument.from_mapping({})
+    assert (
+        partition_strategy_from_configuration(NodeKind("transform.normalize"), empty)
+        is SINGLE_PARTITION_STRATEGY
+    )
+    assert (
+        partition_strategy_from_configuration(PARTITION_NODE_KIND, empty)
+        is SINGLE_PARTITION_STRATEGY
+    )
+    assert (
+        partition_strategy_from_configuration(
+            PARTITION_NODE_KIND,
+            ConfigurationDocument.from_mapping({"partition_count": 1}),
+        )
+        is SINGLE_PARTITION_STRATEGY
+    )
+
+
+def test_partition_strategy_derivation_builds_stable_fixed_strategy() -> None:
+    strategy = partition_strategy_from_configuration(
+        PARTITION_NODE_KIND,
+        ConfigurationDocument.from_mapping({"partition_count": 3}),
+    )
+    assert strategy == PartitionStrategy(PartitionStrategyKind.FIXED, 3)
+    assert strategy.keys() == (
+        PartitionKey("partition-00000000"),
+        PartitionKey("partition-00000001"),
+        PartitionKey("partition-00000002"),
+    )
+
+
+@pytest.mark.parametrize(
+    ("kind", "configuration", "message"),
+    [
+        ("transform.partition", ConfigurationDocument.from_mapping({}), "NodeKind"),
+        (PARTITION_NODE_KIND, {}, "ConfigurationDocument"),
+    ],
+)
+def test_partition_strategy_derivation_requires_exact_types(
+    kind: object,
+    configuration: object,
+    message: str,
+) -> None:
+    with pytest.raises(TypeError, match=message):
+        partition_strategy_from_configuration(kind, configuration)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("count", [True, 0, MAX_PARTITION_COUNT + 1])
+def test_partition_strategy_derivation_rejects_invalid_counts(count: object) -> None:
+    configuration = ConfigurationDocument.from_mapping({"partition_count": count})
+    error = TypeError if type(count) is bool else PartitionStrategyError
+    with pytest.raises(error):
+        partition_strategy_from_configuration(PARTITION_NODE_KIND, configuration)
