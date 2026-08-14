@@ -15,6 +15,14 @@ from paritygrid.application.planner.documents import (
     decode_pipeline_document,
     encode_pipeline_document,
 )
+from paritygrid.application.planner.graph import (
+    MAX_TOPOLOGICAL_NODES,
+    PipelineCycleError,
+    PipelineGraphError,
+    TopologicalOrder,
+    topological_node_order,
+    validate_acyclic_graph,
+)
 from paritygrid.application.planner.port_validation import (
     ports_are_compatible,
     validate_typed_ports,
@@ -71,6 +79,7 @@ __all__ = [
     "MAX_PIPELINE_EDGES",
     "MAX_PIPELINE_LAYOUT_COORDINATE",
     "MAX_PIPELINE_NODES",
+    "MAX_TOPOLOGICAL_NODES",
     "NODE_REGISTRY_VERSION",
     "PIPELINE_DOCUMENT_SCHEMA_VERSION",
     "PIPELINE_PLANNER_FORMAT_VERSION",
@@ -88,13 +97,16 @@ __all__ = [
     "NodeRegistryError",
     "NodeRole",
     "OutputPortDefinition",
+    "PipelineCycleError",
     "PipelineDocument",
+    "PipelineGraphError",
     "PipelineNodeLayout",
     "PipelineNodeSpecification",
     "PlannerRunnerKind",
     "PortContractError",
     "PortValueType",
     "RetryBehavior",
+    "TopologicalOrder",
     "UnknownNodeKindError",
     "UnsupportedNodeConfigurationVersionError",
     "UnsupportedPipelineDocumentVersionError",
@@ -102,6 +114,8 @@ __all__ = [
     "encode_pipeline_document",
     "ports_are_compatible",
     "registered_node_definition",
+    "topological_node_order",
+    "validate_acyclic_graph",
     "validate_registered_nodes",
     "validate_typed_ports",
 ]
