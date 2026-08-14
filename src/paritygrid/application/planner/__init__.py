@@ -39,6 +39,7 @@ from paritygrid.application.planner.execution_plan import (
     ExecutionPlanError,
     ExecutionPlanNode,
     InvalidExecutionPlanError,
+    compile_execution_plan,
 )
 from paritygrid.application.planner.graph import (
     MAX_TOPOLOGICAL_NODES,
@@ -219,6 +220,7 @@ __all__ = [
     "UnknownNodeKindError",
     "UnsupportedNodeConfigurationVersionError",
     "UnsupportedPipelineDocumentVersionError",
+    "compile_execution_plan",
     "connector_capabilities_from_document",
     "decode_pipeline_document",
     "encode_pipeline_document",

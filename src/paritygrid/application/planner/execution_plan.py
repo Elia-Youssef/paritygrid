@@ -5,14 +5,29 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
-from paritygrid.application.planner.connectors import ConnectorBindingSnapshot
+from paritygrid.application.planner.connectors import (
+    ConnectorBindingSnapshot,
+    ConnectorCapability,
+    ConnectorValidationError,
+    InvalidConnectorSnapshotError,
+    MissingConnectorCapabilityError,
+    MissingConnectorError,
+    required_connector_capabilities,
+)
+from paritygrid.application.planner.graph import topological_node_order, validate_acyclic_graph
+from paritygrid.application.planner.port_validation import validate_typed_ports
+from paritygrid.application.planner.publication import PublishedPipelineSpecification
+from paritygrid.application.planner.reachability import validate_graph_reachability
 from paritygrid.application.planner.registry import (
     ConnectorRequirement,
     NodeRole,
     PlannerRunnerKind,
     RetryBehavior,
+    registered_node_definition,
+    validate_registered_nodes,
 )
-from paritygrid.application.planner.resources import ResourcePolicy
+from paritygrid.application.planner.repair_safety import validate_repair_safety
+from paritygrid.application.planner.resources import ResourcePolicy, validate_resource_policy
 from paritygrid.application.ports.configuration import ConfigurationDocument
 from paritygrid.domain.models import ConnectorId, NodeId
 from paritygrid.domain.pipeline import NodeKind, PipelineEdge
@@ -191,6 +206,71 @@ class ExecutionPlan:
             f"version={self.version!r}, nodes={len(self.nodes)}, "
             f"edges={len(self.edges)}, connector_bindings={len(self.connector_bindings)})"
         )
+
+
+def compile_execution_plan(specification: PublishedPipelineSpecification) -> ExecutionPlan:
+    """Compile one immutable publication into a deterministic logical plan."""
+    if type(specification) is not PublishedPipelineSpecification:
+        raise TypeError("published specification must use PublishedPipelineSpecification")
+    pipeline = specification.pipeline
+    validate_registered_nodes(pipeline)
+    validate_typed_ports(pipeline)
+    validate_acyclic_graph(pipeline)
+    validate_graph_reachability(pipeline)
+    resource_policy = validate_resource_policy(pipeline)
+    validate_repair_safety(pipeline)
+    _validate_embedded_connector_capabilities(specification)
+
+    nodes_by_id = {node.node_id: node for node in pipeline.nodes}
+    plan_nodes: list[ExecutionPlanNode] = []
+    for node_id in topological_node_order(pipeline):
+        node = nodes_by_id[node_id]
+        definition = registered_node_definition(node.kind, node.configuration_version)
+        plan_nodes.append(
+            ExecutionPlanNode(
+                node_id=node.node_id,
+                kind=node.kind,
+                configuration_version=node.configuration_version,
+                configuration=node.configuration,
+                connector_id=node.connector_id,
+                role=definition.role,
+                connector_requirement=definition.connector_requirement,
+                supported_runners=definition.supported_runners,
+                retry_behavior=definition.retry_behavior,
+                requires_idempotency=definition.requires_idempotency,
+            )
+        )
+    return ExecutionPlan(
+        nodes=tuple(plan_nodes),
+        edges=pipeline.edges,
+        resource_policy=resource_policy,
+        connector_bindings=specification.connector_bindings,
+    )
+
+
+def _validate_embedded_connector_capabilities(
+    specification: PublishedPipelineSpecification,
+) -> None:
+    bindings = {binding.connector_id: binding for binding in specification.connector_bindings}
+    for binding in specification.connector_bindings:
+        if binding.schema_discovery is not None and not binding.capabilities.supports(
+            ConnectorCapability.SCHEMA_DISCOVERY
+        ):
+            raise InvalidConnectorSnapshotError(
+                "connector schema metadata requires schema discovery capability"
+            )
+    for node in specification.pipeline.nodes:
+        definition = registered_node_definition(node.kind, node.configuration_version)
+        if definition.connector_requirement is ConnectorRequirement.NONE:
+            if node.connector_id is not None:
+                raise ConnectorValidationError("pipeline node does not permit a connector binding")
+            continue
+        if node.connector_id is None:
+            raise MissingConnectorError("pipeline node requires a connector binding")
+        binding = bindings[node.connector_id]
+        required = required_connector_capabilities(node.kind)
+        if any(not binding.capabilities.supports(capability) for capability in required):
+            raise MissingConnectorCapabilityError("pipeline connector lacks a required capability")
 
 
 def _require_exact(value: object, expected: type[object], subject: str) -> None:
