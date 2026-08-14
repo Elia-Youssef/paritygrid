@@ -40,6 +40,7 @@ from paritygrid.application.ports.writer import (
     WriterState,
 )
 from paritygrid.application.writes import (
+    WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
     BootstrapWork,
     CreateCapturedRun,
     TransitionRun,
@@ -266,8 +267,26 @@ def test_acquire_and_renew_commit_atomically_and_survive_database_restart(tmp_pa
             renewed_event = events.get(RUN_ID, EventSequence(5))
             assert claimed is not None
             assert claimed.event_kind == "work_claimed"
+            assert claimed.occurred_at == _timestamp(3)
+            assert claimed.payload_schema_version == WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION
+            assert claimed.payload.to_mapping() == {
+                "attempt_number": 1,
+                "lease_expires_at": str(_timestamp(8)),
+                "node_id": str(NODE_ID),
+                "runner_kind": "sequential",
+            }
             assert renewed_event is not None
             assert renewed_event.event_kind == "work_claim_renewed"
+            assert renewed_event.occurred_at == _timestamp(5)
+            assert renewed_event.payload_schema_version == WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION
+            assert renewed_event.payload.to_mapping() == {
+                "attempt_number": 1,
+                "lease_expires_at": str(_timestamp(10)),
+                "node_id": str(NODE_ID),
+                "runner_kind": "sequential",
+            }
+            assert "scheduler-01" not in repr(claimed)
+            assert "worker-01" not in repr(claimed)
 
         with restarted.engine.connect() as connection:
             assert connection.execute(text("PRAGMA quick_check")).scalar_one() == "ok"

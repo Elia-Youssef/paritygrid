@@ -53,6 +53,7 @@ from paritygrid.application.ports.writer import (
     WriterSettings,
 )
 from paritygrid.application.writes.execution import (
+    WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
     BootstrapWork,
     CheckpointWrite,
     ClaimWork,
@@ -150,6 +151,65 @@ def append_request(
     )
 
 
+def claim_append_request(
+    sequence: int,
+    node_id: NodeId,
+    work_item_id: WorkItemId,
+    occurred_at: UtcTimestamp,
+    attempt_number: AttemptNumber | None = None,
+) -> EventAppendRequest:
+    expected_attempt = AttemptNumber(1) if attempt_number is None else attempt_number
+    return EventAppendRequest(
+        EventSequence(sequence),
+        sequence,
+        PendingExecutionEvent(
+            event_kind="work_claimed",
+            occurred_at=occurred_at,
+            subject_kind=EventSubjectKind.WORK_ITEM,
+            subject_id=work_item_id,
+            correlation_id="corr-writer-dispatch",
+            payload_schema_version=WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
+            payload=RedactedDocument.from_mapping(
+                {
+                    "attempt_number": int(expected_attempt),
+                    "lease_expires_at": str(timestamp(int(occurred_at.to_datetime().second) + 3)),
+                    "node_id": str(node_id),
+                    "runner_kind": "threaded",
+                }
+            ),
+        ),
+    )
+
+
+def renewal_append_request(
+    sequence: int,
+    node_id: NodeId,
+    claim: WorkClaim,
+    renewed_at: UtcTimestamp,
+    lease_expires_at: UtcTimestamp,
+) -> EventAppendRequest:
+    return EventAppendRequest(
+        EventSequence(sequence),
+        sequence,
+        PendingExecutionEvent(
+            event_kind="work_claim_renewed",
+            occurred_at=renewed_at,
+            subject_kind=EventSubjectKind.WORK_ITEM,
+            subject_id=claim.work_item_id,
+            correlation_id="corr-writer-dispatch",
+            payload_schema_version=WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
+            payload=RedactedDocument.from_mapping(
+                {
+                    "attempt_number": int(claim.attempt_number),
+                    "lease_expires_at": str(lease_expires_at),
+                    "node_id": str(node_id),
+                    "runner_kind": claim.runner_kind,
+                }
+            ),
+        ),
+    )
+
+
 def create_run_command() -> CreateCapturedRun:
     return CreateCapturedRun(
         run_id=RUN_ID,
@@ -195,6 +255,7 @@ def claim_command(
         run_id=RUN_ID,
         node_id=node_id,
         work_item_id=work_item_id,
+        expected_attempt_number=AttemptNumber(1),
         expected_work_row_version=1,
         expected_node_row_version=2,
         expected_run_row_version=run_row_version,
@@ -203,7 +264,7 @@ def claim_command(
         lease_expires_at=timestamp(second + 3),
         runner_kind="threaded",
         worker_identity="worker-01",
-        event=append_request(sequence, "work_claimed", work_item_id, timestamp(second)),
+        event=claim_append_request(sequence, node_id, work_item_id, timestamp(second)),
     )
 
 
@@ -370,7 +431,7 @@ def test_all_execution_composites_preserve_order_and_advance_revision_once(
                 4,
                 timestamp(4),
                 timestamp(8),
-                append_request(5, "work_claim_renewed", SUCCESS_WORK, timestamp(4)),
+                renewal_append_request(5, SUCCESS_NODE, success_claim, timestamp(4), timestamp(8)),
             ),
         )
     success_claim = cast(WorkClaim, renewed.result.claim)  # type: ignore[attr-defined]
@@ -522,12 +583,14 @@ def test_work_commands_reject_cross_parent_hybrids_before_companions(
         )
         dispatch_command(session, bootstrap_command(3, 2, SUCCESS_NODE, SUCCESS_WORK, 2))
 
+    valid_claim = claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3)
     wrong_claims = (
-        replace(claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3), node_id=FAILURE_NODE),
         replace(
-            claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3),
-            run_id=RunId("run_writerdispatch-other"),
+            valid_claim,
+            node_id=FAILURE_NODE,
+            event=claim_append_request(4, FAILURE_NODE, SUCCESS_WORK, timestamp(3)),
         ),
+        replace(valid_claim, run_id=RunId("run_writerdispatch-other")),
     )
     for wrong in wrong_claims:
         with (
@@ -555,7 +618,7 @@ def test_work_commands_reject_cross_parent_hybrids_before_companions(
         4,
         timestamp(4),
         timestamp(8),
-        append_request(5, "work_claim_renewed", SUCCESS_WORK, timestamp(4)),
+        renewal_append_request(5, FAILURE_NODE, claim, timestamp(4), timestamp(8)),
     )
     with (
         pytest.raises(WriterInvalidRequestError, match="another run or node"),
@@ -571,7 +634,14 @@ def test_work_commands_reject_cross_parent_hybrids_before_companions(
             .one()
         )
         assert (row["row_version"], row["lease_expires_at"]) == (2, str(timestamp(6)))
-        renewed = dispatch_command(session, replace(renewal, node_id=SUCCESS_NODE))
+        renewed = dispatch_command(
+            session,
+            replace(
+                renewal,
+                node_id=SUCCESS_NODE,
+                event=renewal_append_request(5, SUCCESS_NODE, claim, timestamp(4), timestamp(8)),
+            ),
+        )
     claim = cast(WorkClaim, renewed.result.claim)  # type: ignore[attr-defined]
 
     completion = CommitWorkWithCheckpoint(
@@ -1068,6 +1138,167 @@ def test_execution_validation_error_matrix_is_fail_fast() -> None:
         RecoverExpiredWork, validate_command(replace(recovery, redacted_detail=None))
     )
     assert validated_recovery.redacted_detail is None
+
+
+def test_claim_and_renewal_events_require_exact_command_derived_evidence() -> None:
+    claim = claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3)
+    assert validate_command(claim) is claim
+    claim_payload = claim.event.event.payload.to_mapping()
+    invalid_claims = (
+        (
+            replace(claim, expected_attempt_number=cast(AttemptNumber, 1)),
+            "attempt number",
+        ),
+        (
+            replace(
+                claim,
+                event=replace(
+                    claim.event,
+                    event=replace(claim.event.event, occurred_at=timestamp(4)),
+                ),
+            ),
+            "event time",
+        ),
+        (
+            replace(
+                claim,
+                event=replace(
+                    claim.event,
+                    event=replace(claim.event.event, payload_schema_version=1),
+                ),
+            ),
+            "event schema",
+        ),
+        (
+            replace(
+                claim,
+                event=replace(
+                    claim.event,
+                    event=replace(claim.event.event, payload=cast(RedactedDocument, object())),
+                ),
+            ),
+            "event payload",
+        ),
+        (
+            replace(
+                claim,
+                event=replace(
+                    claim.event,
+                    event=replace(
+                        claim.event.event,
+                        payload=RedactedDocument.from_mapping(
+                            {**claim_payload, "attempt_number": 2}
+                        ),
+                    ),
+                ),
+            ),
+            "payload is inconsistent",
+        ),
+    )
+    for invalid, message in invalid_claims:
+        with pytest.raises(WriterInvalidRequestError, match=message):
+            validate_command(invalid)
+
+    active_claim = WorkClaim(
+        SUCCESS_WORK,
+        AttemptNumber(1),
+        "scheduler",
+        2,
+        timestamp(3),
+        timestamp(6),
+        "threaded",
+        "worker",
+    )
+    renewal = RenewWorkClaim(
+        RUN_ID,
+        SUCCESS_NODE,
+        active_claim,
+        4,
+        timestamp(4),
+        timestamp(8),
+        renewal_append_request(5, SUCCESS_NODE, active_claim, timestamp(4), timestamp(8)),
+    )
+    assert validate_command(renewal) is renewal
+    renewal_payload = renewal.event.event.payload.to_mapping()
+    invalid_renewals = (
+        replace(
+            renewal,
+            event=replace(
+                renewal.event,
+                event=replace(renewal.event.event, occurred_at=timestamp(5)),
+            ),
+        ),
+        replace(
+            renewal,
+            event=replace(
+                renewal.event,
+                event=replace(renewal.event.event, payload_schema_version=1),
+            ),
+        ),
+        replace(
+            renewal,
+            event=replace(
+                renewal.event,
+                event=replace(
+                    renewal.event.event,
+                    payload=RedactedDocument.from_mapping(
+                        {**renewal_payload, "lease_expires_at": str(timestamp(9))}
+                    ),
+                ),
+            ),
+        ),
+    )
+    for invalid in invalid_renewals:
+        with pytest.raises(WriterInvalidRequestError, match="lease event"):
+            validate_command(invalid)
+
+
+def test_claim_attempt_mismatch_rolls_back_before_event_or_aggregate_commit(
+    database: SQLiteDatabase,
+) -> None:
+    seed_pipeline(database)
+    with database.transaction() as session:
+        dispatch_command(session, create_run_command())
+        dispatch_command(
+            session,
+            TransitionRun(
+                RUN_ID,
+                1,
+                RunState.RUNNING,
+                timestamp(2),
+                None,
+                append_request(2, "run_started", RUN_ID, timestamp(2)),
+            ),
+        )
+        dispatch_command(session, bootstrap_command(3, 2, SUCCESS_NODE, SUCCESS_WORK, 2))
+
+    mismatched = replace(
+        claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 3),
+        expected_attempt_number=AttemptNumber(2),
+        event=claim_append_request(
+            4,
+            SUCCESS_NODE,
+            SUCCESS_WORK,
+            timestamp(3),
+            AttemptNumber(2),
+        ),
+    )
+    with (
+        pytest.raises(WriterInvalidRequestError, match="attempt number"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, mismatched)
+
+    with database.transaction() as session:
+        row = (
+            session.execute(
+                select(work_items).where(work_items.c.work_item_id == str(SUCCESS_WORK))
+            )
+            .mappings()
+            .one()
+        )
+        assert (row["state"], row["row_version"]) == (WorkItemState.PENDING.value, 1)
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 3
 
 
 def test_transactional_writer_commits_to_wal_and_reopens_with_integrity(
