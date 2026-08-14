@@ -15,6 +15,10 @@ from paritygrid.application.planner.documents import (
     decode_pipeline_document,
     encode_pipeline_document,
 )
+from paritygrid.application.planner.port_validation import (
+    ports_are_compatible,
+    validate_typed_ports,
+)
 from paritygrid.application.planner.ports import (
     EMPTY_NODE_PORT_SCHEMA,
     MAX_INPUT_ACCEPTED_TYPES,
@@ -96,6 +100,8 @@ __all__ = [
     "UnsupportedPipelineDocumentVersionError",
     "decode_pipeline_document",
     "encode_pipeline_document",
+    "ports_are_compatible",
     "registered_node_definition",
     "validate_registered_nodes",
+    "validate_typed_ports",
 ]
