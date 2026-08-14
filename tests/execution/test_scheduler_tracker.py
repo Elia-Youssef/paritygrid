@@ -18,6 +18,9 @@ from paritygrid.application.execution import (
     SchedulerUnknownNodeError,
 )
 from paritygrid.application.planner import (
+    ConnectorBindingSnapshot,
+    ConnectorCapability,
+    ConnectorCapabilitySet,
     ConnectorRequirement,
     ExecutionPlan,
     ExecutionPlanNode,
@@ -28,7 +31,7 @@ from paritygrid.application.planner import (
     fingerprint_execution_plan,
 )
 from paritygrid.application.ports import ConfigurationDocument
-from paritygrid.domain.models import NodeId
+from paritygrid.domain.models import ConnectorId, NodeId
 from paritygrid.domain.pipeline import NodeKind, PipelineEdge, PortName
 
 
@@ -298,6 +301,43 @@ def test_restoration_rejects_divergent_plan_content(change: str) -> None:
         edges=edges,
         resource_policy=resource_policy,
         connector_bindings=original.connector_bindings,
+    )
+    assert fingerprint_execution_plan(changed) != restored_state.plan_fingerprint
+    with pytest.raises(SchedulerInvalidStateError, match="plan fingerprint"):
+        DependencyTracker(changed, state=restored_state)
+
+
+def test_restoration_rejects_divergent_connector_snapshot() -> None:
+    connector_id = ConnectorId("con_sched-source")
+    node = replace(
+        _plan_node("a"),
+        kind=NodeKind("source.csv"),
+        connector_id=connector_id,
+        role=NodeRole.SOURCE,
+        connector_requirement=ConnectorRequirement.SOURCE,
+        retry_behavior=RetryBehavior.CONNECTOR,
+    )
+    binding = ConnectorBindingSnapshot(
+        connector_id=connector_id,
+        kind="csv-local",
+        revision=1,
+        configuration=ConfigurationDocument.from_mapping({"path": "inventory.csv"}),
+        capabilities=ConnectorCapabilitySet((ConnectorCapability.READ,)),
+        schema_discovery=None,
+        secret_references=(),
+    )
+    original = ExecutionPlan(
+        nodes=(node,),
+        edges=(),
+        resource_policy=ResourcePolicy(),
+        connector_bindings=(binding,),
+    )
+    tracker = DependencyTracker(original)
+    tracker.start(_id("a"))
+    restored_state = tracker.succeed(_id("a"))
+    changed = replace(
+        original,
+        connector_bindings=(replace(binding, revision=2),),
     )
     assert fingerprint_execution_plan(changed) != restored_state.plan_fingerprint
     with pytest.raises(SchedulerInvalidStateError, match="plan fingerprint"):
