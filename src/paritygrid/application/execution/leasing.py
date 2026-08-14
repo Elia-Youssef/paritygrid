@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import unicodedata
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import timedelta
+from enum import StrEnum
 from threading import Lock
 from typing import Protocol, cast, runtime_checkable
 
@@ -120,6 +122,14 @@ class WorkLeaseProtocolError(WorkLeaseOutcomeUnknownError):
 
 class WorkLeaseClockError(WorkLeaseError):
     """The injected clock failed or returned an invalid timestamp."""
+
+
+class WorkLeaseCompletionDisposition(StrEnum):
+    """Closed in-memory outcomes for a reserved completion boundary."""
+
+    RETAIN_ACTIVE = "retain_active"
+    RETIRE_COMMITTED = "retire_committed"
+    MARK_UNKNOWN = "mark_unknown"
 
 
 @runtime_checkable
@@ -250,6 +260,7 @@ class WorkLeaseServiceSnapshot:
 
 
 _LEASE_CONSTRUCTION_TOKEN = object()
+_COMPLETION_RESERVATION_TOKEN = object()
 
 
 @dataclass(frozen=True, slots=True, repr=False, init=False)
@@ -319,6 +330,36 @@ class WorkLease:
             f"lease_expires_at={self._claim.lease_expires_at!r}, "
             "owner=<redacted>, worker=<redacted>)"
         )
+
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class WorkLeaseCompletionReservation:
+    """Service-issued single-use authority for one result-submission boundary."""
+
+    _lease: WorkLease
+    _work_item_id: WorkItemId
+
+    def __init__(self, lease: WorkLease, *, _token: object) -> None:
+        if _token is not _COMPLETION_RESERVATION_TOKEN:
+            raise WorkLeaseOwnershipError("completion reservations are service-issued only")
+        _require_exact(lease, WorkLease, "completion reservation lease")
+        work_item_id = lease.claim.work_item_id
+        _require_exact(work_item_id, WorkItemId, "completion reservation work identity")
+        object.__setattr__(self, "_lease", lease)
+        object.__setattr__(self, "_work_item_id", work_item_id)
+
+    @property
+    def lease(self) -> WorkLease:
+        """Return the exact reserved lease wrapper."""
+        return self._lease
+
+    @property
+    def work_item_id(self) -> WorkItemId:
+        """Return the reserved work identity without ownership metadata."""
+        return self._work_item_id
+
+    def __repr__(self) -> str:
+        return "WorkLeaseCompletionReservation(authority=<redacted>)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,7 +452,15 @@ class _ActiveWorkLease:
 class WorkLeaseService:
     """Acquire and renew exact work claims through a borrowed serialized writer."""
 
-    __slots__ = ("_clock", "_in_flight", "_lock", "_settings", "_states", "_writer")
+    __slots__ = (
+        "_clock",
+        "_completions",
+        "_in_flight",
+        "_lock",
+        "_settings",
+        "_states",
+        "_writer",
+    )
 
     def __init__(
         self,
@@ -434,6 +483,7 @@ class WorkLeaseService:
         self._lock = Lock()
         self._states: dict[WorkItemId, _ActiveWorkLease | None] = {}
         self._in_flight: set[WorkItemId] = set()
+        self._completions: dict[WorkItemId, WorkLeaseCompletionReservation] = {}
 
     def acquire(self, request: AcquireWorkLeaseRequest) -> WorkLease:
         """Acquire one exact work claim or fail closed without forging authority."""
@@ -550,12 +600,159 @@ class WorkLeaseService:
                 raise WorkLeaseOwnershipError("work lease is not the active service capability")
             del self._states[work_item_id]
 
+    def reserve_completion(self, lease: WorkLease) -> WorkLeaseCompletionReservation:
+        """Reserve the exact active wrapper across one blocking result submission."""
+        _require_exact(lease, WorkLease, "work lease completion capability")
+        work_item_id = _lease_work_item_id(lease)
+        with self._lock:
+            state = self._states.get(work_item_id)
+            if work_item_id in self._in_flight:
+                raise WorkLeaseBusyError("work identity already has a lease operation")
+            if state is None or not _active_lease_matches(state, lease):
+                raise WorkLeaseOwnershipError("work lease is not the active service capability")
+            reservation = WorkLeaseCompletionReservation(
+                lease,
+                _token=_COMPLETION_RESERVATION_TOKEN,
+            )
+            try:
+                self._completions[work_item_id] = reservation
+                self._in_flight.add(work_item_id)
+            except BaseException:
+                self._restore_interrupted_completion_reservation(work_item_id)
+                raise
+            return reservation
+
+    def finalize_completion(
+        self,
+        reservation: WorkLeaseCompletionReservation,
+        disposition: WorkLeaseCompletionDisposition,
+    ) -> None:
+        """Apply one exact terminal disposition to a service-issued reservation."""
+        _require_exact(
+            disposition,
+            WorkLeaseCompletionDisposition,
+            "work lease completion disposition",
+        )
+        fallback_work_item_id = _completion_reservation_work_item_id(reservation)
+        if fallback_work_item_id is None:
+            with self._lock:
+                work_item_id, _ = self._completion_state(reservation)
+                self._poison_interrupted_completion_finalization(work_item_id)
+            raise WorkLeaseOwnershipError("completion reservation evidence is invalid")
+        corrupted = False
+        with self._lock:
+            work_item_id = fallback_work_item_id
+            registered = False
+            try:
+                selected_state = self._registered_completion_state(reservation)
+                if selected_state is None:
+                    raise WorkLeaseOwnershipError("completion reservation is not active")
+                work_item_id, selected = selected_state
+                registered = True
+                if work_item_id not in self._in_flight:
+                    raise WorkLeaseOwnershipError("completion reservation is not active")
+                active = self._states.get(work_item_id)
+                if (
+                    active is None
+                    or not _completion_reservation_matches(selected, work_item_id)
+                    or not _active_lease_matches(active, selected.lease)
+                ):
+                    corrupted = True
+                    disposition = WorkLeaseCompletionDisposition.MARK_UNKNOWN
+                del self._completions[work_item_id]
+                self._in_flight.remove(work_item_id)
+                if disposition is WorkLeaseCompletionDisposition.RETIRE_COMMITTED:
+                    del self._states[work_item_id]
+                elif disposition is WorkLeaseCompletionDisposition.MARK_UNKNOWN:
+                    self._states[work_item_id] = None
+            except WorkLeaseError:
+                if registered:
+                    self._poison_interrupted_completion_finalization(work_item_id)
+                raise
+            except BaseException:
+                self._poison_interrupted_completion_finalization(work_item_id)
+                raise
+        if corrupted:
+            raise WorkLeaseOwnershipError(
+                "completion reservation is not backed by the active lease"
+            ) from None
+
     def snapshot(self) -> WorkLeaseServiceSnapshot:
         """Return bounded transient ownership counts under one service lock."""
         with self._lock:
             active = sum(state is not None for state in self._states.values())
             unknown = len(self._states) - active
             return WorkLeaseServiceSnapshot(active, unknown, len(self._in_flight))
+
+    def _completion_state(
+        self,
+        reservation: WorkLeaseCompletionReservation,
+    ) -> tuple[WorkItemId, WorkLeaseCompletionReservation]:
+        selected_state = self._registered_completion_state(reservation)
+        if selected_state is None or selected_state[0] not in self._in_flight:
+            raise WorkLeaseOwnershipError("completion reservation is not active")
+        return selected_state
+
+    def _registered_completion_state(
+        self,
+        reservation: WorkLeaseCompletionReservation,
+    ) -> tuple[WorkItemId, WorkLeaseCompletionReservation] | None:
+        _require_exact(
+            reservation,
+            WorkLeaseCompletionReservation,
+            "work lease completion reservation",
+        )
+        selected = reservation
+        for candidate_id, candidate in self._completions.items():
+            if candidate is selected:
+                return candidate_id, selected
+        return None
+
+    def _restore_interrupted_completion_reservation(
+        self,
+        work_item_id: WorkItemId,
+    ) -> None:
+        clean = self._clear_completion_transients(work_item_id)
+        if not clean:
+            _suppress_base_exception(lambda: self._states.__setitem__(work_item_id, None))
+
+    def _poison_interrupted_completion_finalization(
+        self,
+        work_item_id: WorkItemId,
+    ) -> None:
+        _suppress_base_exception(lambda: self._states.__setitem__(work_item_id, None))
+        self._clear_completion_transients(work_item_id)
+
+    def _clear_completion_transients(self, work_item_id: WorkItemId) -> bool:
+        _suppress_base_exception(lambda: self._completions.pop(work_item_id, None))
+        _suppress_base_exception(lambda: self._in_flight.discard(work_item_id))
+        if self._completion_transients_absent(work_item_id):
+            return True
+        _suppress_base_exception(
+            lambda: setattr(
+                self,
+                "_completions",
+                {
+                    candidate_id: candidate
+                    for candidate_id, candidate in self._completions.items()
+                    if candidate_id != work_item_id
+                },
+            )
+        )
+        _suppress_base_exception(
+            lambda: setattr(
+                self,
+                "_in_flight",
+                {candidate for candidate in self._in_flight if candidate != work_item_id},
+            )
+        )
+        return self._completion_transients_absent(work_item_id)
+
+    def _completion_transients_absent(self, work_item_id: WorkItemId) -> bool:
+        try:
+            return work_item_id not in self._completions and work_item_id not in self._in_flight
+        except BaseException:
+            return False
 
     def _reserve_acquisition(self, work_item_id: WorkItemId) -> None:
         with self._lock:
@@ -864,6 +1061,77 @@ def _validate_result_row_version(value: object, subject: str) -> None:
         raise WorkLeaseProtocolError(f"{subject} is outside the supported range")
 
 
+def _lease_work_item_id(lease: WorkLease) -> WorkItemId:
+    malformed = False
+    try:
+        claim = lease.claim
+        work_item_id = claim.work_item_id
+    except Exception:
+        malformed = True
+        claim = None
+        work_item_id = None
+    if (
+        malformed
+        or type(claim) is not WorkClaim
+        or type(work_item_id) is not WorkItemId
+        or type(work_item_id.value) is not str
+    ):
+        raise WorkLeaseOwnershipError("work lease identity evidence is invalid") from None
+    return work_item_id
+
+
+def _active_lease_matches(state: _ActiveWorkLease, lease: WorkLease) -> bool:
+    failed = False
+    try:
+        matches = state.matches(lease)
+    except Exception:
+        failed = True
+        matches = False
+    return not failed and matches
+
+
+def _completion_reservation_matches(
+    reservation: WorkLeaseCompletionReservation,
+    work_item_id: WorkItemId,
+) -> bool:
+    failed = False
+    try:
+        reserved_work_item_id = reservation.work_item_id
+        lease = reservation.lease
+    except Exception:
+        failed = True
+        reserved_work_item_id = None
+        lease = None
+    return (
+        not failed
+        and type(reserved_work_item_id) is WorkItemId
+        and type(reserved_work_item_id.value) is str
+        and reserved_work_item_id == work_item_id
+        and type(lease) is WorkLease
+    )
+
+
+def _completion_reservation_work_item_id(
+    reservation: WorkLeaseCompletionReservation,
+) -> WorkItemId | None:
+    failed = False
+    try:
+        work_item_id = reservation.work_item_id
+    except Exception:
+        failed = True
+        work_item_id = None
+    if failed or type(work_item_id) is not WorkItemId or type(work_item_id.value) is not str:
+        return None
+    return work_item_id
+
+
+def _suppress_base_exception(operation: Callable[[], object]) -> None:
+    try:
+        operation()
+    except BaseException:
+        return
+
+
 def _validate_event_frontier(request: EventAppendRequest) -> None:
     _require_exact(request.expected_next_sequence, EventSequence, "lease event sequence")
     if int(request.expected_next_sequence) >= MAX_LEASE_ROW_VERSION:
@@ -938,6 +1206,8 @@ __all__ = [
     "WorkLeaseBusyError",
     "WorkLeaseClock",
     "WorkLeaseClockError",
+    "WorkLeaseCompletionDisposition",
+    "WorkLeaseCompletionReservation",
     "WorkLeaseError",
     "WorkLeaseExpiredError",
     "WorkLeaseInvalidRequestError",
