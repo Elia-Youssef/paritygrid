@@ -110,6 +110,7 @@ def test_node_sorts_runners_and_maps_exact_logical_metadata() -> None:
         "connector_requirement": "none",
         "id": "nod_step-001",
         "kind": "transform.normalize",
+        "partition_strategy": {"kind": "single", "partition_count": 1, "version": 1},
         "requires_idempotency": False,
         "retry_behavior": "never",
         "role": "transform",
@@ -132,6 +133,7 @@ def test_node_sorts_runners_and_maps_exact_logical_metadata() -> None:
         ("supported_runners", ("sequential",), "invalid value"),
         ("retry_behavior", "never", "RetryBehavior"),
         ("requires_idempotency", 1, "boolean"),
+        ("partition_strategy", {}, "PartitionStrategy"),
     ],
 )
 def test_node_requires_exact_public_types(field: str, value: object, message: str) -> None:

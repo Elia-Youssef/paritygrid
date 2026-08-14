@@ -15,6 +15,11 @@ from paritygrid.application.planner.connectors import (
     required_connector_capabilities,
 )
 from paritygrid.application.planner.graph import topological_node_order, validate_acyclic_graph
+from paritygrid.application.planner.partitions import (
+    SINGLE_PARTITION_STRATEGY,
+    PartitionStrategy,
+    partition_strategy_from_configuration,
+)
 from paritygrid.application.planner.port_validation import validate_typed_ports
 from paritygrid.application.planner.publication import PublishedPipelineSpecification
 from paritygrid.application.planner.reachability import validate_graph_reachability
@@ -59,6 +64,7 @@ class ExecutionPlanNode:
     supported_runners: tuple[PlannerRunnerKind, ...]
     retry_behavior: RetryBehavior
     requires_idempotency: bool
+    partition_strategy: PartitionStrategy = SINGLE_PARTITION_STRATEGY
 
     def __post_init__(self) -> None:
         _require_exact(self.node_id, NodeId, "execution-plan node identity")
@@ -96,6 +102,11 @@ class ExecutionPlanNode:
         _require_exact(self.retry_behavior, RetryBehavior, "execution-plan node retry behavior")
         if type(self.requires_idempotency) is not bool:
             raise TypeError("execution-plan node idempotency marker must be boolean")
+        _require_exact(
+            self.partition_strategy,
+            PartitionStrategy,
+            "execution-plan node partition strategy",
+        )
         if self.connector_requirement is ConnectorRequirement.NONE and connector is not None:
             raise InvalidExecutionPlanError("execution-plan node does not permit a connector")
         if self.connector_requirement is not ConnectorRequirement.NONE and connector is None:
@@ -115,6 +126,7 @@ class ExecutionPlanNode:
             "connector_requirement": self.connector_requirement.value,
             "id": str(self.node_id),
             "kind": str(self.kind),
+            "partition_strategy": self.partition_strategy.to_mapping(),
             "requires_idempotency": self.requires_idempotency,
             "retry_behavior": self.retry_behavior.value,
             "role": self.role.value,
@@ -238,6 +250,10 @@ def compile_execution_plan(specification: PublishedPipelineSpecification) -> Exe
                 supported_runners=definition.supported_runners,
                 retry_behavior=definition.retry_behavior,
                 requires_idempotency=definition.requires_idempotency,
+                partition_strategy=partition_strategy_from_configuration(
+                    node.kind,
+                    node.configuration,
+                ),
             )
         )
     return ExecutionPlan(
