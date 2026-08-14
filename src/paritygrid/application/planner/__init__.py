@@ -62,6 +62,14 @@ from paritygrid.application.planner.partitions import (
     PartitionStrategyKind,
     partition_strategy_from_configuration,
 )
+from paritygrid.application.planner.plan_fingerprint import (
+    PLAN_FINGERPRINT_ALGORITHM,
+    PLAN_FINGERPRINT_HEX_LENGTH,
+    PLAN_FINGERPRINT_VERSION,
+    InvalidPlanFingerprintError,
+    PlanFingerprint,
+    PlanFingerprintError,
+)
 from paritygrid.application.planner.port_validation import (
     ports_are_compatible,
     validate_typed_ports,
@@ -185,6 +193,9 @@ __all__ = [
     "PARTITION_STRATEGY_VERSION",
     "PIPELINE_DOCUMENT_SCHEMA_VERSION",
     "PIPELINE_PLANNER_FORMAT_VERSION",
+    "PLAN_FINGERPRINT_ALGORITHM",
+    "PLAN_FINGERPRINT_HEX_LENGTH",
+    "PLAN_FINGERPRINT_VERSION",
     "PUBLISHED_PIPELINE_SPECIFICATION_VERSION",
     "SINGLE_PARTITION_STRATEGY",
     "ConnectorBindingSnapshot",
@@ -205,6 +216,7 @@ __all__ = [
     "InvalidPartitionIndexError",
     "InvalidPipelineDocumentError",
     "InvalidPipelineTerminalError",
+    "InvalidPlanFingerprintError",
     "InvalidPortConnectionError",
     "InvalidPublishedSpecificationError",
     "MissingConnectorCapabilityError",
@@ -229,6 +241,8 @@ __all__ = [
     "PipelinePublicationError",
     "PipelinePublicationService",
     "PipelineReachabilityError",
+    "PlanFingerprint",
+    "PlanFingerprintError",
     "PlannerRunnerKind",
     "PortContractError",
     "PortValueType",
