@@ -35,6 +35,7 @@ from paritygrid.application.ports.writer import (
 )
 from paritygrid.application.writes.execution import (
     WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
+    WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION,
     BootstrapWork,
     CheckpointWrite,
     ClaimWork,
@@ -147,6 +148,34 @@ def claim_event_request(sequence: int, work_item_id: WorkItemId) -> EventAppendR
     )
 
 
+def completion_event_request(index: int, finished: UtcTimestamp) -> EventAppendRequest:
+    return EventAppendRequest(
+        expected_next_sequence=EventSequence(9 + index),
+        expected_counter_row_version=9 + index,
+        event=PendingExecutionEvent(
+            event_kind="checkpoint_committed",
+            occurred_at=finished,
+            subject_kind=EventSubjectKind.WORK_ITEM,
+            subject_id=WORK_IDS[index],
+            correlation_id=CORRELATION_ID,
+            payload_schema_version=WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION,
+            payload=RedactedDocument.from_mapping(
+                {
+                    "artifact_id": None,
+                    "attempt_number": 1,
+                    "checkpoint_payload_schema_version": 1,
+                    "failure_classification": None,
+                    "node_id": str(NODE_ID),
+                    "partition_key": str(PARTITIONS[index]),
+                    "retry_available_at": None,
+                    "runner_kind": RUNNER_KIND,
+                    "target_state": WorkItemState.SUCCEEDED.value,
+                }
+            ),
+        ),
+    )
+
+
 def create_run_command(seed: int) -> CreateCapturedRun:
     return CreateCapturedRun(
         run_id=RUN_ID,
@@ -243,7 +272,7 @@ def completion_command(index: int) -> CommitWorkWithCheckpoint:
             bytes_processed=100 * ordinal,
         ),
         checkpoint=CheckpointWrite(
-            expected_head_row_version=1,
+            expected_partition_key=PARTITIONS[index],
             payload_schema_version=1,
             source_cursor=document(offset=ordinal),
             output_position=document(rows=records),
@@ -259,12 +288,7 @@ def completion_command(index: int) -> CommitWorkWithCheckpoint:
         ),
         expected_node_row_version=7 + index,
         expected_run_row_version=8 + index,
-        event=event_request(
-            9 + index,
-            "checkpoint_committed",
-            WORK_IDS[index],
-            finished,
-        ),
+        event=completion_event_request(index, finished),
     )
 
 
@@ -521,6 +545,29 @@ def _claim_event_row(sequence: int, work_item_id: WorkItemId) -> tuple[object, .
     )
 
 
+def _completion_event_row(index: int) -> tuple[object, ...]:
+    return (
+        str(RUN_ID),
+        9 + index,
+        "checkpoint_committed",
+        str(timestamp(5 + index)),
+        "work_item",
+        str(WORK_IDS[index]),
+        CORRELATION_ID,
+        WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION,
+        (
+            '{"artifact_id":null,"attempt_number":1,'
+            '"checkpoint_payload_schema_version":1,'
+            '"failure_classification":null,'
+            f'"node_id":"{NODE_ID}",'
+            f'"partition_key":"{PARTITIONS[index]}",'
+            '"retry_available_at":null,'
+            f'"runner_kind":"{RUNNER_KIND}",'
+            '"target_state":"succeeded"}'
+        ),
+    )
+
+
 def expected_projection(seed: int, committed: bool) -> CrashDatabaseProjection:
     events = [
         _event_row(1, "run_created", RUN_ID, timestamp(1)),
@@ -530,7 +577,7 @@ def expected_projection(seed: int, committed: bool) -> CrashDatabaseProjection:
         events.append(_event_row(3 + index * 2, "work_created", WORK_IDS[index], timestamp(3)))
         events.append(_claim_event_row(4 + index * 2, WORK_IDS[index]))
     if committed:
-        events.append(_event_row(9, "checkpoint_committed", WORK_IDS[0], timestamp(5)))
+        events.append(_completion_event_row(0))
     return CrashDatabaseProjection(
         run=_run_row(seed, 9 if committed else 8),
         counter=(str(RUN_ID), 10 if committed else 9, 10 if committed else 9),

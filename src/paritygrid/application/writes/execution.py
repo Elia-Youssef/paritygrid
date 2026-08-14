@@ -34,13 +34,14 @@ from paritygrid.domain.pipeline import PartitionKey
 # Version 1 lease-event payloads were intentionally generic. Version 2 is the
 # first command-derived shape and must not reinterpret append-only legacy rows.
 WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION = 2
+WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION = 2
 
 
 @dataclass(frozen=True, slots=True, repr=False)
 class CheckpointWrite:
     """Checkpoint fields installed after a winning work completion."""
 
-    expected_head_row_version: int
+    expected_partition_key: PartitionKey
     payload_schema_version: int
     source_cursor: ConfigurationDocument | None
     output_position: ConfigurationDocument | None
@@ -295,6 +296,7 @@ class FinalizeEmptyRunNodeResult:
 
 __all__ = [
     "WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION",
+    "WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION",
     "BootstrapWork",
     "BootstrapWorkResult",
     "CheckpointWrite",

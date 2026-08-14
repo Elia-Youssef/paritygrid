@@ -33,6 +33,7 @@ from paritygrid.application.ports.consistency import (
     RedactedDocument,
 )
 from paritygrid.application.ports.execution import (
+    ExecutionStateConflictError,
     RunRecord,
     WorkClaim,
     WorkCompletion,
@@ -59,6 +60,7 @@ from paritygrid.application.ports.writer import (
 )
 from paritygrid.application.writes.execution import (
     WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
+    WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION,
     BootstrapWork,
     BootstrapWorkResult,
     CheckpointWrite,
@@ -91,8 +93,9 @@ from paritygrid.application.writes.repairs import (
     RepairCompanions,
     RepairMutationResult,
 )
-from paritygrid.domain.execution import RunState, WorkItemState
+from paritygrid.domain.execution import FailureClassification, RunState, WorkItemState
 from paritygrid.domain.models import (
+    ArtifactId,
     AttemptNumber,
     NodeId,
     PipelineId,
@@ -361,12 +364,14 @@ def _commit_with_checkpoint(session: Session, command: CommitWorkWithCheckpoint)
         command.claim, command.completion
     )
     _require_work_parent(completed.work_item, command.run_id, command.node_id)
+    if completed.work_item.partition_key != command.checkpoint.expected_partition_key:
+        raise ExecutionStateConflictError("checkpoint partition does not match durable work")
     checkpoint = SqlAlchemyCheckpointRepository(session).append(
         command.run_id,
         command.node_id,
         completed.work_item.partition_key,
         expected_current_version=CheckpointVersion(completed.work_item.expected_checkpoint_version),
-        expected_head_row_version=command.checkpoint.expected_head_row_version,
+        expected_head_row_version=completed.work_item.expected_checkpoint_version + 1,
         expected_work_row_version=completed.work_item.row_version,
         payload_schema_version=command.checkpoint.payload_schema_version,
         source_cursor=command.checkpoint.source_cursor,
@@ -640,6 +645,22 @@ def _validate_completion_command(
     _positive(command.expected_node_row_version, "node row version")
     _positive(command.expected_run_row_version, "run row version")
     target = command.completion.target_state
+    _exact(target, WorkItemState, "completion target")
+    _exact(command.completion.finished_at, UtcTimestamp, "completion finish time")
+    classification = command.completion.failure_classification
+    if target is WorkItemState.SUCCEEDED:
+        if classification is not None:
+            raise WriterInvalidRequestError("successful completion cannot have a failure class")
+    else:
+        _exact(classification, FailureClassification, "completion failure classification")
+    retry_at = command.completion.retry_available_at
+    if target is WorkItemState.RETRY_WAIT:
+        _exact(retry_at, UtcTimestamp, "completion retry availability")
+    elif retry_at is not None:
+        raise WriterInvalidRequestError("only retry completion has retry availability")
+    if command.completion.redacted_detail is not None:
+        _bounded_text(command.completion.redacted_detail, "completion detail")
+    _optional_document(command.completion.result_reference, "completion result reference")
     if isinstance(command, CommitWorkAttempt):
         if target is WorkItemState.SUCCEEDED:
             raise WriterInvalidRequestError("successful work requires a checkpoint")
@@ -649,13 +670,42 @@ def _validate_completion_command(
             raise WriterInvalidRequestError("checkpointed work must succeed")
         if type(command.checkpoint) is not CheckpointWrite:
             raise WriterInvalidRequestError("checkpoint write type is invalid")
-        _positive(command.checkpoint.expected_head_row_version, "checkpoint row version")
+        _exact(command.checkpoint.expected_partition_key, PartitionKey, "checkpoint partition")
         _positive(command.checkpoint.payload_schema_version, "checkpoint schema version")
         _optional_document(command.checkpoint.source_cursor, "checkpoint source cursor")
         _optional_document(command.checkpoint.output_position, "checkpoint output position")
+        if command.checkpoint.artifact_id is not None:
+            _exact(command.checkpoint.artifact_id, ArtifactId, "checkpoint artifact identity")
         _exact(command.checkpoint.committed_at, UtcTimestamp, "checkpoint commit time")
         event_kind = "checkpoint_committed"
-    _validate_work_event(command.event, command.run_id, claim.work_item_id, event_kind)
+    event = _validate_work_event(command.event, command.run_id, claim.work_item_id, event_kind)
+    if event.occurred_at != command.completion.finished_at:
+        raise WriterInvalidRequestError("durable result event time is inconsistent")
+    if event.payload_schema_version != WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION:
+        raise WriterInvalidRequestError("durable result event schema is inconsistent")
+    payload = _exact(event.payload, RedactedDocument, "durable result event payload")
+    expected_payload: dict[str, object] = {
+        "attempt_number": int(claim.attempt_number),
+        "failure_classification": None if classification is None else classification.value,
+        "node_id": str(command.node_id),
+        "retry_available_at": None if retry_at is None else str(retry_at),
+        "runner_kind": claim.runner_kind,
+        "target_state": target.value,
+    }
+    if isinstance(command, CommitWorkWithCheckpoint):
+        expected_payload.update(
+            {
+                "artifact_id": (
+                    None
+                    if command.checkpoint.artifact_id is None
+                    else str(command.checkpoint.artifact_id)
+                ),
+                "checkpoint_payload_schema_version": command.checkpoint.payload_schema_version,
+                "partition_key": str(command.checkpoint.expected_partition_key),
+            }
+        )
+    if payload.to_mapping() != expected_payload:
+        raise WriterInvalidRequestError("durable result event payload is inconsistent")
 
 
 def _validate_repair_command(command: RepairCommand) -> None:
