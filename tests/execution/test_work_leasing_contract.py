@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from threading import Event, Thread
 from traceback import format_exception
@@ -294,6 +294,7 @@ def _acquire_request() -> AcquireWorkLeaseRequest:
         run_id=RUN_ID,
         node_id=NODE_ID,
         work_item_id=WORK_ID,
+        expected_attempt_number=AttemptNumber(1),
         expected_work_row_version=1,
         expected_node_row_version=2,
         expected_run_row_version=3,
@@ -386,11 +387,12 @@ def test_settings_reject_invalid_values(
         ("run_id", "run", TypeError, "RunId"),
         ("node_id", "node", TypeError, "NodeId"),
         ("work_item_id", "work", TypeError, "WorkItemId"),
+        ("expected_attempt_number", 1, TypeError, "AttemptNumber"),
         ("expected_work_row_version", True, TypeError, "integer"),
         ("expected_node_row_version", 0, WorkLeaseInvalidRequestError, "supported range"),
         (
             "expected_run_row_version",
-            MAX_LEASE_ROW_VERSION + 1,
+            MAX_LEASE_ROW_VERSION,
             WorkLeaseInvalidRequestError,
             "supported range",
         ),
@@ -416,6 +418,7 @@ def test_acquisition_request_rejects_invalid_values(
         "run_id": RUN_ID,
         "node_id": NODE_ID,
         "work_item_id": WORK_ID,
+        "expected_attempt_number": AttemptNumber(1),
         "expected_work_row_version": 1,
         "expected_node_row_version": 2,
         "expected_run_row_version": 3,
@@ -441,6 +444,33 @@ def test_request_text_upper_bounds_and_renewal_validation() -> None:
         RenewWorkLeaseRequest(cast(Any, True), _event(5, "work_claim_renewed", 4))
     with pytest.raises(TypeError, match="EventAppendRequest"):
         RenewWorkLeaseRequest(4, cast(Any, object()))
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        replace(
+            _event(4, "work_claimed", 3),
+            expected_next_sequence=cast(Any, object()),
+        ),
+        replace(
+            _event(4, "work_claimed", 3),
+            expected_next_sequence=EventSequence(MAX_LEASE_ROW_VERSION),
+        ),
+        replace(
+            _event(4, "work_claimed", 3),
+            expected_counter_row_version=MAX_LEASE_ROW_VERSION,
+        ),
+    ],
+)
+def test_requests_reject_non_incrementable_event_frontiers(event: EventAppendRequest) -> None:
+    error = (
+        TypeError
+        if type(event.expected_next_sequence) is not EventSequence
+        else WorkLeaseInvalidRequestError
+    )
+    with pytest.raises(error):
+        replace(_acquire_request(), event=event)
 
 
 @pytest.mark.parametrize("values", [(True, 0, 0), (0, -1, 0), (0, 0, -1)])
@@ -539,6 +569,20 @@ def test_work_lease_constructor_is_service_only_and_validates_exact_inputs() -> 
         )
 
 
+def test_issued_lease_is_frozen_and_internal_identity_defeats_reflective_reconstruction() -> None:
+    service, _ = _service()
+    lease = service.acquire(_acquire_request())
+    original = lease.claim
+    reconstructed = replace(original)
+    assert reconstructed == original
+    assert reconstructed is not original
+    with pytest.raises(FrozenInstanceError):
+        lease._claim = reconstructed  # type: ignore[misc]
+    object.__setattr__(lease, "_claim", reconstructed)
+    with pytest.raises(WorkLeaseOwnershipError, match="active"):
+        service.renew(lease, _renew_request())
+
+
 def test_acquire_and_renew_require_exact_public_contracts() -> None:
     service, _ = _service()
     with pytest.raises(TypeError, match="AcquireWorkLeaseRequest"):
@@ -550,6 +594,14 @@ def test_acquire_and_renew_require_exact_public_contracts() -> None:
         service.renew(lease, cast(Any, object()))
     with pytest.raises(TypeError, match="WorkLease"):
         service.retire(cast(Any, object()))
+
+
+def test_acquisition_requires_the_exact_expected_attempt_number() -> None:
+    service, _ = _service()
+    request = replace(_acquire_request(), expected_attempt_number=AttemptNumber(2))
+    with pytest.raises(WorkLeaseProtocolError, match="claim result"):
+        service.acquire(request)
+    assert service.snapshot() == WorkLeaseServiceSnapshot(0, 1, 0)
 
 
 def test_active_and_overlapping_operations_fail_closed_per_work_identity() -> None:
@@ -621,6 +673,56 @@ def test_foreign_and_expired_renewals_never_reach_the_writer() -> None:
         expired.renew(expired_lease, _renew_request())
     assert len(expired_writer.commands) == 1
     assert expired.snapshot() == WorkLeaseServiceSnapshot(1, 0, 0)
+
+
+def test_non_incrementable_claim_cannot_be_renewed() -> None:
+    def factory(command: WriterCommand, identity: WriterSubmissionId) -> _Ticket:
+        receipt = _valid_receipt(command, identity)
+        result = cast(ClaimWorkResult, receipt.result)
+        claim = replace(result.claim, row_version=MAX_LEASE_ROW_VERSION)
+        node = replace(result.node, row_version=MAX_LEASE_ROW_VERSION)
+        run = replace(result.run, row_version=MAX_LEASE_ROW_VERSION)
+        return _Ticket(
+            identity, replace(receipt, result=replace(result, claim=claim, node=node, run=run))
+        )
+
+    service, writer = _service(
+        _Writer(factory),
+        _Clock(_timestamp(3), _timestamp(4), _timestamp(5)),
+    )
+    request = replace(
+        _acquire_request(),
+        expected_work_row_version=MAX_LEASE_ROW_VERSION - 1,
+        expected_node_row_version=MAX_LEASE_ROW_VERSION - 1,
+        expected_run_row_version=MAX_LEASE_ROW_VERSION - 1,
+    )
+    lease = service.acquire(request)
+    with pytest.raises(WorkLeaseInvalidRequestError, match="cannot advance"):
+        service.renew(lease, _renew_request())
+    assert len(writer.commands) == 1
+    assert service.snapshot() == WorkLeaseServiceSnapshot(1, 0, 0)
+
+
+def test_safe_renewal_failure_preserves_the_previous_active_capability() -> None:
+    call = 0
+
+    def factory(command: WriterCommand, identity: WriterSubmissionId) -> _Ticket:
+        nonlocal call
+        call += 1
+        if call == 2:
+            return _Ticket(identity, WriterDefinitelyNotExecutedError("safe"))
+        return _Ticket(identity, _valid_receipt(command, identity))
+
+    service, writer = _service(
+        _Writer(factory),
+        _Clock(_timestamp(3), _timestamp(4), _timestamp(5)),
+    )
+    lease = service.acquire(_acquire_request())
+    with pytest.raises(WorkLeaseWriterError, match="not committed"):
+        service.renew(lease, _renew_request())
+    assert service.snapshot() == WorkLeaseServiceSnapshot(1, 0, 0)
+    assert service.renew(lease, _renew_request()).claim.row_version == 3
+    assert len(writer.commands) == 3
 
 
 @pytest.mark.parametrize("clock_value", [RuntimeError("clock /secret"), object()])
@@ -757,6 +859,51 @@ def test_none_ticket_is_protocol_unknown() -> None:
     assert service.snapshot() == WorkLeaseServiceSnapshot(0, 1, 0)
 
 
+def test_interrupt_after_committed_acquisition_receipt_poisoned_before_validation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = leasing_module.WorkLeaseService._execute
+
+    def commit_then_interrupt(
+        service: WorkLeaseService,
+        command: WriterCommand,
+        work_item_id: WorkItemId,
+    ) -> WriterReceipt:
+        original(service, command, work_item_id)
+        raise _Fatal("post-commit")
+
+    monkeypatch.setattr(leasing_module.WorkLeaseService, "_execute", commit_then_interrupt)
+    service, writer = _service()
+    with pytest.raises(_Fatal, match="post-commit"):
+        service.acquire(_acquire_request())
+    assert len(writer.commands) == 1
+    assert service.snapshot() == WorkLeaseServiceSnapshot(0, 1, 0)
+
+
+def test_interrupt_after_committed_renewal_receipt_invalidates_previous_lease(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    service, writer = _service()
+    lease = service.acquire(_acquire_request())
+    original = leasing_module.WorkLeaseService._execute
+
+    def commit_then_interrupt(
+        current: WorkLeaseService,
+        command: WriterCommand,
+        work_item_id: WorkItemId,
+    ) -> WriterReceipt:
+        original(current, command, work_item_id)
+        raise _Fatal("post-commit")
+
+    monkeypatch.setattr(leasing_module.WorkLeaseService, "_execute", commit_then_interrupt)
+    with pytest.raises(_Fatal, match="post-commit"):
+        service.renew(lease, _renew_request())
+    assert len(writer.commands) == 2
+    assert service.snapshot() == WorkLeaseServiceSnapshot(0, 1, 0)
+    with pytest.raises(WorkLeaseOwnershipError):
+        service.renew(lease, _renew_request())
+
+
 @pytest.mark.parametrize("identity", [object(), "submission-1"])
 def test_invalid_ticket_identity_is_protocol_unknown(identity: object) -> None:
     writer = _Writer(lambda command, valid: _Ticket(identity, _valid_receipt(command, valid)))
@@ -841,6 +988,13 @@ _CLAIM_RESULT_CASES: list[tuple[_ClaimResultTransform, str]] = [
         "claim result",
     ),
     (
+        lambda result, _command: replace(
+            result,
+            claim=replace(result.claim, row_version=MAX_LEASE_ROW_VERSION + 1),
+        ),
+        "claim row version",
+    ),
+    (
         lambda result, _command: replace(result, node=cast(Any, object())),
         "RunNodeRecord",
     ),
@@ -851,6 +1005,13 @@ _CLAIM_RESULT_CASES: list[tuple[_ClaimResultTransform, str]] = [
         "node result",
     ),
     (
+        lambda result, _command: replace(
+            result,
+            node=replace(result.node, row_version=MAX_LEASE_ROW_VERSION + 1),
+        ),
+        "node row version",
+    ),
+    (
         lambda result, _command: replace(result, run=cast(Any, object())),
         "RunRecord",
     ),
@@ -859,12 +1020,29 @@ _CLAIM_RESULT_CASES: list[tuple[_ClaimResultTransform, str]] = [
         "run result",
     ),
     (
+        lambda result, _command: replace(
+            result,
+            run=replace(result.run, row_version=MAX_LEASE_ROW_VERSION + 1),
+        ),
+        "run row version",
+    ),
+    (
         lambda result, _command: replace(result, events=cast(Any, object())),
         "ExecutionEventBatch",
     ),
     (
         lambda result, _command: replace(
             result, events=ExecutionEventBatch((), EventSequence(5), 5)
+        ),
+        "event result shape",
+    ),
+    (
+        lambda result, _command: replace(
+            result,
+            events=replace(
+                result.events,
+                counter_row_version=MAX_LEASE_ROW_VERSION + 1,
+            ),
         ),
         "event result shape",
     ),
@@ -890,7 +1068,7 @@ def test_malformed_claim_evidence_is_protocol_unknown(
         return _replace_claim_result(receipt, result_transform, command)
 
     service, _ = _service(_Writer(_receipt_factory(transform)))
-    with pytest.raises((TypeError, WorkLeaseProtocolError), match=message):
+    with pytest.raises(WorkLeaseProtocolError, match=message):
         service.acquire(_acquire_request())
     assert service.snapshot() == WorkLeaseServiceSnapshot(0, 1, 0)
 
@@ -947,8 +1125,23 @@ def test_malformed_renewal_result_type_run_and_events_are_protocol_unknown() -> 
         lambda result: replace(result, run=cast(Any, object())),
         lambda result: replace(result, run=replace(result.run, run_id=RunId("run_other"))),
         lambda result: replace(result, events=cast(Any, object())),
+        lambda result: replace(
+            result,
+            claim=replace(result.claim, row_version=MAX_LEASE_ROW_VERSION + 1),
+        ),
+        lambda result: replace(
+            result,
+            run=replace(result.run, row_version=MAX_LEASE_ROW_VERSION + 1),
+        ),
     ]
-    messages = ["renewal result type", "RunRecord", "renewal run", "ExecutionEventBatch"]
+    messages = [
+        "renewal result type",
+        "RunRecord",
+        "renewal run",
+        "ExecutionEventBatch",
+        "renewal row version",
+        "run row version",
+    ]
     for mutation, message in zip(mutations, messages, strict=True):
         call = 0
 
@@ -969,7 +1162,7 @@ def test_malformed_renewal_result_type_run_and_events_are_protocol_unknown() -> 
 
         service, _ = _service(_Writer(factory))
         lease = service.acquire(_acquire_request())
-        with pytest.raises((TypeError, WorkLeaseProtocolError), match=message):
+        with pytest.raises(WorkLeaseProtocolError, match=message):
             service.renew(lease, _renew_request())
         assert service.snapshot() == WorkLeaseServiceSnapshot(0, 1, 0)
 

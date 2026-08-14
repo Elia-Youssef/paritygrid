@@ -186,6 +186,7 @@ def test_acquire_and_renew_commit_atomically_and_survive_database_restart(tmp_pa
                 run_id=RUN_ID,
                 node_id=NODE_ID,
                 work_item_id=WORK_ID,
+                expected_attempt_number=AttemptNumber(1),
                 expected_work_row_version=1,
                 expected_node_row_version=2,
                 expected_run_row_version=3,

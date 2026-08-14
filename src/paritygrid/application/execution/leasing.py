@@ -37,6 +37,7 @@ from paritygrid.application.writes import (
     RenewWorkClaimResult,
 )
 from paritygrid.domain.models import (
+    AttemptNumber,
     Duration,
     NodeId,
     RunId,
@@ -144,6 +145,7 @@ class AcquireWorkLeaseRequest:
     run_id: RunId
     node_id: NodeId
     work_item_id: WorkItemId
+    expected_attempt_number: AttemptNumber
     expected_work_row_version: int
     expected_node_row_version: int
     expected_run_row_version: int
@@ -156,6 +158,7 @@ class AcquireWorkLeaseRequest:
         _require_exact(self.run_id, RunId, "lease run identity")
         _require_exact(self.node_id, NodeId, "lease node identity")
         _require_exact(self.work_item_id, WorkItemId, "lease work identity")
+        _require_exact(self.expected_attempt_number, AttemptNumber, "lease attempt number")
         _validate_row_version(self.expected_work_row_version, "work row version")
         _validate_row_version(self.expected_node_row_version, "node row version")
         _validate_row_version(self.expected_run_row_version, "run row version")
@@ -167,12 +170,14 @@ class AcquireWorkLeaseRequest:
             "worker identity",
         )
         _require_exact(self.event, EventAppendRequest, "lease event request")
+        _validate_event_frontier(self.event)
 
     def __repr__(self) -> str:
         return (
             "AcquireWorkLeaseRequest("
             f"run_id={self.run_id!r}, node_id={self.node_id!r}, "
             f"work_item_id={self.work_item_id!r}, "
+            f"expected_attempt_number={self.expected_attempt_number!r}, "
             f"expected_work_row_version={self.expected_work_row_version!r}, "
             f"expected_node_row_version={self.expected_node_row_version!r}, "
             f"expected_run_row_version={self.expected_run_row_version!r}, "
@@ -191,6 +196,7 @@ class RenewWorkLeaseRequest:
     def __post_init__(self) -> None:
         _validate_row_version(self.expected_run_row_version, "run row version")
         _require_exact(self.event, EventAppendRequest, "lease event request")
+        _validate_event_frontier(self.event)
 
     def __repr__(self) -> str:
         return (
@@ -219,10 +225,15 @@ class WorkLeaseServiceSnapshot:
 _LEASE_CONSTRUCTION_TOKEN = object()
 
 
+@dataclass(frozen=True, slots=True, repr=False, init=False)
 class WorkLease:
     """Identity-bearing wrapper around an exact writer-produced WorkClaim."""
 
-    __slots__ = ("_claim", "_events", "_node", "_run", "_submission_id")
+    _claim: WorkClaim
+    _node: RunNodeRecord
+    _run: RunRecord
+    _events: ExecutionEventBatch
+    _submission_id: WriterSubmissionId
 
     def __init__(
         self,
@@ -241,11 +252,11 @@ class WorkLease:
         _require_exact(run, RunRecord, "work lease run")
         _require_exact(events, ExecutionEventBatch, "work lease events")
         _require_exact(submission_id, WriterSubmissionId, "work lease submission identity")
-        self._claim = claim
-        self._node = node
-        self._run = run
-        self._events = events
-        self._submission_id = submission_id
+        object.__setattr__(self, "_claim", claim)
+        object.__setattr__(self, "_node", node)
+        object.__setattr__(self, "_run", run)
+        object.__setattr__(self, "_events", events)
+        object.__setattr__(self, "_submission_id", submission_id)
 
     @property
     def claim(self) -> WorkClaim:
@@ -283,6 +294,37 @@ class WorkLease:
         )
 
 
+@dataclass(frozen=True, slots=True)
+class _ActiveWorkLease:
+    lease: WorkLease
+    claim: WorkClaim
+    node: RunNodeRecord
+    run: RunRecord
+    events: ExecutionEventBatch
+    submission_id: WriterSubmissionId
+
+    @classmethod
+    def capture(cls, lease: WorkLease) -> _ActiveWorkLease:
+        return cls(
+            lease,
+            lease.claim,
+            lease.node,
+            lease.run,
+            lease.events,
+            lease.submission_id,
+        )
+
+    def matches(self, lease: WorkLease) -> bool:
+        return (
+            self.lease is lease
+            and self.claim is lease.claim
+            and self.node is lease.node
+            and self.run is lease.run
+            and self.events is lease.events
+            and self.submission_id is lease.submission_id
+        )
+
+
 class WorkLeaseService:
     """Acquire and renew exact work claims through a borrowed serialized writer."""
 
@@ -307,7 +349,7 @@ class WorkLeaseService:
         self._clock = clock_value
         self._settings = settings_value
         self._lock = Lock()
-        self._states: dict[WorkItemId, WorkLease | None] = {}
+        self._states: dict[WorkItemId, _ActiveWorkLease | None] = {}
         self._in_flight: set[WorkItemId] = set()
 
     def acquire(self, request: AcquireWorkLeaseRequest) -> WorkLease:
@@ -333,12 +375,19 @@ class WorkLeaseService:
                 worker_identity=request.worker_identity,
                 event=request.event,
             )
-            receipt = self._execute(command, work_item_id)
             outcome_unknown = True
-            lease = self._lease_from_claim_receipt(receipt, command)
+            receipt = self._execute(command, work_item_id)
+            lease = self._lease_from_claim_receipt(
+                receipt,
+                command,
+                request.expected_attempt_number,
+            )
             self._activate(work_item_id, lease)
             outcome_unknown = False
             return lease
+        except WorkLeaseAdmissionError, WorkLeaseWriterError:
+            outcome_unknown = False
+            raise
         except WorkLeaseOutcomeUnknownError:
             outcome_unknown = True
             raise
@@ -359,6 +408,8 @@ class WorkLeaseService:
             renewed_at = self._now()
             if renewed_at >= lease.claim.lease_expires_at:
                 raise WorkLeaseExpiredError("work lease expired before renewal")
+            if lease.claim.row_version >= MAX_LEASE_ROW_VERSION:
+                raise WorkLeaseInvalidRequestError("work row version cannot advance")
             lease_expires_at = self._expires_at(renewed_at)
             command = RenewWorkClaim(
                 run_id=lease.run.run_id,
@@ -369,12 +420,15 @@ class WorkLeaseService:
                 lease_expires_at=lease_expires_at,
                 event=request.event,
             )
-            receipt = self._execute(command, work_item_id)
             outcome_unknown = True
+            receipt = self._execute(command, work_item_id)
             renewed = self._lease_from_renewal_receipt(receipt, command, lease)
             self._activate(work_item_id, renewed)
             outcome_unknown = False
             return renewed
+        except WorkLeaseAdmissionError, WorkLeaseWriterError:
+            outcome_unknown = False
+            raise
         except WorkLeaseOutcomeUnknownError:
             outcome_unknown = True
             raise
@@ -389,14 +443,15 @@ class WorkLeaseService:
         _require_exact(lease, WorkLease, "work lease retirement capability")
         work_item_id = lease.claim.work_item_id
         with self._lock:
-            if work_item_id in self._in_flight or self._states.get(work_item_id) is not lease:
+            state = self._states.get(work_item_id)
+            if work_item_id in self._in_flight or state is None or not state.matches(lease):
                 raise WorkLeaseOwnershipError("work lease is not the active service capability")
             del self._states[work_item_id]
 
     def snapshot(self) -> WorkLeaseServiceSnapshot:
         """Return bounded transient ownership counts under one service lock."""
         with self._lock:
-            active = sum(lease is not None for lease in self._states.values())
+            active = sum(state is not None for state in self._states.values())
             unknown = len(self._states) - active
             return WorkLeaseServiceSnapshot(active, unknown, len(self._in_flight))
 
@@ -411,7 +466,8 @@ class WorkLeaseService:
         with self._lock:
             if work_item_id in self._in_flight:
                 raise WorkLeaseBusyError("work identity already has a lease operation")
-            if self._states.get(work_item_id) is not lease:
+            state = self._states.get(work_item_id)
+            if state is None or not state.matches(lease):
                 raise WorkLeaseOwnershipError("work lease is not the active service capability")
             self._in_flight.add(work_item_id)
 
@@ -419,7 +475,7 @@ class WorkLeaseService:
         with self._lock:
             if work_item_id not in self._in_flight:
                 raise WorkLeaseProtocolError("work lease reservation was lost")
-            self._states[work_item_id] = lease
+            self._states[work_item_id] = _ActiveWorkLease.capture(lease)
             self._in_flight.remove(work_item_id)
 
     def _release_reservation(self, work_item_id: WorkItemId) -> None:
@@ -541,11 +597,12 @@ class WorkLeaseService:
         self,
         receipt: WriterReceipt,
         command: ClaimWork,
+        expected_attempt_number: AttemptNumber,
     ) -> WorkLease:
         if type(receipt.result) is not ClaimWorkResult:
             raise WorkLeaseProtocolError("work lease claim result type is invalid")
         result = receipt.result
-        _validate_claim_result(result, command)
+        _validate_claim_result(result, command, expected_attempt_number)
         return WorkLease(
             result.claim,
             result.node,
@@ -583,15 +640,23 @@ class WorkLeaseService:
         )
 
 
-def _validate_claim_result(result: ClaimWorkResult, command: ClaimWork) -> None:
-    _require_exact(result.claim, WorkClaim, "work lease claim result")
-    _require_exact(result.node, RunNodeRecord, "work lease node result")
-    _require_exact(result.run, RunRecord, "work lease run result")
-    _require_exact(result.events, ExecutionEventBatch, "work lease event result")
+def _validate_claim_result(
+    result: ClaimWorkResult,
+    command: ClaimWork,
+    expected_attempt_number: AttemptNumber,
+) -> None:
+    _require_protocol_exact(result.claim, WorkClaim, "work lease claim result")
+    _require_protocol_exact(result.node, RunNodeRecord, "work lease node result")
+    _require_protocol_exact(result.run, RunRecord, "work lease run result")
+    _require_protocol_exact(result.events, ExecutionEventBatch, "work lease event result")
     _validate_events(result.events, command.run_id, command.event)
     claim = result.claim
+    _validate_result_row_version(claim.row_version, "work lease claim row version")
+    _validate_result_row_version(result.node.row_version, "work lease node row version")
+    _validate_result_row_version(result.run.row_version, "work lease run row version")
     if (
         claim.work_item_id != command.work_item_id
+        or claim.attempt_number != expected_attempt_number
         or claim.row_version != command.expected_work_row_version + 1
         or claim.lease_owner != command.lease_owner
         or claim.started_at != command.started_at
@@ -614,12 +679,14 @@ def _validate_claim_result(result: ClaimWorkResult, command: ClaimWork) -> None:
 
 
 def _validate_renewal_result(result: RenewWorkClaimResult, command: RenewWorkClaim) -> None:
-    _require_exact(result.claim, WorkClaim, "work lease renewal claim")
-    _require_exact(result.run, RunRecord, "work lease renewal run")
-    _require_exact(result.events, ExecutionEventBatch, "work lease renewal events")
+    _require_protocol_exact(result.claim, WorkClaim, "work lease renewal claim")
+    _require_protocol_exact(result.run, RunRecord, "work lease renewal run")
+    _require_protocol_exact(result.events, ExecutionEventBatch, "work lease renewal events")
     _validate_events(result.events, command.run_id, command.event)
     previous = command.claim
     claim = result.claim
+    _validate_result_row_version(claim.row_version, "work lease renewal row version")
+    _validate_result_row_version(result.run.row_version, "work lease run row version")
     if (
         claim.work_item_id != previous.work_item_id
         or claim.attempt_number != previous.attempt_number
@@ -643,6 +710,11 @@ def _require_exact(value: object, expected: type[object], subject: str) -> None:
         raise TypeError(f"{subject} must use {expected.__name__}")
 
 
+def _require_protocol_exact(value: object, expected: type[object], subject: str) -> None:
+    if type(value) is not expected:
+        raise WorkLeaseProtocolError(f"{subject} must use {expected.__name__}")
+
+
 def _validate_events(
     batch: ExecutionEventBatch,
     run_id: RunId,
@@ -654,6 +726,7 @@ def _validate_events(
         or type(batch.items[0]) is not ExecutionEventRecord
         or type(batch.next_sequence) is not EventSequence
         or type(batch.counter_row_version) is not int
+        or not 1 <= batch.counter_row_version <= MAX_LEASE_ROW_VERSION
     ):
         raise WorkLeaseProtocolError("work lease event result shape is invalid")
     record = batch.items[0]
@@ -677,8 +750,20 @@ def _validate_events(
 def _validate_row_version(value: object, subject: str) -> None:
     if type(value) is not int:
         raise TypeError(f"{subject} must be an integer")
-    if not 1 <= value <= MAX_LEASE_ROW_VERSION:
+    if not 1 <= value < MAX_LEASE_ROW_VERSION:
         raise WorkLeaseInvalidRequestError(f"{subject} is outside the supported range")
+
+
+def _validate_result_row_version(value: object, subject: str) -> None:
+    if type(value) is not int or not 1 <= value <= MAX_LEASE_ROW_VERSION:
+        raise WorkLeaseProtocolError(f"{subject} is outside the supported range")
+
+
+def _validate_event_frontier(request: EventAppendRequest) -> None:
+    _require_exact(request.expected_next_sequence, EventSequence, "lease event sequence")
+    if int(request.expected_next_sequence) >= MAX_LEASE_ROW_VERSION:
+        raise WorkLeaseInvalidRequestError("lease event sequence cannot advance")
+    _validate_row_version(request.expected_counter_row_version, "lease event counter row version")
 
 
 def _validate_timeout(value: object, subject: str) -> None:
