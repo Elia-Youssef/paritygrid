@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import unicodedata
 from collections.abc import Callable
-from dataclasses import dataclass, field
-from datetime import timedelta
-from enum import StrEnum
+from dataclasses import dataclass, field, fields, is_dataclass
+from datetime import UTC, datetime, timedelta
+from enum import Enum, StrEnum
 from threading import Lock
 from typing import Protocol, cast, runtime_checkable
 
+from paritygrid.application.ports.configuration import (
+    ConfigurationDocument,
+    DocumentArray,
+    NestedDocumentObject,
+)
 from paritygrid.application.ports.consistency import (
     ConsistencyInvalidRequestError,
     ConsistencyRecordNotFoundError,
@@ -30,6 +35,7 @@ from paritygrid.application.ports.execution import (
     ExecutionStaleRowVersionError,
     ExecutionStateConflictError,
     RunNodeRecord,
+    RunNodeStatus,
     RunRecord,
     WorkClaim,
 )
@@ -52,11 +58,15 @@ from paritygrid.application.writes import (
     RenewWorkClaim,
     RenewWorkClaimResult,
 )
+from paritygrid.domain.execution import RunState
 from paritygrid.domain.models import (
     AttemptNumber,
     Duration,
     NodeId,
+    PipelineId,
+    PipelineVersion,
     RunId,
+    StateFingerprint,
     UtcTimestamp,
     WorkItemId,
 )
@@ -410,6 +420,79 @@ class _WorkClaimEvidence:
         )
 
 
+_INVALID_LEASE_EVIDENCE = object()
+_CLOSED_LEASE_EVIDENCE_DATACLASSES = (
+    AttemptNumber,
+    ConfigurationDocument,
+    DocumentArray,
+    Duration,
+    EventSequence,
+    ExecutionEventBatch,
+    ExecutionEventRecord,
+    NestedDocumentObject,
+    NodeId,
+    PipelineId,
+    PipelineVersion,
+    RedactedDocument,
+    RunId,
+    RunNodeRecord,
+    RunRecord,
+    StateFingerprint,
+    UtcTimestamp,
+    WorkClaim,
+    WorkItemId,
+    WriterSubmissionId,
+)
+_CLOSED_LEASE_EVIDENCE_ENUMS = (
+    EventSubjectKind,
+    RunNodeStatus,
+    RunState,
+)
+
+
+def _canonical_lease_evidence(value: object) -> object:
+    """Capture a closed lease graph without invoking value-defined equality."""
+    value_type = type(value)
+    if value is None:
+        return (None,)
+    if value_type in (bool, int, str, bytes, float):
+        return (value_type, value)
+    if value_type is datetime:
+        instant = cast(datetime, value)
+        if instant.tzinfo is not UTC:
+            return _INVALID_LEASE_EVIDENCE
+        return (
+            datetime,
+            instant.year,
+            instant.month,
+            instant.day,
+            instant.hour,
+            instant.minute,
+            instant.second,
+            instant.microsecond,
+            instant.fold,
+        )
+    if value_type in _CLOSED_LEASE_EVIDENCE_ENUMS and isinstance(value, Enum):
+        return (value_type, value)
+    if value_type is tuple:
+        captured: list[object] = []
+        for item in cast(tuple[object, ...], value):
+            evidence = _canonical_lease_evidence(item)
+            if evidence is _INVALID_LEASE_EVIDENCE:
+                return _INVALID_LEASE_EVIDENCE
+            captured.append(evidence)
+        return (tuple, tuple(captured))
+    if value_type in _CLOSED_LEASE_EVIDENCE_DATACLASSES and is_dataclass(value):
+        captured = []
+        for field_info in fields(value):
+            evidence = _canonical_lease_evidence(getattr(value, field_info.name))
+            if evidence is _INVALID_LEASE_EVIDENCE:
+                return _INVALID_LEASE_EVIDENCE
+            captured.append(evidence)
+        return (value_type, tuple(captured))
+    return _INVALID_LEASE_EVIDENCE
+
+
 @dataclass(frozen=True, slots=True)
 class _ActiveWorkLease:
     lease: WorkLease
@@ -419,12 +502,31 @@ class _ActiveWorkLease:
     events: ExecutionEventBatch
     submission_id: WriterSubmissionId
     claim_evidence: _WorkClaimEvidence
+    claim_graph_evidence: object
+    node_evidence: object
+    run_evidence: object
+    events_evidence: object
+    submission_id_evidence: object
 
     @classmethod
     def capture(cls, lease: WorkLease) -> _ActiveWorkLease:
         claim_evidence = _WorkClaimEvidence.capture(lease.claim)
-        if claim_evidence is None:
-            raise WorkLeaseProtocolError("work lease claim evidence is invalid")
+        claim_graph_evidence = _canonical_lease_evidence(lease.claim)
+        node_evidence = _canonical_lease_evidence(lease.node)
+        run_evidence = _canonical_lease_evidence(lease.run)
+        events_evidence = _canonical_lease_evidence(lease.events)
+        submission_id_evidence = _canonical_lease_evidence(lease.submission_id)
+        if claim_evidence is None or any(
+            evidence is _INVALID_LEASE_EVIDENCE
+            for evidence in (
+                claim_graph_evidence,
+                node_evidence,
+                run_evidence,
+                events_evidence,
+                submission_id_evidence,
+            )
+        ):
+            raise WorkLeaseProtocolError("work lease evidence is invalid")
         return cls(
             lease,
             lease.claim,
@@ -433,10 +535,20 @@ class _ActiveWorkLease:
             lease.events,
             lease.submission_id,
             claim_evidence,
+            claim_graph_evidence,
+            node_evidence,
+            run_evidence,
+            events_evidence,
+            submission_id_evidence,
         )
 
     def matches(self, lease: WorkLease) -> bool:
         claim_evidence = _WorkClaimEvidence.capture(lease.claim)
+        claim_graph_evidence = _canonical_lease_evidence(lease.claim)
+        node_evidence = _canonical_lease_evidence(lease.node)
+        run_evidence = _canonical_lease_evidence(lease.run)
+        events_evidence = _canonical_lease_evidence(lease.events)
+        submission_id_evidence = _canonical_lease_evidence(lease.submission_id)
         return (
             self.lease is lease
             and self.claim is lease.claim
@@ -446,6 +558,16 @@ class _ActiveWorkLease:
             and self.submission_id is lease.submission_id
             and claim_evidence is not None
             and self.claim_evidence == claim_evidence
+            and claim_graph_evidence is not _INVALID_LEASE_EVIDENCE
+            and self.claim_graph_evidence == claim_graph_evidence
+            and node_evidence is not _INVALID_LEASE_EVIDENCE
+            and self.node_evidence == node_evidence
+            and run_evidence is not _INVALID_LEASE_EVIDENCE
+            and self.run_evidence == run_evidence
+            and events_evidence is not _INVALID_LEASE_EVIDENCE
+            and self.events_evidence == events_evidence
+            and submission_id_evidence is not _INVALID_LEASE_EVIDENCE
+            and self.submission_id_evidence == submission_id_evidence
         )
 
 
@@ -544,20 +666,23 @@ class WorkLeaseService:
         """Extend the current exact service-issued claim and invalidate its wrapper."""
         _require_exact(lease, WorkLease, "work lease renewal capability")
         _require_exact(request, RenewWorkLeaseRequest, "work lease renewal")
-        work_item_id = lease.claim.work_item_id
-        self._reserve_renewal(lease)
+        work_item_id, reserved = self._reserve_renewal(lease)
         outcome_unknown = False
         try:
             renewed_at = self._now()
-            if renewed_at >= lease.claim.lease_expires_at:
+            self._validate_renewal_reservation(work_item_id, reserved, lease)
+            claim = reserved.claim
+            node = reserved.node
+            run = reserved.run
+            if renewed_at >= claim.lease_expires_at:
                 raise WorkLeaseExpiredError("work lease expired before renewal")
-            if lease.claim.row_version >= MAX_LEASE_ROW_VERSION:
+            if claim.row_version >= MAX_LEASE_ROW_VERSION:
                 raise WorkLeaseInvalidRequestError("work row version cannot advance")
             lease_expires_at = self._expires_at(renewed_at)
             command = RenewWorkClaim(
-                run_id=lease.run.run_id,
-                node_id=lease.node.node_id,
-                claim=lease.claim,
+                run_id=run.run_id,
+                node_id=node.node_id,
+                claim=claim,
                 expected_run_row_version=request.expected_run_row_version,
                 renewed_at=renewed_at,
                 lease_expires_at=lease_expires_at,
@@ -565,13 +690,14 @@ class WorkLeaseService:
                     request.event,
                     event_kind="work_claim_renewed",
                     occurred_at=renewed_at,
-                    work_item_id=lease.claim.work_item_id,
-                    attempt_number=lease.claim.attempt_number,
-                    node_id=lease.node.node_id,
+                    work_item_id=claim.work_item_id,
+                    attempt_number=claim.attempt_number,
+                    node_id=node.node_id,
                     lease_expires_at=lease_expires_at,
-                    runner_kind=lease.claim.runner_kind,
+                    runner_kind=claim.runner_kind,
                 ),
             )
+            self._validate_renewal_reservation(work_item_id, reserved, lease)
             outcome_unknown = True
             receipt = self._execute(command, work_item_id)
             renewed = self._lease_from_renewal_receipt(receipt, command, lease)
@@ -760,8 +886,8 @@ class WorkLeaseService:
                 raise WorkLeaseBusyError("work identity already has lease state")
             self._in_flight.add(work_item_id)
 
-    def _reserve_renewal(self, lease: WorkLease) -> None:
-        work_item_id = lease.claim.work_item_id
+    def _reserve_renewal(self, lease: WorkLease) -> tuple[WorkItemId, _ActiveWorkLease]:
+        work_item_id = _lease_work_item_id(lease)
         with self._lock:
             if work_item_id in self._in_flight:
                 raise WorkLeaseBusyError("work identity already has a lease operation")
@@ -769,6 +895,21 @@ class WorkLeaseService:
             if state is None or not state.matches(lease):
                 raise WorkLeaseOwnershipError("work lease is not the active service capability")
             self._in_flight.add(work_item_id)
+            return work_item_id, state
+
+    def _validate_renewal_reservation(
+        self,
+        work_item_id: WorkItemId,
+        reserved: _ActiveWorkLease,
+        lease: WorkLease,
+    ) -> None:
+        with self._lock:
+            if (
+                work_item_id not in self._in_flight
+                or self._states.get(work_item_id) is not reserved
+                or not _active_lease_matches(reserved, lease)
+            ):
+                raise WorkLeaseOwnershipError("work lease changed during renewal")
 
     def _activate(self, work_item_id: WorkItemId, lease: WorkLease) -> None:
         with self._lock:
