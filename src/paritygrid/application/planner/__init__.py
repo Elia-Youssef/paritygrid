@@ -20,6 +20,8 @@ from paritygrid.application.planner.graph import (
     PipelineCycleError,
     PipelineGraphError,
     TopologicalOrder,
+    topological_node_order,
+    validate_acyclic_graph,
 )
 from paritygrid.application.planner.port_validation import (
     ports_are_compatible,
@@ -112,6 +114,8 @@ __all__ = [
     "encode_pipeline_document",
     "ports_are_compatible",
     "registered_node_definition",
+    "topological_node_order",
+    "validate_acyclic_graph",
     "validate_registered_nodes",
     "validate_typed_ports",
 ]
