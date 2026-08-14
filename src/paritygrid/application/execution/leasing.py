@@ -642,8 +642,15 @@ class WorkLeaseService:
         corrupted = False
         with self._lock:
             work_item_id = fallback_work_item_id
+            registered = False
             try:
-                work_item_id, selected = self._completion_state(reservation)
+                selected_state = self._registered_completion_state(reservation)
+                if selected_state is None:
+                    raise WorkLeaseOwnershipError("completion reservation is not active")
+                work_item_id, selected = selected_state
+                registered = True
+                if work_item_id not in self._in_flight:
+                    raise WorkLeaseOwnershipError("completion reservation is not active")
                 active = self._states.get(work_item_id)
                 if (
                     active is None
@@ -659,6 +666,8 @@ class WorkLeaseService:
                 elif disposition is WorkLeaseCompletionDisposition.MARK_UNKNOWN:
                     self._states[work_item_id] = None
             except WorkLeaseError:
+                if registered:
+                    self._poison_interrupted_completion_finalization(work_item_id)
                 raise
             except BaseException:
                 self._poison_interrupted_completion_finalization(work_item_id)
@@ -679,20 +688,25 @@ class WorkLeaseService:
         self,
         reservation: WorkLeaseCompletionReservation,
     ) -> tuple[WorkItemId, WorkLeaseCompletionReservation]:
+        selected_state = self._registered_completion_state(reservation)
+        if selected_state is None or selected_state[0] not in self._in_flight:
+            raise WorkLeaseOwnershipError("completion reservation is not active")
+        return selected_state
+
+    def _registered_completion_state(
+        self,
+        reservation: WorkLeaseCompletionReservation,
+    ) -> tuple[WorkItemId, WorkLeaseCompletionReservation] | None:
         _require_exact(
             reservation,
             WorkLeaseCompletionReservation,
             "work lease completion reservation",
         )
         selected = reservation
-        work_item_id = None
         for candidate_id, candidate in self._completions.items():
             if candidate is selected:
-                work_item_id = candidate_id
-                break
-        if work_item_id is None or work_item_id not in self._in_flight:
-            raise WorkLeaseOwnershipError("completion reservation is not active")
-        return work_item_id, selected
+                return candidate_id, selected
+        return None
 
     def _restore_interrupted_completion_reservation(
         self,

@@ -1106,6 +1106,13 @@ def test_completion_reservation_rejects_forgery_and_closed_disposition_values() 
             forged,
             WorkLeaseCompletionDisposition.RETAIN_ACTIVE,
         )
+    missing_forged = object.__new__(WorkLeaseCompletionReservation)
+    object.__setattr__(missing_forged, "_lease", reservation.lease)
+    with pytest.raises(WorkLeaseOwnershipError, match="not active"):
+        service.finalize_completion(
+            missing_forged,
+            WorkLeaseCompletionDisposition.RETAIN_ACTIVE,
+        )
     with pytest.raises(TypeError, match="completion disposition"):
         service.finalize_completion(reservation, cast(Any, "retain_active"))
     service.finalize_completion(
@@ -1163,6 +1170,19 @@ def test_completion_reservation_rejects_forgery_and_closed_disposition_values() 
             WorkLeaseCompletionDisposition.RETAIN_ACTIVE,
         )
     assert malformed_service.snapshot().unknown == 1
+
+    inconsistent_lease = _issued_lease()
+    inconsistent_service = _service_for(inconsistent_lease)
+    inconsistent_reservation = inconsistent_service.reserve_completion(inconsistent_lease)
+    inconsistent_service._in_flight.remove(inconsistent_lease.claim.work_item_id)
+    with pytest.raises(WorkLeaseOwnershipError, match="not active"):
+        inconsistent_service.finalize_completion(
+            inconsistent_reservation,
+            WorkLeaseCompletionDisposition.RETIRE_COMMITTED,
+        )
+    assert inconsistent_service._completions == {}
+    assert inconsistent_service.snapshot().unknown == 1
+    assert inconsistent_service.snapshot().in_flight == 0
 
 
 @pytest.mark.parametrize(
