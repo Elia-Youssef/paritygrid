@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import replace
+from threading import Event, Lock, Thread
+from traceback import format_exception
 from typing import Any, cast
 
 import pytest
@@ -16,6 +18,7 @@ from paritygrid.application.execution import (
     RunnerBusyError,
     RunnerCleanupError,
     RunnerClosedError,
+    RunnerExecutionError,
     RunnerNodeOutcome,
     RunnerNodeRequest,
     RunnerNodeResult,
@@ -24,7 +27,10 @@ from paritygrid.application.execution import (
     RunnerStatus,
     RunnerUnsafeResumeError,
     RunnerUnsupportedPlanError,
+    ScheduledNode,
+    ScheduledNodeStatus,
     SchedulerState,
+    SchedulerStatus,
     SequentialRunner,
     SequentialRunnerLimits,
 )
@@ -385,6 +391,40 @@ _REPORT_INVALID_CASES: list[tuple[Callable[[ExecutionPlan], object], type[Except
         RunnerProtocolError,
         "active scheduler",
     ),
+    (
+        lambda plan: RunnerReport(
+            RunnerStatus.SUCCEEDED,
+            _succeeded_state(plan),
+            (_id("a"),),
+        ),
+        RunnerProtocolError,
+        "invocation frontier",
+    ),
+    (
+        lambda plan: RunnerReport(
+            RunnerStatus.CANCELLED,
+            DependencyTracker(plan).start(_id("a")),
+            (),
+        ),
+        RunnerProtocolError,
+        "not started",
+    ),
+    (
+        lambda plan: RunnerReport(
+            RunnerStatus.CANCELLED,
+            SchedulerState(
+                SchedulerStatus.ACTIVE,
+                (
+                    ScheduledNode(_id("a"), ScheduledNodeStatus.READY, ()),
+                    ScheduledNode(_id("b"), ScheduledNodeStatus.SUCCEEDED, ()),
+                ),
+                fingerprint_execution_plan(plan),
+            ),
+            (),
+        ),
+        RunnerProtocolError,
+        "execution frontier",
+    ),
 ]
 
 
@@ -489,14 +529,32 @@ def test_unrequested_cancel_and_executor_protocol_errors_preserve_active_state()
         SequentialRunner(InvalidExecutor()).run(plan)
 
 
-@pytest.mark.parametrize("error", [RuntimeError("boom"), KeyboardInterrupt()])
-def test_unexpected_failures_propagate_without_false_advancement(error: BaseException) -> None:
+def test_executor_exceptions_are_typed_redacted_and_do_not_advance() -> None:
+    detail = "credential=super-secret machine=C:\\private"
+
     def fail(request: RunnerNodeRequest) -> RunnerNodeResult:
         del request
-        raise error
+        raise RuntimeError(detail)
 
     runner = SequentialRunner(_Executor(callback=fail))
-    with pytest.raises(type(error), match="boom" if isinstance(error, RuntimeError) else None):
+    with pytest.raises(RunnerExecutionError, match="node executor failed") as captured:
+        runner.run(_plan("a"))
+    rendered = "".join(format_exception(captured.value))
+    assert detail not in rendered
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+    assert runner.state is not None
+    assert runner.state.active_node_id == _id("a")
+    assert "running=False" in repr(runner)
+
+
+def test_executor_base_exception_propagates_without_false_advancement() -> None:
+    def fail(request: RunnerNodeRequest) -> RunnerNodeResult:
+        del request
+        raise KeyboardInterrupt
+
+    runner = SequentialRunner(_Executor(callback=fail))
+    with pytest.raises(KeyboardInterrupt):
         runner.run(_plan("a"))
     assert runner.state is not None
     assert runner.state.active_node_id == _id("a")
@@ -580,6 +638,53 @@ def test_runner_rejects_reentrant_run_and_close_while_active() -> None:
     assert runner.run(_plan("a")).status is RunnerStatus.SUCCEEDED
 
 
+def test_runner_admission_is_atomic_across_threads(monkeypatch: pytest.MonkeyPatch) -> None:
+    plan = _plan("a")
+    actual_tracker = DependencyTracker
+    constructor_entered = Event()
+    release_constructor = Event()
+    constructor_lock = Lock()
+    constructor_count = 0
+
+    def blocking_tracker(
+        plan: ExecutionPlan,
+        *,
+        state: SchedulerState | None = None,
+    ) -> DependencyTracker:
+        nonlocal constructor_count
+        with constructor_lock:
+            constructor_count += 1
+            first = constructor_count == 1
+        if first:
+            constructor_entered.set()
+            assert release_constructor.wait(5)
+        return actual_tracker(plan, state=state)
+
+    monkeypatch.setattr(runner_module, "DependencyTracker", blocking_tracker)
+    executor = _Executor()
+    runner = SequentialRunner(executor)
+    reports: list[RunnerReport] = []
+
+    def run_first() -> None:
+        reports.append(runner.run(plan))
+
+    thread = Thread(target=run_first, name="p6-sequential-runner-first")
+    thread.start()
+    assert constructor_entered.wait(5)
+    try:
+        with pytest.raises(RunnerBusyError, match="active invocation"):
+            runner.run(plan)
+        with pytest.raises(RunnerBusyError, match="cannot close"):
+            runner.close()
+    finally:
+        release_constructor.set()
+        thread.join(5)
+    assert thread.is_alive() is False
+    assert [report.status for report in reports] == [RunnerStatus.SUCCEEDED]
+    assert len(executor.requests) == 1
+    assert constructor_count == 1
+
+
 def test_runner_ownership_context_and_cleanup_failure_semantics() -> None:
     caller_owned = _Executor()
     runner = SequentialRunner(caller_owned)
@@ -604,7 +709,10 @@ def test_runner_ownership_context_and_cleanup_failure_semantics() -> None:
     runner = SequentialRunner(BrokenClose(), owns_executor=True)
     with pytest.raises(RunnerCleanupError, match="cleanup failed") as captured:
         runner.close()
-    assert "sensitive adapter detail" not in str(captured.value)
+    rendered = "".join(format_exception(captured.value))
+    assert "sensitive adapter detail" not in rendered
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
     assert runner.is_closed is True
 
     class FatalClose(_Executor):

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from enum import StrEnum
-from threading import Event
+from threading import Event, Lock
 from types import TracebackType
 from typing import Protocol, Self, cast, runtime_checkable
 
@@ -58,6 +58,10 @@ class RunnerUnsafeResumeError(RunnerError):
 
 class RunnerProtocolError(RunnerError):
     """A node executor returned a malformed or inconsistent outcome."""
+
+
+class RunnerExecutionError(RunnerError):
+    """A node executor raised an ordinary redacted execution failure."""
 
 
 class RunnerCleanupError(RunnerError):
@@ -245,6 +249,26 @@ class RunnerReport:
                 raise RunnerProtocolError("failed runner report requires failed scheduler")
         elif self.scheduler_state.status is not SchedulerStatus.ACTIVE:
             raise RunnerProtocolError("cancelled runner report requires active scheduler")
+        completed_frontier = self.scheduler_state.succeeded_node_ids
+        active_node_id = self.scheduler_state.active_node_id
+        failed_node_id = self.scheduler_state.failed_node_id
+        consumed_frontier = completed_frontier
+        if active_node_id is not None:
+            consumed_frontier += (active_node_id,)
+        elif failed_node_id is not None:
+            consumed_frontier += (failed_node_id,)
+        if consumed_frontier != plan_order[: len(consumed_frontier)]:
+            raise RunnerProtocolError(
+                "runner report scheduler nodes violate the execution frontier"
+            )
+        if started and consumed_frontier[-len(started) :] != started:
+            raise RunnerProtocolError(
+                "runner report started nodes do not match the invocation frontier"
+            )
+        if active_node_id is not None and (not started or started[-1] != active_node_id):
+            raise RunnerProtocolError(
+                "runner report active node was not started by this invocation"
+            )
 
     def __repr__(self) -> str:
         return (
@@ -261,6 +285,7 @@ class SequentialRunner:
         "_cancellation",
         "_closed",
         "_executor",
+        "_lifecycle_lock",
         "_owns_executor",
         "_running",
         "_state",
@@ -284,6 +309,7 @@ class SequentialRunner:
         self._executor = executor_value
         self._cancellation = cancellation if cancellation is not None else CancellationToken()
         self._owns_executor = owns_executor
+        self._lifecycle_lock = Lock()
         self._closed = False
         self._running = False
         self._state: SchedulerState | None = None
@@ -301,7 +327,8 @@ class SequentialRunner:
     @property
     def is_closed(self) -> bool:
         """Return whether runner shutdown has completed or begun."""
-        return self._closed
+        with self._lifecycle_lock:
+            return self._closed
 
     def run(
         self,
@@ -315,32 +342,35 @@ class SequentialRunner:
         restored = cast(object, state)
         if restored is not None and type(restored) is not SchedulerState:
             raise TypeError("sequential runner state must use SchedulerState or None")
-        if self._closed:
-            raise RunnerClosedError("closed sequential runner cannot execute a plan")
-        if self._running:
-            raise RunnerBusyError("sequential runner already has an active invocation")
-        if any(PlannerRunnerKind.SEQUENTIAL not in node.supported_runners for node in plan.nodes):
-            raise RunnerUnsupportedPlanError("execution plan contains a non-sequential node")
-
-        tracker = DependencyTracker(plan, state=state)
-        self._state = tracker.state
-        if tracker.state.status.is_terminal:
-            status = (
-                RunnerStatus.SUCCEEDED
-                if tracker.state.status is SchedulerStatus.SUCCEEDED
-                else RunnerStatus.FAILED
-            )
-            return RunnerReport(status, tracker.state, ())
-        if tracker.state.active_node_id is not None:
-            raise RunnerUnsafeResumeError(
-                "in-flight scheduler state requires durable recovery classification"
-            )
-
-        limits = SequentialRunnerLimits.from_resource_policy(plan.resource_policy)
-        plan_fingerprint = fingerprint_execution_plan(plan)
-        started: list[NodeId] = []
-        self._running = True
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RunnerClosedError("closed sequential runner cannot execute a plan")
+            if self._running:
+                raise RunnerBusyError("sequential runner already has an active invocation")
+            self._running = True
         try:
+            if any(
+                PlannerRunnerKind.SEQUENTIAL not in node.supported_runners for node in plan.nodes
+            ):
+                raise RunnerUnsupportedPlanError("execution plan contains a non-sequential node")
+
+            tracker = DependencyTracker(plan, state=state)
+            self._state = tracker.state
+            if tracker.state.status.is_terminal:
+                status = (
+                    RunnerStatus.SUCCEEDED
+                    if tracker.state.status is SchedulerStatus.SUCCEEDED
+                    else RunnerStatus.FAILED
+                )
+                return RunnerReport(status, tracker.state, ())
+            if tracker.state.active_node_id is not None:
+                raise RunnerUnsafeResumeError(
+                    "in-flight scheduler state requires durable recovery classification"
+                )
+
+            limits = SequentialRunnerLimits.from_resource_policy(plan.resource_policy)
+            plan_fingerprint = fingerprint_execution_plan(plan)
+            started: list[NodeId] = []
             while True:
                 if self._cancellation.is_requested:
                     return RunnerReport(RunnerStatus.CANCELLED, tracker.state, tuple(started))
@@ -349,14 +379,21 @@ class SequentialRunner:
                     raise RunnerProtocolError("active scheduler has no admissible node")
                 self._state = tracker.start(node.node_id)
                 started.append(node.node_id)
-                result = self._executor.execute(
-                    RunnerNodeRequest(
-                        node=node,
-                        plan_fingerprint=plan_fingerprint,
-                        limits=limits,
-                        cancellation=self._cancellation,
+                execution_failed = False
+                try:
+                    result = self._executor.execute(
+                        RunnerNodeRequest(
+                            node=node,
+                            plan_fingerprint=plan_fingerprint,
+                            limits=limits,
+                            cancellation=self._cancellation,
+                        )
                     )
-                )
+                except Exception:
+                    execution_failed = True
+                    result = None
+                if execution_failed:
+                    raise RunnerExecutionError("node executor failed")
                 if type(result) is not RunnerNodeResult:
                     raise RunnerProtocolError("node executor returned an invalid result")
                 if result.node_id != node.node_id:
@@ -379,25 +416,31 @@ class SequentialRunner:
                         )
                     return RunnerReport(RunnerStatus.CANCELLED, tracker.state, tuple(started))
         finally:
-            self._running = False
+            with self._lifecycle_lock:
+                self._running = False
 
     def close(self) -> None:
         """Close this runner and its executor only when ownership was explicit."""
-        if self._closed:
-            return
-        if self._running:
-            raise RunnerBusyError("active sequential runner cannot close")
-        self._closed = True
+        with self._lifecycle_lock:
+            if self._closed:
+                return
+            if self._running:
+                raise RunnerBusyError("active sequential runner cannot close")
+            self._closed = True
         if not self._owns_executor:
             return
+        cleanup_failed = False
         try:
             self._executor.close()
-        except Exception as error:
-            raise RunnerCleanupError("owned runner executor cleanup failed") from error
+        except Exception:
+            cleanup_failed = True
+        if cleanup_failed:
+            raise RunnerCleanupError("owned runner executor cleanup failed")
 
     def __enter__(self) -> Self:
-        if self._closed:
-            raise RunnerClosedError("closed sequential runner cannot be entered")
+        with self._lifecycle_lock:
+            if self._closed:
+                raise RunnerClosedError("closed sequential runner cannot be entered")
         return self
 
     def __exit__(
@@ -410,9 +453,12 @@ class SequentialRunner:
         self.close()
 
     def __repr__(self) -> str:
+        with self._lifecycle_lock:
+            closed = self._closed
+            running = self._running
         return (
             "SequentialRunner("
-            f"closed={self._closed!r}, running={self._running!r}, "
+            f"closed={closed!r}, running={running!r}, "
             f"owns_executor={self._owns_executor!r}, state={self._state is not None!r})"
         )
 
