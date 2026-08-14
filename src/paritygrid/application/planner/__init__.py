@@ -87,6 +87,13 @@ from paritygrid.application.planner.registry import (
     registered_node_definition,
     validate_registered_nodes,
 )
+from paritygrid.application.planner.repair_safety import (
+    MAX_REPAIR_SAFETY_NODES,
+    RepairSafetyError,
+    RepairSafetySummary,
+    UnapprovedRepairEffectError,
+    validate_repair_safety,
+)
 from paritygrid.application.planner.resources import (
     DEFAULT_RESOURCE_POLICY,
     MAX_RESOURCE_CONCURRENCY,
@@ -125,6 +132,7 @@ __all__ = [
     "MAX_PIPELINE_LAYOUT_COORDINATE",
     "MAX_PIPELINE_NODES",
     "MAX_REACHABILITY_ENDPOINTS",
+    "MAX_REPAIR_SAFETY_NODES",
     "MAX_RESOURCE_CONCURRENCY",
     "MAX_RESOURCE_IN_FLIGHT",
     "MAX_RESOURCE_MEMORY_BYTES",
@@ -173,10 +181,13 @@ __all__ = [
     "PlannerRunnerKind",
     "PortContractError",
     "PortValueType",
+    "RepairSafetyError",
+    "RepairSafetySummary",
     "ResourcePolicy",
     "ResourcePolicyError",
     "RetryBehavior",
     "TopologicalOrder",
+    "UnapprovedRepairEffectError",
     "UnknownNodeKindError",
     "UnsupportedNodeConfigurationVersionError",
     "UnsupportedPipelineDocumentVersionError",
@@ -192,6 +203,7 @@ __all__ = [
     "validate_connector_capabilities",
     "validate_graph_reachability",
     "validate_registered_nodes",
+    "validate_repair_safety",
     "validate_resource_policy",
     "validate_typed_ports",
 ]
