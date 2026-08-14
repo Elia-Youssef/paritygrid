@@ -583,6 +583,37 @@ def test_issued_lease_is_frozen_and_internal_identity_defeats_reflective_reconst
         service.renew(lease, _renew_request())
 
 
+def test_in_place_reflective_claim_mutation_cannot_reuse_issued_authority() -> None:
+    service, writer = _service()
+    lease = service.acquire(_acquire_request())
+    issued = lease.claim
+    object.__setattr__(issued, "lease_owner", "forged-owner")
+    with pytest.raises(WorkLeaseOwnershipError, match="active"):
+        service.renew(lease, _renew_request())
+    assert len(writer.commands) == 1
+    assert service.snapshot() == WorkLeaseServiceSnapshot(1, 0, 0)
+
+
+def test_invalid_reflective_claim_shape_cannot_be_recaptured_or_renewed() -> None:
+    service, writer = _service()
+    lease = service.acquire(_acquire_request())
+    object.__setattr__(lease.claim, "lease_owner", object())
+    with pytest.raises(WorkLeaseProtocolError, match="evidence"):
+        leasing_module._ActiveWorkLease.capture(lease)
+    with pytest.raises(WorkLeaseOwnershipError, match="active"):
+        service.renew(lease, _renew_request())
+    assert len(writer.commands) == 1
+
+
+def test_invalid_reflective_timestamp_shape_cannot_reuse_issued_authority() -> None:
+    service, writer = _service()
+    lease = service.acquire(_acquire_request())
+    object.__setattr__(lease.claim.started_at, "value", object())
+    with pytest.raises(WorkLeaseOwnershipError, match="active"):
+        service.renew(lease, _renew_request())
+    assert len(writer.commands) == 1
+
+
 def test_acquire_and_renew_require_exact_public_contracts() -> None:
     service, _ = _service()
     with pytest.raises(TypeError, match="AcquireWorkLeaseRequest"):

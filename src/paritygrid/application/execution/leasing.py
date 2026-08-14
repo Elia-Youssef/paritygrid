@@ -295,6 +295,54 @@ class WorkLease:
 
 
 @dataclass(frozen=True, slots=True)
+class _WorkClaimEvidence:
+    work_item_id: str
+    attempt_number: int
+    lease_owner: str
+    row_version: int
+    started_at: str
+    lease_expires_at: str
+    runner_kind: str
+    worker_identity: str
+
+    @classmethod
+    def capture(cls, claim: WorkClaim) -> _WorkClaimEvidence | None:
+        if (
+            type(claim.work_item_id) is not WorkItemId
+            or type(claim.work_item_id.value) is not str
+            or type(claim.attempt_number) is not AttemptNumber
+            or type(claim.attempt_number.number) is not int
+            or type(claim.lease_owner) is not str
+            or type(claim.row_version) is not int
+            or type(claim.started_at) is not UtcTimestamp
+            or type(claim.lease_expires_at) is not UtcTimestamp
+            or type(claim.runner_kind) is not str
+            or type(claim.worker_identity) is not str
+        ):
+            return None
+        failed = False
+        try:
+            started_at = str(claim.started_at)
+            lease_expires_at = str(claim.lease_expires_at)
+        except Exception:
+            failed = True
+            started_at = None
+            lease_expires_at = None
+        if failed or started_at is None or lease_expires_at is None:
+            return None
+        return cls(
+            claim.work_item_id.value,
+            claim.attempt_number.number,
+            claim.lease_owner,
+            claim.row_version,
+            started_at,
+            lease_expires_at,
+            claim.runner_kind,
+            claim.worker_identity,
+        )
+
+
+@dataclass(frozen=True, slots=True)
 class _ActiveWorkLease:
     lease: WorkLease
     claim: WorkClaim
@@ -302,9 +350,13 @@ class _ActiveWorkLease:
     run: RunRecord
     events: ExecutionEventBatch
     submission_id: WriterSubmissionId
+    claim_evidence: _WorkClaimEvidence
 
     @classmethod
     def capture(cls, lease: WorkLease) -> _ActiveWorkLease:
+        claim_evidence = _WorkClaimEvidence.capture(lease.claim)
+        if claim_evidence is None:
+            raise WorkLeaseProtocolError("work lease claim evidence is invalid")
         return cls(
             lease,
             lease.claim,
@@ -312,9 +364,11 @@ class _ActiveWorkLease:
             lease.run,
             lease.events,
             lease.submission_id,
+            claim_evidence,
         )
 
     def matches(self, lease: WorkLease) -> bool:
+        claim_evidence = _WorkClaimEvidence.capture(lease.claim)
         return (
             self.lease is lease
             and self.claim is lease.claim
@@ -322,6 +376,8 @@ class _ActiveWorkLease:
             and self.run is lease.run
             and self.events is lease.events
             and self.submission_id is lease.submission_id
+            and claim_evidence is not None
+            and self.claim_evidence == claim_evidence
         )
 
 
