@@ -92,6 +92,7 @@ from paritygrid.application.planner.repair_safety import (
     RepairSafetyError,
     RepairSafetySummary,
     UnapprovedRepairEffectError,
+    validate_repair_safety,
 )
 from paritygrid.application.planner.resources import (
     DEFAULT_RESOURCE_POLICY,
@@ -202,6 +203,7 @@ __all__ = [
     "validate_connector_capabilities",
     "validate_graph_reachability",
     "validate_registered_nodes",
+    "validate_repair_safety",
     "validate_resource_policy",
     "validate_typed_ports",
 ]
