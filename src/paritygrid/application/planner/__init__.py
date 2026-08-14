@@ -46,6 +46,7 @@ from paritygrid.application.planner.reachability import (
     GraphReachabilitySummary,
     InvalidPipelineTerminalError,
     PipelineReachabilityError,
+    validate_graph_reachability,
 )
 from paritygrid.application.planner.registry import (
     BUILTIN_NODE_DEFINITIONS,
@@ -128,6 +129,7 @@ __all__ = [
     "registered_node_definition",
     "topological_node_order",
     "validate_acyclic_graph",
+    "validate_graph_reachability",
     "validate_registered_nodes",
     "validate_typed_ports",
 ]
