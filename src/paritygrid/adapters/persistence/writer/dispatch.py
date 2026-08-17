@@ -631,6 +631,8 @@ def _validate_run_command(command: CreateCapturedRun | TransitionRun) -> None:
     if expected_kind is None:
         raise WriterInvalidRequestError("run transition target is invalid")
     _validate_run_event(command.event, command.run_id, expected_kind)
+    if command.event.event.occurred_at != command.transitioned_at:
+        raise WriterInvalidRequestError("run transition event time is inconsistent")
 
 
 def _validate_completion_command(

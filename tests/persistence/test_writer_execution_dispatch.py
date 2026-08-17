@@ -1355,6 +1355,14 @@ def test_execution_validation_error_matrix_is_fail_fast() -> None:
     )
     with pytest.raises(WriterInvalidRequestError, match="target"):
         validate_command(transition)
+    with pytest.raises(WriterInvalidRequestError, match="event time"):
+        validate_command(
+            replace(
+                transition,
+                target_state=RunState.RUNNING,
+                event=append_request(2, "run_started", RUN_ID, timestamp(3)),
+            )
+        )
 
     claim = WorkClaim(
         SUCCESS_WORK,

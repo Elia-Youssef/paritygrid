@@ -34,6 +34,7 @@ from paritygrid.application.execution import (
     WorkLeaseInvalidRequestError,
     WorkLeaseOutcomeUnknownError,
     WorkLeaseOwnershipError,
+    WorkLeasePauseReservation,
     WorkLeaseProtocolError,
     WorkLeaseService,
     WorkLeaseServiceSnapshot,
@@ -495,6 +496,157 @@ def test_service_requires_structural_writer_clock_and_exact_settings() -> None:
         WorkLeaseService(_Writer(), _Clock(), settings=cast(Any, object()))
     service = WorkLeaseService(_Writer(), _Clock())
     assert service.snapshot() == WorkLeaseServiceSnapshot(0, 0, 0)
+
+
+def test_run_scoped_pause_reservation_blocks_acquisition_and_is_exact_authority() -> None:
+    with pytest.raises(WorkLeaseOwnershipError, match="service-issued"):
+        WorkLeasePauseReservation(RUN_ID, _token=object())
+    service, writer = _service()
+    with pytest.raises(WorkLeaseInvalidRequestError, match="run identity"):
+        service.reserve_pause(cast(Any, object()))
+    reservation = service.reserve_pause(RUN_ID)
+    assert reservation.run_id == RUN_ID
+    assert repr(reservation) == "WorkLeasePauseReservation(authority=<redacted>)"
+    assert service.snapshot_pause(reservation) == WorkLeaseServiceSnapshot(0, 0, 0)
+    object.__setattr__(reservation.run_id, "value", "run_mutated-reservation")
+    assert service.snapshot_pause(reservation) == WorkLeaseServiceSnapshot(0, 0, 0)
+    with pytest.raises(WorkLeaseBusyError, match="admission is paused"):
+        service.acquire(_acquire_request())
+    assert writer.commands == []
+    with pytest.raises(WorkLeaseBusyError, match="already has"):
+        service.reserve_pause(RUN_ID)
+    service.release_pause(reservation)
+    with pytest.raises(WorkLeaseOwnershipError, match="not active"):
+        service.release_pause(reservation)
+    lease = service.acquire(_acquire_request())
+    gate = service.reserve_pause(RUN_ID)
+    assert service.snapshot_pause(gate) == WorkLeaseServiceSnapshot(1, 0, 0)
+    service.retire(lease)
+    assert service.snapshot_pause(gate) == WorkLeaseServiceSnapshot(0, 0, 0)
+    service.release_pause(gate)
+
+
+def test_pause_gate_detaches_acquisition_run_identity() -> None:
+    service, _writer = _service()
+    request = replace(_acquire_request(), run_id=RunId(RUN_ID.value))
+    lease = service.acquire(request)
+    object.__setattr__(request.run_id, "value", "run_mutated-acquisition")
+    gate = service.reserve_pause(RUN_ID)
+    assert service.snapshot_pause(gate) == WorkLeaseServiceSnapshot(1, 0, 0)
+    service.retire(lease)
+    service.release_pause(gate)
+
+
+def test_pause_gate_cannot_be_bypassed_by_acquisition_clock_alias() -> None:
+    entered = Event()
+    release = Event()
+
+    class BlockingClock:
+        def now(self) -> UtcTimestamp:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return _timestamp(3)
+
+    other_run = RunId("run_work-leasing-other")
+    request = replace(_acquire_request(), run_id=RunId(RUN_ID.value))
+    service, writer = _service(clock=cast(Any, BlockingClock()))
+    leases: list[WorkLease] = []
+
+    thread = Thread(target=lambda: leases.append(service.acquire(request)))
+    thread.start()
+    assert entered.wait(timeout=5.0)
+    gate = service.reserve_pause(other_run)
+    object.__setattr__(request.run_id, "value", other_run.value)
+    release.set()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    assert cast(ClaimWork, writer.commands[0]).run_id == RUN_ID
+    assert service.snapshot_pause(gate) == WorkLeaseServiceSnapshot(0, 0, 0)
+    with pytest.raises(WorkLeaseBusyError, match="admission is paused"):
+        service.acquire(replace(_acquire_request(), run_id=other_run))
+    service.retire(leases[0])
+    service.release_pause(gate)
+
+
+def test_pause_snapshot_is_run_scoped_and_preserves_unknown_ownership() -> None:
+    other_run = RunId("run_work-leasing-other")
+    service, _writer = _service()
+    other_gate = service.reserve_pause(other_run)
+    lease = service.acquire(_acquire_request())
+    assert service.snapshot_pause(other_gate) == WorkLeaseServiceSnapshot(0, 0, 0)
+    service.release_pause(other_gate)
+    service.retire(lease)
+
+    def timeout(command: WriterCommand, submission_id: WriterSubmissionId) -> _Ticket:
+        del command, submission_id
+        return _Ticket(WriterSubmissionId(1), WriterResultTimeoutError())
+
+    unknown_service, _writer = _service(writer=_Writer(timeout))
+    with pytest.raises(WorkLeaseOutcomeUnknownError):
+        unknown_service.acquire(_acquire_request())
+    unknown_gate = unknown_service.reserve_pause(RUN_ID)
+    assert unknown_service.snapshot_pause(unknown_gate) == WorkLeaseServiceSnapshot(0, 1, 0)
+    unknown_service.release_pause(unknown_gate)
+
+
+def test_pause_and_acquisition_registration_interruptions_clean_up_fail_closed() -> None:
+    class InterruptingDict(dict[Any, Any]):
+        def __setitem__(self, key: Any, value: Any) -> None:
+            super().__setitem__(key, value)
+            raise _Fatal
+
+    service, _writer = _service()
+    service._pause_gates = InterruptingDict()
+    with pytest.raises(_Fatal):
+        service.reserve_pause(RUN_ID)
+    assert service._pause_gates == {}
+
+    class InterruptingSet(set[Any]):
+        def add(self, value: Any) -> None:
+            super().add(value)
+            raise _Fatal
+
+    service, _writer = _service()
+    service._in_flight = InterruptingSet()
+    with pytest.raises(_Fatal):
+        service.acquire(_acquire_request())
+    assert service._in_flight == set()
+    assert service._work_runs == {}
+
+
+def test_acquisition_winning_pause_gate_race_remains_visible_until_drained() -> None:
+    entered = Event()
+    release = Event()
+
+    class BlockingClock:
+        def now(self) -> UtcTimestamp:
+            entered.set()
+            assert release.wait(timeout=5.0)
+            return _timestamp(3)
+
+    service, _writer = _service(clock=cast(Any, BlockingClock()))
+    leases: list[WorkLease] = []
+    failures: list[BaseException] = []
+
+    def acquire() -> None:
+        try:
+            leases.append(service.acquire(_acquire_request()))
+        except BaseException as error:  # pragma: no cover - asserted empty below
+            failures.append(error)
+
+    thread = Thread(target=acquire)
+    thread.start()
+    assert entered.wait(timeout=5.0)
+    reservation = service.reserve_pause(RUN_ID)
+    assert service.snapshot_pause(reservation) == WorkLeaseServiceSnapshot(0, 0, 1)
+    release.set()
+    thread.join(timeout=5.0)
+    assert not thread.is_alive()
+    assert failures == []
+    assert service.snapshot_pause(reservation) == WorkLeaseServiceSnapshot(1, 0, 0)
+    service.retire(leases[0])
+    assert service.snapshot_pause(reservation) == WorkLeaseServiceSnapshot(0, 0, 0)
+    service.release_pause(reservation)
 
 
 def test_acquire_renew_retire_preserve_exact_writer_capability_and_bounds() -> None:
