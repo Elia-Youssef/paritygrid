@@ -271,6 +271,7 @@ class WorkLeaseServiceSnapshot:
 
 _LEASE_CONSTRUCTION_TOKEN = object()
 _COMPLETION_RESERVATION_TOKEN = object()
+_PAUSE_RESERVATION_TOKEN = object()
 
 
 @dataclass(frozen=True, slots=True, repr=False, init=False)
@@ -370,6 +371,27 @@ class WorkLeaseCompletionReservation:
 
     def __repr__(self) -> str:
         return "WorkLeaseCompletionReservation(authority=<redacted>)"
+
+
+@dataclass(frozen=True, slots=True, repr=False, init=False)
+class WorkLeasePauseReservation:
+    """Service-issued authority that closes acquisition admission for one run."""
+
+    _run_id: RunId
+
+    def __init__(self, run_id: RunId, *, _token: object) -> None:
+        if _token is not _PAUSE_RESERVATION_TOKEN:
+            raise WorkLeaseOwnershipError("pause reservations are service-issued only")
+        clean_run_id = _snapshot_run_id(run_id)
+        object.__setattr__(self, "_run_id", clean_run_id)
+
+    @property
+    def run_id(self) -> RunId:
+        """Return the gated run identity without lease-owner evidence."""
+        return RunId(self._run_id.value)
+
+    def __repr__(self) -> str:
+        return "WorkLeasePauseReservation(authority=<redacted>)"
 
 
 @dataclass(frozen=True, slots=True)
@@ -579,8 +601,10 @@ class WorkLeaseService:
         "_completions",
         "_in_flight",
         "_lock",
+        "_pause_gates",
         "_settings",
         "_states",
+        "_work_runs",
         "_writer",
     )
 
@@ -606,18 +630,20 @@ class WorkLeaseService:
         self._states: dict[WorkItemId, _ActiveWorkLease | None] = {}
         self._in_flight: set[WorkItemId] = set()
         self._completions: dict[WorkItemId, WorkLeaseCompletionReservation] = {}
+        self._work_runs: dict[WorkItemId, str] = {}
+        self._pause_gates: dict[str, WorkLeasePauseReservation] = {}
 
     def acquire(self, request: AcquireWorkLeaseRequest) -> WorkLease:
         """Acquire one exact work claim or fail closed without forging authority."""
         _require_exact(request, AcquireWorkLeaseRequest, "work lease acquisition")
         work_item_id = request.work_item_id
-        self._reserve_acquisition(work_item_id)
+        run_id = self._reserve_acquisition(request.run_id, work_item_id)
         outcome_unknown = False
         try:
             started_at = self._now()
             lease_expires_at = self._expires_at(started_at)
             command = ClaimWork(
-                run_id=request.run_id,
+                run_id=run_id,
                 node_id=request.node_id,
                 work_item_id=work_item_id,
                 expected_attempt_number=request.expected_attempt_number,
@@ -725,6 +751,7 @@ class WorkLeaseService:
             if work_item_id in self._in_flight or state is None or not state.matches(lease):
                 raise WorkLeaseOwnershipError("work lease is not the active service capability")
             del self._states[work_item_id]
+            self._work_runs.pop(work_item_id, None)
 
     def reserve_completion(self, lease: WorkLease) -> WorkLeaseCompletionReservation:
         """Reserve the exact active wrapper across one blocking result submission."""
@@ -789,6 +816,7 @@ class WorkLeaseService:
                 self._in_flight.remove(work_item_id)
                 if disposition is WorkLeaseCompletionDisposition.RETIRE_COMMITTED:
                     del self._states[work_item_id]
+                    self._work_runs.pop(work_item_id, None)
                 elif disposition is WorkLeaseCompletionDisposition.MARK_UNKNOWN:
                     self._states[work_item_id] = None
             except WorkLeaseError:
@@ -809,6 +837,80 @@ class WorkLeaseService:
             active = sum(state is not None for state in self._states.values())
             unknown = len(self._states) - active
             return WorkLeaseServiceSnapshot(active, unknown, len(self._in_flight))
+
+    def reserve_pause(self, run_id: RunId) -> WorkLeasePauseReservation:
+        """Atomically close new acquisition admission for one exact run."""
+        clean_run_id = _snapshot_run_id(run_id)
+        run_key = clean_run_id.value
+        reservation = WorkLeasePauseReservation(
+            RunId(run_key),
+            _token=_PAUSE_RESERVATION_TOKEN,
+        )
+        with self._lock:
+            if run_key in self._pause_gates:
+                raise WorkLeaseBusyError("run already has a pause admission reservation")
+            try:
+                self._pause_gates[run_key] = reservation
+            except BaseException:
+                _suppress_base_exception(lambda: self._pause_gates.pop(run_key, None))
+                raise
+        return reservation
+
+    def snapshot_pause(
+        self,
+        reservation: WorkLeasePauseReservation,
+    ) -> WorkLeaseServiceSnapshot:
+        """Return run-scoped ownership counts while admission remains closed."""
+        _require_exact(
+            reservation,
+            WorkLeasePauseReservation,
+            "work lease pause reservation",
+        )
+        with self._lock:
+            run_id = self._registered_pause_run_id(reservation)
+            if run_id is None:
+                raise WorkLeaseOwnershipError("pause reservation is not active")
+            run_key = run_id.value
+            work_ids = {
+                work_item_id
+                for work_item_id, parent_run_id in self._work_runs.items()
+                if parent_run_id == run_key
+            }
+            active = sum(
+                self._states.get(work_item_id) is not None
+                for work_item_id in work_ids
+                if work_item_id in self._states
+            )
+            unknown = sum(
+                self._states.get(work_item_id) is None
+                for work_item_id in work_ids
+                if work_item_id in self._states
+            )
+            in_flight = sum(work_item_id in self._in_flight for work_item_id in work_ids)
+            return WorkLeaseServiceSnapshot(active, unknown, in_flight)
+
+    def release_pause(self, reservation: WorkLeasePauseReservation) -> None:
+        """Reopen one run only for the exact service-issued pause authority."""
+        _require_exact(
+            reservation,
+            WorkLeasePauseReservation,
+            "work lease pause reservation",
+        )
+        with self._lock:
+            run_id = self._registered_pause_run_id(reservation)
+            if run_id is None:
+                raise WorkLeaseOwnershipError("pause reservation is not active")
+            del self._pause_gates[run_id.value]
+
+    def _registered_pause_run_id(
+        self,
+        reservation: WorkLeasePauseReservation,
+    ) -> RunId | None:
+        run_key = next(
+            (key for key, candidate in self._pause_gates.items() if candidate is reservation),
+            None,
+        )
+        return None if run_key is None else RunId(run_key)
 
     def _completion_state(
         self,
@@ -880,11 +982,22 @@ class WorkLeaseService:
         except BaseException:
             return False
 
-    def _reserve_acquisition(self, work_item_id: WorkItemId) -> None:
+    def _reserve_acquisition(self, run_id: RunId, work_item_id: WorkItemId) -> RunId:
+        clean_run_id = _snapshot_run_id(run_id)
+        run_key = clean_run_id.value
         with self._lock:
+            if run_key in self._pause_gates:
+                raise WorkLeaseBusyError("run acquisition admission is paused")
             if work_item_id in self._in_flight or work_item_id in self._states:
                 raise WorkLeaseBusyError("work identity already has lease state")
-            self._in_flight.add(work_item_id)
+            try:
+                self._work_runs[work_item_id] = str(run_key)
+                self._in_flight.add(work_item_id)
+            except BaseException:
+                _suppress_base_exception(lambda: self._in_flight.discard(work_item_id))
+                _suppress_base_exception(lambda: self._work_runs.pop(work_item_id, None))
+                raise
+        return RunId(run_key)
 
     def _reserve_renewal(self, lease: WorkLease) -> tuple[WorkItemId, _ActiveWorkLease]:
         work_item_id = _lease_work_item_id(lease)
@@ -921,6 +1034,8 @@ class WorkLeaseService:
     def _release_reservation(self, work_item_id: WorkItemId) -> None:
         with self._lock:
             self._in_flight.discard(work_item_id)
+            if work_item_id not in self._states:
+                self._work_runs.pop(work_item_id, None)
 
     def _mark_unknown(self, work_item_id: WorkItemId) -> None:
         with self._lock:
@@ -1331,6 +1446,12 @@ def _validate_text(value: object, maximum: int, subject: str) -> None:
         raise WorkLeaseInvalidRequestError(f"{subject} must use normalized Unicode")
 
 
+def _snapshot_run_id(value: object) -> RunId:
+    if type(value) is not RunId or type(value.value) is not str:
+        raise WorkLeaseInvalidRequestError("run identity evidence is invalid")
+    return RunId(value.value)
+
+
 __all__ = [
     "MAX_LEASE_CONTENTION_ATTEMPTS",
     "MAX_LEASE_OWNER_LENGTH",
@@ -1354,6 +1475,7 @@ __all__ = [
     "WorkLeaseInvalidRequestError",
     "WorkLeaseOutcomeUnknownError",
     "WorkLeaseOwnershipError",
+    "WorkLeasePauseReservation",
     "WorkLeaseProtocolError",
     "WorkLeaseService",
     "WorkLeaseServiceSnapshot",

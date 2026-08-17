@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from threading import Event, Lock
 from types import TracebackType
 from typing import Protocol, Self, cast, runtime_checkable
 
+from paritygrid.application.execution.pause import (
+    _PAUSE_RUNNER_TOKEN,  # pyright: ignore[reportPrivateUsage]
+    PauseAcknowledgement,
+    PauseToken,
+)
 from paritygrid.application.execution.scheduler import (
     DependencyTracker,
     SchedulerState,
@@ -74,6 +79,7 @@ class RunnerStatus(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
 
 
 class RunnerNodeOutcome(StrEnum):
@@ -82,6 +88,7 @@ class RunnerNodeOutcome(StrEnum):
     SUCCEEDED = "succeeded"
     FAILED = "failed"
     CANCELLED = "cancelled"
+    PAUSED = "paused"
 
 
 class CancellationToken:
@@ -169,6 +176,7 @@ class RunnerNodeRequest:
     plan_fingerprint: PlanFingerprint
     limits: SequentialRunnerLimits
     cancellation: CancellationToken
+    pause: PauseToken = field(default_factory=PauseToken)
 
     def __post_init__(self) -> None:
         _require_exact(self.node, ExecutionPlanNode, "runner request node")
@@ -179,12 +187,13 @@ class RunnerNodeRequest:
         )
         _require_exact(self.limits, SequentialRunnerLimits, "runner request limits")
         _require_exact(self.cancellation, CancellationToken, "runner request cancellation")
+        _require_exact(self.pause, PauseToken, "runner request pause")
 
     def __repr__(self) -> str:
         return (
             "RunnerNodeRequest("
             f"node_id={self.node.node_id!r}, limits={self.limits!r}, "
-            "plan_fingerprint=<redacted>, cancellation=<redacted>)"
+            "plan_fingerprint=<redacted>, cancellation=<redacted>, pause=<redacted>)"
         )
 
 
@@ -223,6 +232,7 @@ class RunnerReport:
     status: RunnerStatus
     scheduler_state: SchedulerState
     started_node_ids: tuple[NodeId, ...]
+    pause_acknowledgement: PauseAcknowledgement | None = None
 
     def __post_init__(self) -> None:
         _require_exact(self.status, RunnerStatus, "runner report status")
@@ -247,8 +257,30 @@ class RunnerReport:
         elif self.status is RunnerStatus.FAILED:
             if self.scheduler_state.status is not SchedulerStatus.FAILED:
                 raise RunnerProtocolError("failed runner report requires failed scheduler")
-        elif self.scheduler_state.status is not SchedulerStatus.ACTIVE:
-            raise RunnerProtocolError("cancelled runner report requires active scheduler")
+        elif self.status is RunnerStatus.CANCELLED:
+            if self.scheduler_state.status is not SchedulerStatus.ACTIVE:
+                raise RunnerProtocolError("cancelled runner report requires active scheduler")
+        elif (
+            self.scheduler_state.status is not SchedulerStatus.ACTIVE
+            or self.scheduler_state.active_node_id is not None
+        ):
+            raise RunnerProtocolError("paused runner report requires a stable active scheduler")
+        acknowledgement = cast(object, self.pause_acknowledgement)
+        if self.status is RunnerStatus.PAUSED:
+            _require_exact(
+                acknowledgement,
+                PauseAcknowledgement,
+                "paused runner report acknowledgement",
+            )
+            selected_acknowledgement = cast(PauseAcknowledgement, acknowledgement)
+            if selected_acknowledgement.scheduler_state != self.scheduler_state:
+                raise RunnerProtocolError(
+                    "paused runner report acknowledgement does not match its scheduler"
+                )
+        elif acknowledgement is not None:
+            raise RunnerProtocolError(
+                "non-paused runner report cannot carry a pause acknowledgement"
+            )
         completed_frontier = self.scheduler_state.succeeded_node_ids
         active_node_id = self.scheduler_state.active_node_id
         failed_node_id = self.scheduler_state.failed_node_id
@@ -257,6 +289,10 @@ class RunnerReport:
             consumed_frontier += (active_node_id,)
         elif failed_node_id is not None:
             consumed_frontier += (failed_node_id,)
+        elif (
+            self.status is RunnerStatus.PAUSED and started and started[-1] not in completed_frontier
+        ):
+            consumed_frontier += (started[-1],)
         if consumed_frontier != plan_order[: len(consumed_frontier)]:
             raise RunnerProtocolError(
                 "runner report scheduler nodes violate the execution frontier"
@@ -287,6 +323,8 @@ class SequentialRunner:
         "_executor",
         "_lifecycle_lock",
         "_owns_executor",
+        "_pause",
+        "_pause_authority",
         "_running",
         "_state",
     )
@@ -296,6 +334,7 @@ class SequentialRunner:
         executor: RunnerNodeExecutor,
         *,
         cancellation: CancellationToken | None = None,
+        pause: PauseToken | None = None,
         owns_executor: bool = False,
     ) -> None:
         executor_value = cast(object, executor)
@@ -304,10 +343,19 @@ class SequentialRunner:
         token = cast(object, cancellation)
         if token is not None and type(token) is not CancellationToken:
             raise TypeError("sequential runner cancellation must use CancellationToken or None")
+        pause_value = cast(object, pause)
+        if pause_value is not None and type(pause_value) is not PauseToken:
+            raise TypeError("sequential runner pause must use PauseToken or None")
         if type(owns_executor) is not bool:
             raise TypeError("sequential runner executor ownership must be boolean")
+        selected_pause = pause if pause is not None else PauseToken()
+        pause_authority = selected_pause._bind_runner(  # pyright: ignore[reportPrivateUsage]
+            _token=_PAUSE_RUNNER_TOKEN
+        )
         self._executor = executor_value
         self._cancellation = cancellation if cancellation is not None else CancellationToken()
+        self._pause = selected_pause
+        self._pause_authority = pause_authority
         self._owns_executor = owns_executor
         self._lifecycle_lock = Lock()
         self._closed = False
@@ -323,6 +371,11 @@ class SequentialRunner:
     def state(self) -> SchedulerState | None:
         """Return the latest visible scheduler frontier, if execution began."""
         return self._state
+
+    @property
+    def pause(self) -> PauseToken:
+        """Return the shared stable-boundary pause token used by this runner."""
+        return self._pause
 
     @property
     def is_closed(self) -> bool:
@@ -374,6 +427,18 @@ class SequentialRunner:
             while True:
                 if self._cancellation.is_requested:
                     return RunnerReport(RunnerStatus.CANCELLED, tracker.state, tuple(started))
+                if self._pause.is_requested:
+                    acknowledgement = self._pause._acknowledge_for_runner(  # pyright: ignore[reportPrivateUsage]
+                        tracker.state,
+                        authority=self._pause_authority,
+                        _token=_PAUSE_RUNNER_TOKEN,
+                    )
+                    return RunnerReport(
+                        RunnerStatus.PAUSED,
+                        tracker.state,
+                        tuple(started),
+                        acknowledgement,
+                    )
                 node = tracker.next_ready_node()
                 if node is None:
                     raise RunnerProtocolError("active scheduler has no admissible node")
@@ -387,6 +452,7 @@ class SequentialRunner:
                             plan_fingerprint=plan_fingerprint,
                             limits=limits,
                             cancellation=self._cancellation,
+                            pause=self._pause,
                         )
                     )
                 except Exception:
@@ -409,12 +475,27 @@ class SequentialRunner:
                 elif result.outcome is RunnerNodeOutcome.FAILED:
                     self._state = tracker.fail(node.node_id)
                     return RunnerReport(RunnerStatus.FAILED, tracker.state, tuple(started))
-                else:
+                elif result.outcome is RunnerNodeOutcome.CANCELLED:
                     if not self._cancellation.is_requested:
                         raise RunnerProtocolError(
                             "cancelled node result requires requested cancellation"
                         )
                     return RunnerReport(RunnerStatus.CANCELLED, tracker.state, tuple(started))
+                else:
+                    if not self._pause.is_requested:
+                        raise RunnerProtocolError("paused node result requires requested pause")
+                    self._state = tracker.pause(node.node_id)
+                    acknowledgement = self._pause._acknowledge_for_runner(  # pyright: ignore[reportPrivateUsage]
+                        tracker.state,
+                        authority=self._pause_authority,
+                        _token=_PAUSE_RUNNER_TOKEN,
+                    )
+                    return RunnerReport(
+                        RunnerStatus.PAUSED,
+                        tracker.state,
+                        tuple(started),
+                        acknowledgement,
+                    )
         finally:
             with self._lifecycle_lock:
                 self._running = False

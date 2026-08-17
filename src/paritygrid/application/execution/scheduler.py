@@ -305,6 +305,28 @@ class DependencyTracker:
         self._state = self._replace_status(node_id, ScheduledNodeStatus.FAILED)
         return self._state
 
+    def pause(self, node_id: NodeId) -> SchedulerState:
+        """Return one active sequential node to READY at a proven checkpoint boundary."""
+        _require_exact(node_id, NodeId, "paused scheduler node")
+        identity = node_id
+        if self._state.status is not SchedulerStatus.ACTIVE:
+            raise SchedulerTransitionError("terminal scheduler cannot pause a node")
+        if self._state.active_node_id != identity:
+            raise SchedulerTransitionError("only the active scheduler node can pause")
+        self._state = SchedulerState(
+            SchedulerStatus.ACTIVE,
+            tuple(
+                ScheduledNode(
+                    node.node_id,
+                    (ScheduledNodeStatus.READY if node.node_id == identity else node.status),
+                    node.remaining_dependency_ids,
+                )
+                for node in self._state.nodes
+            ),
+            self._plan_fingerprint,
+        )
+        return self._state
+
     def _replace_status(
         self,
         node_id: NodeId,
