@@ -114,7 +114,7 @@ def test_envelope_and_token_validate_exact_runtime_types(tmp_path: Path) -> None
         {"seed": True},
         {"hold_timeout_seconds": 1},
         {"hold_timeout_seconds": 0.5},
-        {"hold_timeout_seconds": 31.0},
+        {"hold_timeout_seconds": 61.0},
         {"database_path": valid.marker_path},
         {"invocation_token": "wrong"},
     ):

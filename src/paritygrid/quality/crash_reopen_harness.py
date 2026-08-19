@@ -41,10 +41,12 @@ class CrashReopenConfig:
     case_directory: Path
     failpoint: CrashFailpoint
     seed: int = 8675309
-    startup_timeout_seconds: float = 5.0
-    boundary_timeout_seconds: float = 10.0
-    process_timeout_seconds: float = 5.0
-    hold_timeout_seconds: float = 15.0
+    # Cold interpreter starts on a loaded Windows host can exceed five
+    # seconds; the waits stay bounded and deterministic per run.
+    startup_timeout_seconds: float = 30.0
+    boundary_timeout_seconds: float = 30.0
+    process_timeout_seconds: float = 30.0
+    hold_timeout_seconds: float = 45.0
 
     def __post_init__(self) -> None:
         if not self.case_directory.is_absolute():
@@ -59,7 +61,7 @@ class CrashReopenConfig:
             self.process_timeout_seconds,
             self.hold_timeout_seconds,
         ):
-            if type(value) is not float or not 0.1 <= value <= 30.0:
+            if type(value) is not float or not 0.1 <= value <= 60.0:
                 raise CrashReopenHarnessError("case timeout is invalid")
         if self.hold_timeout_seconds <= self.boundary_timeout_seconds:
             raise CrashReopenHarnessError("hold timeout must exceed the boundary timeout")

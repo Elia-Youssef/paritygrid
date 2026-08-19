@@ -179,7 +179,7 @@ class CrashControlEnvelope:
             raise CrashReopenProtocolError("control failpoint is invalid")
         _require_exact_int(self.command_ordinal, "command ordinal", 1, 3)
         _require_exact_int(self.seed, "scenario seed", 0, 4_294_967_295)
-        if type(self.hold_timeout_seconds) is not float or not 1 <= self.hold_timeout_seconds <= 30:
+        if type(self.hold_timeout_seconds) is not float or not 1 <= self.hold_timeout_seconds <= 60:
             raise CrashReopenProtocolError("hold timeout is invalid")
         database_path = _require_absolute_path(str(self.database_path), "database path")
         marker_path = _require_absolute_path(str(self.marker_path), "marker path")
