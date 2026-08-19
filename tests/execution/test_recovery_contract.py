@@ -806,7 +806,7 @@ def test_evidence_validation_and_repr() -> None:
         RecoveryEvidence(cast(Any, object()), (), (), ())
     with pytest.raises(TypeError, match="artifacts"):
         RecoveryEvidence(evidence.frontier, cast(Any, []), (), ())
-    with pytest.raises(ValueError, match="idempotency"):
+    with pytest.raises(RecoveryInvalidRequestError, match="idempotency evidence exceeds"):
         RecoveryEvidence(
             evidence.frontier,
             (),

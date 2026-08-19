@@ -376,8 +376,12 @@ class CancellationCoordinator:
             )
         try:
             with self._lifecycle_lock:
+                if self._completed:
+                    raise CancellationCoordinatorInvalidRequestError(
+                        "completed cancellation coordinator cannot be reused"
+                    )
                 if self._reservation is not None:
-                    if self._run_id == clean_run_id and not self._completed:
+                    if self._run_id == clean_run_id:
                         return
                     raise CancellationCoordinatorBusyError(
                         "cancellation coordinator already owns a request"
@@ -644,14 +648,20 @@ class CancellationCoordinator:
             resources = self._resources
             self._resources = ()
         closed = 0
+        first_failure: Exception | None = None
         for resource in resources:
+            # Every registered resource gets its bounded close attempt even
+            # after an earlier failure, so one bad resource never leaks the rest.
             try:
                 resource.close(timeout_seconds=self._settings.cleanup_timeout_seconds)
-            except Exception:
-                raise CancellationCleanupError(
-                    "run cancelled but an owned resource failed bounded cleanup"
-                ) from None
-            closed += 1
+                closed += 1
+            except Exception as error:
+                if first_failure is None:
+                    first_failure = error
+        if first_failure is not None:
+            raise CancellationCleanupError(
+                "run cancelled but an owned resource failed bounded cleanup"
+            ) from first_failure
         return closed
 
     def _active_request(self) -> tuple[WorkLeasePauseReservation, RunId]:

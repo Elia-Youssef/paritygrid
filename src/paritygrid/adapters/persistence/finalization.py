@@ -81,7 +81,12 @@ class SQLiteFinalizationStateReader:
             for work in work_items:
                 head = checkpoints_repository.get_head(run_id, work.node_id, work.partition_key)
                 # The work listing above already verified every head exists.
-                assert head is not None
+                if head is None:
+                    from paritygrid.application.execution.finalization import (
+                        FinalizationConflictError,
+                    )
+
+                    raise FinalizationConflictError("checkpoint head disappeared mid-read")
                 checkpoint_versions.append((work.work_item_id, head.current_version.number))
         return FinalizationEvidence(
             run,

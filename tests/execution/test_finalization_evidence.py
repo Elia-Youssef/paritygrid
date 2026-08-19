@@ -177,6 +177,34 @@ def _success_node() -> RunNodeRecord:
     )
 
 
+MAX_SEQUENCE = 2_147_483_647
+
+
+def _running_work() -> WorkItemRecord:
+    from paritygrid.domain.models import AttemptNumber
+
+    return WorkItemRecord(
+        WorkItemId("wrk_final-a"),
+        RUN_ID,
+        NODE_A,
+        PartitionKey("part-a"),
+        WorkItemState.RUNNING,
+        2,
+        0,
+        0,
+        None,
+        None,
+        "final-owner",
+        _time(30),
+        AttemptNumber(1),
+        _time(4),
+        "sequential",
+        "final-worker",
+        _time(3),
+        _time(4),
+    )
+
+
 def _empty_node(node_id: NodeId = NODE_EMPTY) -> RunNodeRecord:
     return RunNodeRecord(
         RUN_ID,
@@ -1212,3 +1240,59 @@ def test_empty_node_receipt_shape_corruption_fails_verification() -> None:
         writer.receipt_mutators[1] = mutator
         with pytest.raises(FinalizationOutcomeUnknownError):
             finalizer.finalize(RUN_ID, plan_nodes=PLAN_NODES, plan_fingerprint=PLAN_FINGERPRINT)
+
+
+def test_cancelled_replay_with_active_work_is_a_typed_conflict() -> None:
+    evidence = _evidence(with_work=False)
+    object.__setattr__(
+        evidence,
+        "run",
+        replace(_run(state=RunState.CANCELLED, row_version=9), finished_at=_time(19)),
+    )
+    active = replace(_running_work(), state=WorkItemState.RUNNING)
+    node = replace(
+        _success_node(),
+        work_total=1,
+        work_running=1,
+        status=RunNodeStatus.RUNNING,
+        finished_at=None,
+    )
+    object.__setattr__(evidence, "work", (active,))
+    object.__setattr__(evidence, "nodes", (node, _empty_node()))
+    object.__setattr__(
+        evidence,
+        "checkpoint_versions",
+        ((WorkItemId("wrk_final-a"), 0), (WorkItemId("wrk_final-b"), 0)),
+    )
+    finalizer, writer, _reader, _analytics = _finalizer(evidence)
+    with pytest.raises(FinalizationNotReadyError, match="non-terminal work"):
+        finalizer.finalize(RUN_ID, plan_nodes=PLAN_NODES, plan_fingerprint=PLAN_FINGERPRINT)
+    assert writer.commands == []
+
+
+def test_empty_node_headroom_is_cumulative() -> None:
+    empty = FinalizationEvidence(
+        _run(),
+        EventSequence(9),
+        9,
+        (_empty_node(NODE_A), _empty_node(NODE_EMPTY)),
+        (),
+        (),
+        (),
+    )
+    crowded = FinalizationEvidence(
+        replace(_run(), row_version=MAX_SEQUENCE - 1),
+        EventSequence(9),
+        9,
+        (_empty_node(NODE_A), _empty_node(NODE_EMPTY)),
+        (),
+        (),
+        (),
+    )
+    finalizer, _writer, _reader, _analytics = _finalizer(empty)
+    report = finalizer.finalize(RUN_ID, plan_nodes=PLAN_NODES, plan_fingerprint=PLAN_FINGERPRINT)
+    assert report.action.value == "finalized"
+    crowded_finalizer, crowded_writer, _r2, _a2 = _finalizer(crowded)
+    with pytest.raises(FinalizationInvalidRequestError, match="advance its arrows"):
+        crowded_finalizer.finalize(RUN_ID, plan_nodes=PLAN_NODES, plan_fingerprint=PLAN_FINGERPRINT)
+    assert crowded_writer.commands == []
