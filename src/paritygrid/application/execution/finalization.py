@@ -1193,6 +1193,11 @@ def _expected_events(command: TransitionRun) -> ExecutionEventBatch:
     )
 
 
+def snapshot_finalization_evidence(value: object) -> FinalizationEvidence:
+    """Return one detached exact copy of a finalization frontier."""
+    return _snapshot_evidence(value)
+
+
 def _snapshot_evidence(value: object) -> FinalizationEvidence:
     if type(value) is not FinalizationEvidence:
         raise TypeError("finalization evidence has an invalid type")
@@ -1545,4 +1550,5 @@ __all__ = [
     "FinalizationVerificationError",
     "FinalizationWriter",
     "RunFinalizer",
+    "snapshot_finalization_evidence",
 ]

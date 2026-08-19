@@ -29,6 +29,7 @@ from paritygrid.adapters.persistence.migration import (
     upgrade_to_head,
 )
 from paritygrid.adapters.persistence.pause import SQLitePauseStateReader
+from paritygrid.adapters.persistence.recovery import SQLiteRecoveryStateReader
 from paritygrid.adapters.persistence.repositories import (
     MAX_CANONICAL_DOCUMENT_BYTES,
     SqlAlchemyCheckpointRepository,
@@ -96,6 +97,7 @@ __all__ = (
     "SQLiteLibraryInfo",
     "SQLitePauseStateReader",
     "SQLitePragmaState",
+    "SQLiteRecoveryStateReader",
     "SQLiteTransactionalWriter",
     "SecretReferenceName",
     "SessionFactory",
