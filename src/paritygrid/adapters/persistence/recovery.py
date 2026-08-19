@@ -20,7 +20,16 @@ from paritygrid.domain.models import RunId
 
 
 class SQLiteRecoveryStateReader:
-    """Read one recovery frontier plus artifact integrity in short transactions."""
+    """Read one recovery frontier plus artifact integrity in short transactions.
+
+    The artifact-integrity gate is deliberately store-wide: a startup scanner
+    must not recover any single run while any committed artifact in the store
+    is orphaned, missing, or changed, because the damage crosses run
+    boundaries. Foreign damage therefore fails this run's recovery closed
+    (AMBIGUOUS) rather than being attributed or ignored. Stranded in-progress
+    idempotency reservations are likewise reported for the whole store for the
+    same single-owner startup reason.
+    """
 
     __slots__ = ("_artifact_root", "_database", "_frontier_reader")
 

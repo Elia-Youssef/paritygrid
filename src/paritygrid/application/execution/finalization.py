@@ -472,6 +472,9 @@ class RunFinalizer:
         evidence: FinalizationEvidence,
     ) -> FinalizationReport:
         del run_id
+        _require_work_terminal(evidence)
+        _require_checkpoint_frontier(evidence)
+        self._require_aggregate_consistency(evidence)
         return FinalizationReport(
             FinalizationAction.ALREADY_FINALIZED,
             FinalizationOutcome.CANCELLED,
@@ -497,10 +500,15 @@ class RunFinalizer:
         del plan_nodes
         _require_work_terminal(evidence)
         _require_checkpoint_frontier(evidence)
-        _require_headroom(evidence)
+        _require_headroom(evidence, 1 + _empty_node_count(evidence))
         self._require_aggregate_consistency(evidence)
+        # One timestamp covers the whole mutation phase so node finished_at
+        # values can never precede each other or the run transition.
+        transitioned_at = self._now(evidence.run)
         submission_ids: list[WriterSubmissionId] = []
-        evidence = self._finalize_empty_nodes(evidence, correlation, submission_ids)
+        evidence = self._finalize_empty_nodes(
+            evidence, correlation, submission_ids, transitioned_at
+        )
         _require_nodes_terminal(evidence)
         summary = self._analytics_projection(evidence)
         outcome = _derive_outcome(evidence)
@@ -511,7 +519,6 @@ class RunFinalizer:
             else _final_fingerprint(plan_fingerprint, evidence, summary)
         )
         target = _target_state(outcome)
-        transitioned_at = self._now(evidence.run)
         command = _transition_command(evidence, target, transitioned_at, fingerprint, correlation)
         run, events, submission_id = self._execute(command, command, evidence.run)
         submission_ids.append(submission_id)
@@ -531,6 +538,7 @@ class RunFinalizer:
         evidence: FinalizationEvidence,
         correlation: str | None,
         submission_ids: list[WriterSubmissionId],
+        transitioned_at: UtcTimestamp,
     ) -> FinalizationEvidence:
         empty = tuple(
             node
@@ -539,7 +547,7 @@ class RunFinalizer:
         )
         run_row_version = evidence.run.row_version
         for node in empty:
-            finalized_at = self._now(evidence.run)
+            finalized_at = transitioned_at
             command = FinalizeEmptyRunNode(
                 evidence.run.run_id,
                 node.node_id,
@@ -958,14 +966,20 @@ def _require_checkpoint_frontier(evidence: FinalizationEvidence) -> None:
             raise FinalizationConflictError("successful work is missing its checkpoint")
 
 
-def _require_headroom(evidence: FinalizationEvidence) -> None:
-    maximum = MAX_CONSISTENCY_SEQUENCE - 1
+def _empty_node_count(evidence: FinalizationEvidence) -> int:
+    return sum(
+        node.work_total == 0 and node.status is RunNodeStatus.PENDING for node in evidence.nodes
+    )
+
+
+def _require_headroom(evidence: FinalizationEvidence, arrows: int = 1) -> None:
+    maximum = MAX_CONSISTENCY_SEQUENCE - arrows
     if (
         evidence.run.row_version > maximum
         or evidence.next_event_sequence.number > maximum
         or evidence.event_counter_row_version > maximum
     ):
-        raise FinalizationInvalidRequestError("finalization frontier cannot advance its arrow")
+        raise FinalizationInvalidRequestError("finalization frontier cannot advance its arrows")
 
 
 def _advanced_run(run: RunRecord, row_version: int) -> RunRecord:

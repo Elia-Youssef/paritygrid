@@ -370,7 +370,7 @@ def test_real_partial_success_finalizes_with_fingerprint_and_replay(tmp_path: Pa
     try:
         writer = _writer_for(database)
         writer.start()
-        clock = _Clock(_time(4), _time(4), _time(20), _time(21))
+        clock = _Clock(_time(4), _time(4), _time(20))
         _prepare_partial_run(writer, clock)
         finalizer, coordinator = _finalizer(writer, database, analytics_path, clock)
         report = finalizer.finalize(
@@ -382,7 +382,8 @@ def test_real_partial_success_finalizes_with_fingerprint_and_replay(tmp_path: Pa
         assert report.action is FinalizationAction.FINALIZED
         assert report.outcome is FinalizationOutcome.PARTIALLY_SUCCEEDED
         assert report.run.state is RunState.PARTIALLY_SUCCEEDED
-        assert report.run.finished_at == _time(21)
+        # The empty-node arrow and the run transition share one timestamp.
+        assert report.run.finished_at == _time(20)
         assert report.fingerprint is not None
         assert report.submission_ids[-1] == WriterSubmissionId(10)
 
@@ -553,7 +554,7 @@ def test_real_two_session_race_yields_one_winner(tmp_path: Path) -> None:
     try:
         writer_a = _writer_for(database)
         writer_a.start()
-        clock_a = _Clock(_time(4), _time(4), _time(20), _time(21))
+        clock_a = _Clock(_time(4), _time(4), _time(20))
         _prepare_partial_run(writer_a, clock_a)
         reader = SQLiteFinalizationStateReader(database)
         stale = reader.read(RUN_ID)

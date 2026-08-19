@@ -460,13 +460,23 @@ def test_duplicate_cancellation_converges_without_mutation() -> None:
     first = coordinator.cancel()
     assert first.action is CancellationAction.CANCELLED
 
-    coordinator.request_cancellation(RUN_ID)
-    second = coordinator.cancel()
+    # A completed coordinator is single-use; convergent observation of the
+    # already-cancelled run goes through a fresh coordinator.
+    with pytest.raises(CancellationCoordinatorInvalidRequestError, match="cannot be reused"):
+        coordinator.request_cancellation(RUN_ID)
+    with pytest.raises(CancellationCoordinatorInvalidRequestError, match="not been requested"):
+        coordinator.cancel()
+
+    observer, observer_writer, _observer_reader, _observer_leases, _observer_sink = _coordinator()
+    object.__setattr__(observer_writer, "state", writer.state)
+    observer.request_cancellation(RUN_ID)
+    second = observer.cancel()
 
     assert second.action is CancellationAction.ALREADY_CANCELLED
     assert second.run.state is RunState.CANCELLED
     assert second.submission_ids == ()
     assert second.events.items == ()
+    assert len(observer_writer.commands) == 0
     assert len(writer.commands) == 2
 
 
@@ -897,3 +907,19 @@ def test_report_requires_a_closed_action_and_matching_run() -> None:
             report.submission_ids,
             -1,
         )
+
+
+def test_cleanup_failure_still_closes_remaining_resources() -> None:
+    coordinator, _writer, _reader, _leases, _sink = _coordinator()
+    failing = _Resource(failure=RuntimeError("close failed"))
+    surviving = _Resource()
+    later = _Resource(failure=TimeoutError("second failure"))
+    coordinator.register(failing)
+    coordinator.register(surviving)
+    coordinator.register(later)
+    coordinator.request_cancellation(RUN_ID)
+    with pytest.raises(CancellationCleanupError):
+        coordinator.cancel()
+    assert failing.closed
+    assert surviving.closed, "resources after the first failure must still close"
+    assert later.closed

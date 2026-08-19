@@ -19,6 +19,7 @@ from paritygrid.application.ports.configuration import (
     NestedDocumentObject,
 )
 from paritygrid.application.ports.consistency import (
+    MAX_CONSISTENCY_SEQUENCE,
     ConsistencyRepositoryError,
     EventSequence,
     EventSubjectKind,
@@ -275,7 +276,9 @@ class RecoveryEvidence:
             if type(collection) is not tuple:
                 raise TypeError(f"{subject} must be a tuple")
         if len(self.idempotency_in_progress) > MAX_RECOVERY_STRANDED_IDEMPOTENCY:
-            raise ValueError("recovery idempotency evidence exceeds the bound")
+            raise RecoveryInvalidRequestError(
+                "recovery idempotency evidence exceeds the bounded limit"
+            )
 
     def __repr__(self) -> str:
         return (
@@ -454,6 +457,7 @@ class StartupRecoveryScanner:
                 raise RecoveryAmbiguousError(
                     "ambiguous recovery evidence prevents unsafe scheduling"
                 )
+            _require_headroom(evidence.frontier, len(before.recoverable_findings))
             submission_ids: list[WriterSubmissionId] = []
             frontier = evidence.frontier
             work_by_id = {work.work_item_id: work for work in frontier.work}
@@ -798,6 +802,19 @@ _TERMINAL_WORK = frozenset(
         WorkItemState.CANCELLED,
     }
 )
+
+
+def _require_headroom(frontier: FinalizationEvidence, arrows: int) -> None:
+    """Reject frontiers that cannot advance every recovery command at once."""
+    if arrows <= 0:
+        return
+    maximum = MAX_CONSISTENCY_SEQUENCE - arrows
+    if (
+        frontier.run.row_version > maximum
+        or frontier.next_event_sequence.number > maximum
+        or frontier.event_counter_row_version > maximum
+    ):
+        raise RecoveryInvalidRequestError("recovery frontier cannot advance its commands")
 
 
 def _worse(current: RecoveryStatus, candidate: RecoveryStatus) -> RecoveryStatus:
