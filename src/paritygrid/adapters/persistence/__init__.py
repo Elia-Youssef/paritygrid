@@ -22,6 +22,7 @@ from paritygrid.adapters.persistence.errors import (
     SQLiteCapabilityError,
     SQLiteConfigurationError,
 )
+from paritygrid.adapters.persistence.finalization import SQLiteFinalizationStateReader
 from paritygrid.adapters.persistence.migration import (
     HEAD_REVISION,
     MigrationReport,
@@ -91,6 +92,7 @@ __all__ = (
     "SQLiteConfigurationError",
     "SQLiteDatabase",
     "SQLiteDatabaseConfig",
+    "SQLiteFinalizationStateReader",
     "SQLiteLibraryInfo",
     "SQLitePauseStateReader",
     "SQLitePragmaState",
