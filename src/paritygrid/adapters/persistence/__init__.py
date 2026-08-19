@@ -1,5 +1,6 @@
 """Authoritative SQLite persistence foundation."""
 
+from paritygrid.adapters.persistence.cancellation import SQLiteCancellationStateReader
 from paritygrid.adapters.persistence.capabilities import (
     MINIMUM_SQLITE_VERSION,
     REQUIRED_BUSY_TIMEOUT_MS,
@@ -84,6 +85,7 @@ __all__ = (
     "RepairActionApplicationStatus",
     "RepairPlanStatus",
     "RunNodeState",
+    "SQLiteCancellationStateReader",
     "SQLiteCapabilities",
     "SQLiteCapabilityError",
     "SQLiteConfigurationError",
