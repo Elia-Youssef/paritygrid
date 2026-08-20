@@ -172,7 +172,7 @@ def _read_pragma_state(cursor: sqlite3.Cursor) -> SQLitePragmaState:
 
 def _initialize_sqlite_connection(
     dbapi_connection: DBAPIConnection,
-    _connection_record: ConnectionPoolEntry,
+    connection_record: object,
 ) -> None:
     if not isinstance(dbapi_connection, sqlite3.Connection):
         raise SQLiteConfigurationError("SQLite engine received an unexpected database driver.")
@@ -208,6 +208,17 @@ def _initialize_sqlite_connection(
             connection.autocommit = previous_autocommit
         except BaseException as error:
             restoration_error = error
+
+    initialization_error = operation_error or restoration_error or cleanup_error
+    if initialization_error is not None and isinstance(connection_record, ConnectionPoolEntry):
+        # A connect listener runs before SQLAlchemy attaches the DB-API handle
+        # to its pool record, so listener failure can bypass pool disposal.
+        try:
+            connection.close()
+        except BaseException:
+            initialization_error.add_note(
+                "The failed pooled SQLite connection also failed to close."
+            )
 
     if operation_error is not None:
         if cleanup_error is not None:

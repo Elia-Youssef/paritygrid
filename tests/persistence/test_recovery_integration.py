@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import gc
 import threading
+import warnings
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
@@ -629,8 +631,12 @@ def test_real_quick_check_failure_fails_closed(tmp_path: Path) -> None:
         handle.write(b"\x00corrupted-page-bytes\x00")
     from paritygrid.adapters.persistence.errors import SQLiteCapabilityError
 
-    with pytest.raises(SQLiteCapabilityError):
-        SQLiteDatabase.open(SQLiteDatabaseConfig(database_path))
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", ResourceWarning)
+        with pytest.raises(SQLiteCapabilityError):
+            SQLiteDatabase.open(SQLiteDatabaseConfig(database_path))
+        gc.collect()
+    assert not [warning for warning in caught if warning.category is ResourceWarning]
 
 
 def test_real_event_gap_is_a_typed_corruption(tmp_path: Path) -> None:
