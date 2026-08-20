@@ -738,10 +738,18 @@ def _classify(
             )
 
     if run.state in _TERMINAL_RUN_STATES:
-        active = any(work.state not in _TERMINAL_WORK for work in evidence.frontier.work) or any(
-            node.status in {RunNodeStatus.PENDING, RunNodeStatus.RUNNING}
-            for node in evidence.frontier.nodes
-        )
+        if run.state is RunState.CANCELLED:
+            # Cancellation deliberately preserves work that was never admitted
+            # (PENDING/RETRY_WAIT) as inert durable evidence. Only a surviving
+            # owned claim is active after the terminal cancellation arrow.
+            active = any(work.state is WorkItemState.RUNNING for work in evidence.frontier.work)
+        else:
+            active = any(
+                work.state not in _TERMINAL_WORK for work in evidence.frontier.work
+            ) or any(
+                node.status in {RunNodeStatus.PENDING, RunNodeStatus.RUNNING}
+                for node in evidence.frontier.nodes
+            )
         if active:
             findings.append(
                 RecoveryFinding(RecoveryFindingKind.RUN_TERMINAL_WITH_ACTIVE_WORK, run_id)

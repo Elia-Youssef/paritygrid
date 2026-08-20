@@ -391,6 +391,23 @@ def test_clean_terminal_shutdown_is_healthy_and_committed() -> None:
     assert writer.commands == []
 
 
+@pytest.mark.parametrize("state", [WorkItemState.PENDING, WorkItemState.RETRY_WAIT])
+def test_cancelled_run_preserves_inert_unclaimed_work(state: WorkItemState) -> None:
+    evidence = _evidence(
+        run=_run(state=RunState.CANCELLED),
+        work=(_work(state=state, lease_expires_at=None),),
+        work_states=(state,),
+    )
+    scanner, writer, _reader = _scanner(evidence)
+
+    scan = scanner.scan(RUN_ID)
+
+    assert scan.status is RecoveryStatus.HEALTHY
+    assert RecoveryFindingKind.RUN_TERMINAL in {finding.kind for finding in scan.findings}
+    assert scanner.recover(RUN_ID).applied == 0
+    assert writer.commands == []
+
+
 def test_queued_run_reports_awaiting_start() -> None:
     evidence = _evidence(
         run=_run(state=RunState.QUEUED),
