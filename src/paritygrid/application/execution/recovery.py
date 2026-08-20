@@ -461,13 +461,19 @@ class StartupRecoveryScanner:
             submission_ids: list[WriterSubmissionId] = []
             frontier = evidence.frontier
             work_by_id = {work.work_item_id: work for work in frontier.work}
-            node_by_id = {node.node_id: node for node in frontier.nodes}
             applied = 0
             for finding in before.recoverable_findings:
                 work_item_id = finding.work_item_id
                 assert work_item_id is not None
                 work = work_by_id.get(work_item_id)
-                node = node_by_id.get(work.node_id) if work is not None else None
+                node = (
+                    next(
+                        (item for item in frontier.nodes if item.node_id == work.node_id),
+                        None,
+                    )
+                    if work is not None
+                    else None
+                )
                 if work is None or node is None:
                     raise RecoveryProtocolError("recovery finding lacks durable parents")
                 command = _recovery_command(
@@ -896,9 +902,7 @@ def _advanced_frontier(frontier: FinalizationEvidence, node_id: NodeId) -> Final
         _advanced_run(frontier.run, frontier.run.row_version + 1),
         EventSequence(frontier.next_event_sequence.number + 1),
         frontier.event_counter_row_version + 1,
-        tuple(
-            node if node.node_id is not node_id else _advanced_node(node) for node in frontier.nodes
-        ),
+        tuple(node if node.node_id != node_id else _advanced_node(node) for node in frontier.nodes),
         frontier.work,
         frontier.attempts,
         frontier.checkpoint_versions,

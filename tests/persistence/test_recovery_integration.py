@@ -69,6 +69,7 @@ RUN_ID = RunId("run_recov-real")
 PIPELINE_ID = PipelineId("pip_recov-real")
 NODE_A = NodeId("nod_recov-a")
 WORK_A = WorkItemId("wrk_recov-a")
+WORK_B = WorkItemId("wrk_recov-b")
 RUNNER_KIND = "sequential"
 
 
@@ -310,6 +311,90 @@ def test_real_expired_lease_recovery_reopens_and_repeats_noop(tmp_path: Path) ->
             second_writer.close(timeout_seconds=5.0)
     finally:
         reopened.close()
+
+
+def test_real_recovery_advances_same_node_frontier_between_expired_work(tmp_path: Path) -> None:
+    database = _open_database(tmp_path / "recovery same node.db")
+    artifact_root = tmp_path / "artifacts"
+    artifact_root.mkdir()
+    writer: SQLiteTransactionalWriter | None = None
+    try:
+        writer = _writer_for(database)
+        writer.start()
+        _start_run(writer)
+        _submit(
+            writer,
+            BootstrapWork(
+                run_id=RUN_ID,
+                node_id=NODE_A,
+                work_item_id=WORK_B,
+                partition_key=PartitionKey("part-recov-b"),
+                input_reference=None,
+                created_at=_time(4),
+                expected_node_row_version=2,
+                expected_run_row_version=3,
+                event=_event(4, "work_created", WORK_B, second=4),
+            ),
+        )
+        service = WorkLeaseService(
+            writer,
+            _Clock(_time(10)),
+            settings=WorkLeaseSettings(
+                lease_duration=Duration(1_000_000),
+                admission_timeout_seconds=5.0,
+                result_timeout_seconds=5.0,
+            ),
+        )
+        service.acquire(
+            AcquireWorkLeaseRequest(
+                run_id=RUN_ID,
+                node_id=NODE_A,
+                work_item_id=WORK_A,
+                expected_attempt_number=AttemptNumber(1),
+                expected_work_row_version=1,
+                expected_node_row_version=3,
+                expected_run_row_version=4,
+                lease_owner="recov-owner-a",
+                runner_kind=RUNNER_KIND,
+                worker_identity="recov-worker-a",
+                event=_event(5, "work_claimed", WORK_A, second=10),
+            )
+        )
+        service.acquire(
+            AcquireWorkLeaseRequest(
+                run_id=RUN_ID,
+                node_id=NODE_A,
+                work_item_id=WORK_B,
+                expected_attempt_number=AttemptNumber(1),
+                expected_work_row_version=1,
+                expected_node_row_version=4,
+                expected_run_row_version=5,
+                lease_owner="recov-owner-b",
+                runner_kind=RUNNER_KIND,
+                worker_identity="recov-worker-b",
+                event=_event(6, "work_claimed", WORK_B, second=10),
+            )
+        )
+
+        scanner = _scanner(writer, database, artifact_root, _time(30))
+        report = scanner.recover(RUN_ID, correlation_id="recov:same-node")
+
+        assert report.applied == 2
+        assert report.after.status is RecoveryStatus.HEALTHY
+        with database.transaction() as session:
+            from paritygrid.adapters.persistence import SqlAlchemyWorkItemRepository
+
+            repository = SqlAlchemyWorkItemRepository(session)
+            recovered_a = repository.get(WORK_A)
+            recovered_b = repository.get(WORK_B)
+            assert recovered_a is not None
+            assert recovered_b is not None
+            assert recovered_a.state is WorkItemState.RETRY_WAIT
+            assert recovered_b.state is WorkItemState.RETRY_WAIT
+    finally:
+        if writer is not None:
+            writer.close(timeout_seconds=5.0)
+        database.close()
 
 
 def test_real_committed_artifact_prevents_duplicate_effect_classification(tmp_path: Path) -> None:
