@@ -66,6 +66,7 @@ from paritygrid.application.writes import (
 )
 from paritygrid.domain.execution import RunState
 from paritygrid.domain.models import (
+    Duration,
     NodeId,
     PipelineId,
     PipelineVersion,
@@ -505,19 +506,25 @@ class RunFinalizer:
         # One timestamp covers the whole mutation phase so node finished_at
         # values can never precede each other or the run transition.
         transitioned_at = self._now(evidence.run)
+        projected = _project_empty_nodes(evidence, correlation, transitioned_at)
+        _require_nodes_terminal(projected)
+        summary = self._analytics_projection(projected)
+        outcome = _derive_outcome(projected)
+        _require_derivation_agreement(projected, summary, outcome)
+        fingerprint = (
+            None
+            if outcome is FinalizationOutcome.FAILED
+            else _final_fingerprint(plan_fingerprint, projected, summary)
+        )
         submission_ids: list[WriterSubmissionId] = []
         evidence = self._finalize_empty_nodes(
             evidence, correlation, submission_ids, transitioned_at
         )
-        _require_nodes_terminal(evidence)
-        summary = self._analytics_projection(evidence)
-        outcome = _derive_outcome(evidence)
-        _require_derivation_agreement(evidence, summary, outcome)
-        fingerprint = (
-            None
-            if outcome is FinalizationOutcome.FAILED
-            else _final_fingerprint(plan_fingerprint, evidence, summary)
-        )
+        if evidence != projected:
+            self._mark_uncertain()
+            raise FinalizationVerificationError(
+                "empty-node commits diverged from their validated projection"
+            )
         target = _target_state(outcome)
         command = _transition_command(evidence, target, transitioned_at, fingerprint, correlation)
         run, events, submission_id = self._execute(command, command, evidence.run)
@@ -547,26 +554,12 @@ class RunFinalizer:
         )
         run_row_version = evidence.run.row_version
         for node in empty:
-            finalized_at = transitioned_at
-            command = FinalizeEmptyRunNode(
-                evidence.run.run_id,
-                node.node_id,
-                node.row_version,
+            command = _empty_node_command(
+                evidence,
+                node,
                 run_row_version,
-                finalized_at,
-                EventAppendRequest(
-                    EventSequence(evidence.next_event_sequence.number),
-                    evidence.event_counter_row_version,
-                    PendingExecutionEvent(
-                        "run_node_succeeded",
-                        finalized_at,
-                        EventSubjectKind.RUN,
-                        _snapshot_run_id(evidence.run.run_id),
-                        correlation,
-                        EMPTY_NODE_EVENT_PAYLOAD_SCHEMA_VERSION,
-                        RedactedDocument.from_mapping({"node_id": str(node.node_id)}),
-                    ),
-                ),
+                transitioned_at,
+                correlation,
             )
             node_record, node_events, submission_id = self._execute_empty(command, command)
             submission_ids.append(submission_id)
@@ -972,6 +965,71 @@ def _empty_node_count(evidence: FinalizationEvidence) -> int:
     )
 
 
+def _project_empty_nodes(
+    evidence: FinalizationEvidence,
+    correlation: str | None,
+    transitioned_at: UtcTimestamp,
+) -> FinalizationEvidence:
+    """Project every empty-node commit before admitting any mutation."""
+    run_row_version = evidence.run.row_version
+    for node in tuple(
+        item
+        for item in evidence.nodes
+        if item.work_total == 0 and item.status is RunNodeStatus.PENDING
+    ):
+        command = _empty_node_command(
+            evidence,
+            node,
+            run_row_version,
+            transitioned_at,
+            correlation,
+        )
+        node_record = _expected_empty_node(command)
+        run_row_version += 1
+        evidence = FinalizationEvidence(
+            _advanced_run(evidence.run, run_row_version),
+            EventSequence(evidence.next_event_sequence.number + 1),
+            evidence.event_counter_row_version + 1,
+            tuple(
+                replaced if replaced.node_id != node_record.node_id else node_record
+                for replaced in evidence.nodes
+            ),
+            evidence.work,
+            evidence.attempts,
+            evidence.checkpoint_versions,
+        )
+    return evidence
+
+
+def _empty_node_command(
+    evidence: FinalizationEvidence,
+    node: RunNodeRecord,
+    run_row_version: int,
+    transitioned_at: UtcTimestamp,
+    correlation: str | None,
+) -> FinalizeEmptyRunNode:
+    return FinalizeEmptyRunNode(
+        evidence.run.run_id,
+        node.node_id,
+        node.row_version,
+        run_row_version,
+        transitioned_at,
+        EventAppendRequest(
+            EventSequence(evidence.next_event_sequence.number),
+            evidence.event_counter_row_version,
+            PendingExecutionEvent(
+                "run_node_succeeded",
+                transitioned_at,
+                EventSubjectKind.RUN,
+                _snapshot_run_id(evidence.run.run_id),
+                correlation,
+                EMPTY_NODE_EVENT_PAYLOAD_SCHEMA_VERSION,
+                RedactedDocument.from_mapping({"node_id": str(node.node_id)}),
+            ),
+        ),
+    )
+
+
 def _require_headroom(evidence: FinalizationEvidence, arrows: int = 1) -> None:
     maximum = MAX_CONSISTENCY_SEQUENCE - arrows
     if (
@@ -1093,8 +1151,6 @@ def _validate_empty_receipt(
     submission_id: WriterSubmissionId,
     command: FinalizeEmptyRunNode,
 ) -> tuple[RunNodeRecord, ExecutionEventBatch, WriterSubmissionId]:
-    from paritygrid.domain.models import Duration
-
     if type(receipt) is not WriterReceipt:
         raise FinalizationVerificationError("empty-node receipt type is invalid")
     clean_id = _snapshot_submission_id(receipt.submission_id)
@@ -1109,7 +1165,17 @@ def _validate_empty_receipt(
     ):
         raise FinalizationVerificationError("empty-node receipt does not match command")
     result = receipt.result
-    expected_node = RunNodeRecord(
+    expected_node = _expected_empty_node(command)
+    clean_node = _snapshot_node(result.node)
+    clean_events = _snapshot_event_batch(result.events)
+    _require_expected_events(clean_events, command)
+    if clean_node != expected_node:
+        raise FinalizationVerificationError("empty-node evidence is inconsistent")
+    return clean_node, clean_events, clean_id
+
+
+def _expected_empty_node(command: FinalizeEmptyRunNode) -> RunNodeRecord:
+    return RunNodeRecord(
         command.run_id,
         command.node_id,
         RunNodeStatus.SUCCEEDED,
@@ -1131,12 +1197,6 @@ def _validate_empty_receipt(
         command.finalized_at,
         command.finalized_at,
     )
-    clean_node = _snapshot_node(result.node)
-    clean_events = _snapshot_event_batch(result.events)
-    _require_expected_events(clean_events, command)
-    if clean_node != expected_node:
-        raise FinalizationVerificationError("empty-node evidence is inconsistent")
-    return clean_node, clean_events, clean_id
 
 
 def _require_expected_events(

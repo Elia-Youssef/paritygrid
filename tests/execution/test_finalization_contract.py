@@ -631,6 +631,25 @@ def test_analytics_failure_leaves_no_mutation_and_is_typed() -> None:
     del reader
 
 
+def test_empty_graph_analytics_failure_leaves_no_mutation() -> None:
+    empty = FinalizationEvidence(
+        _run(),
+        EventSequence(3),
+        3,
+        (_node_record(NODE_A, ()), _node_record(NODE_B, ())),
+        (),
+        (),
+        (),
+    )
+    finalizer, writer, _reader, analytics, _clock = _finalizer(empty)
+    analytics.failure = RuntimeError("analytics unavailable")
+
+    with pytest.raises(FinalizationAnalyticsError):
+        finalizer.finalize(RUN_ID, plan_nodes=PLAN_NODES, plan_fingerprint=PLAN_FINGERPRINT)
+
+    assert writer.commands == []
+
+
 def test_exact_replay_is_read_only() -> None:
     finalizer, _writer, _reader, _analytics, _clock = _finalizer(_evidence(_SUCCESS_A))
     first = finalizer.finalize(RUN_ID, plan_nodes=PLAN_NODES[:1], plan_fingerprint=PLAN_FINGERPRINT)
