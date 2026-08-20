@@ -1,5 +1,6 @@
 """Exhaustive tests for the normalized runner attempt-event union."""
 
+from collections.abc import Iterator
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime
 from typing import Any, cast
@@ -335,6 +336,26 @@ def test_trace_requires_tuple_but_sequence_validator_copies_bounded_sequences() 
     assert trace.items == (started,)
     with pytest.raises(TypeError, match="event sequence"):
         validate_attempt_event_trace(cast(Any, "attempt_started"))
+
+
+class _CountingEventSource:
+    def __init__(self, event: AttemptStarted) -> None:
+        self.event = event
+        self.observed = 0
+
+    def __iter__(self) -> Iterator[AttemptStarted]:
+        for _ in range(100):
+            self.observed += 1
+            yield self.event
+
+
+def test_sequence_validator_consumes_only_enough_events_to_prove_overflow() -> None:
+    source = _CountingEventSource(AttemptStarted(_context()))
+
+    with pytest.raises(AttemptEventSequenceError, match="at most one terminal"):
+        validate_attempt_event_trace(cast(Any, source))
+
+    assert source.observed == MAX_ATTEMPT_EVENT_TRACE_LENGTH + 1
 
 
 class _Observer:

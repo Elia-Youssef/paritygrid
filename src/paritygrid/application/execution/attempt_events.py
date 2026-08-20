@@ -7,6 +7,7 @@ import unicodedata
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from enum import StrEnum
+from itertools import islice
 from typing import Protocol, cast, runtime_checkable
 
 from paritygrid.application.planner import PlannerRunnerKind
@@ -302,7 +303,8 @@ def validate_attempt_event_trace(events: Sequence[NormalizedAttemptEvent]) -> At
     """Copy a bounded event sequence into an immutable validated trace."""
     if isinstance(events, (str, bytes, bytearray)):
         raise TypeError("attempt-event trace source must be an event sequence")
-    return AttemptEventTrace(tuple(events))
+    bounded = tuple(islice(events, MAX_ATTEMPT_EVENT_TRACE_LENGTH + 1))
+    return AttemptEventTrace(bounded)
 
 
 def emit_attempt_event(
