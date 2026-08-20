@@ -1,5 +1,5 @@
 [build-system]
-requires = ["hatchling>=1.31.0,<2"]
+requires = ["hatchling>=1.32.0,<2"]
 build-backend = "hatchling.build"
 
 [project]
@@ -19,7 +19,7 @@ dependencies = [
   "pydantic-settings>=2.10,<3",
   "sqlalchemy>=2.0,<3",
   "typer>=0.16,<1",
-  "uvicorn>=0.35,<1",
+  "uvicorn>=0.52.3,<1",
 ]
 
 [project.scripts]
@@ -29,12 +29,12 @@ paritygrid-freeze-v0001 = "paritygrid.quality.frozen_schema:main"
 
 [dependency-groups]
 dev = [
-  "hypothesis>=6.0,<7",
+  "hypothesis>=6.165.6,<7",
   "httpx>=0.28,<1",
   "pyright>=1.1.404,<2",
   "pytest>=8.4,<10",
   "pytest-cov>=6.2,<8",
-  "ruff>=0.12,<1",
+  "ruff>=0.16.3,<1",
   "pyarrow-stubs>=20.0.0.20260625,<21",
 ]
 
