@@ -77,7 +77,7 @@ from paritygrid.domain.models import (
 )
 
 FINALIZATION_EVENT_PAYLOAD_SCHEMA_VERSION = 1
-FINALIZATION_FINGERPRINT_DOMAIN = b"paritygrid:run-finalization:v1\0"
+FINALIZATION_FINGERPRINT_DOMAIN = b"paritygrid:run-finalization:v2\0"
 EMPTY_NODE_EVENT_PAYLOAD_SCHEMA_VERSION = 1
 MAX_FINALIZATION_CORRELATION_ID_LENGTH = 96
 MAX_FINALIZATION_TIMEOUT_SECONDS = 86_400.0
@@ -308,10 +308,12 @@ class RunFinalizer:
     """Derive one terminal run outcome from exact durable evidence.
 
     The final fingerprint is computed through the accepted run-statistics
-    analytical boundary before any run mutation, covers the captured plan
-    identity plus immutable terminal work, attempt, node, and checkpoint
-    evidence, and is stored only for accepted success states. Replaying an
-    exact finalization is read-only; divergent replay is a typed conflict.
+    analytical boundary before any run mutation and covers the captured plan
+    plus logical terminal node, work-partition, checkpoint, and metric evidence.
+    Run-scoped identities, runner choice, attempt history, and timing remain in
+    the diagnostic projection digest but cannot break runner equivalence.
+    Replaying an exact finalization is read-only; divergent replay is a typed
+    conflict.
     """
 
     __slots__ = (
@@ -829,20 +831,15 @@ def _final_fingerprint(
 
 
 _SUMMARY_LOGICAL_FIELDS = (
-    "attempt_count",
     "bytes_read",
     "bytes_written",
-    "duration_microseconds",
     "node_count",
     "records_quarantined",
     "records_read",
     "records_written",
-    "retry_count",
     "work_cancelled",
     "work_failed",
-    "work_pending",
     "work_quarantined",
-    "work_running",
     "work_succeeded",
     "work_total",
 )
@@ -861,13 +858,10 @@ def _evidence_document(
         {
             "bytes_read": node.bytes_read,
             "bytes_written": node.bytes_written,
-            "duration_microseconds": node.duration.microseconds,
-            "finished_at": None if node.finished_at is None else str(node.finished_at),
             "node_id": str(node.node_id),
             "records_quarantined": node.records_quarantined,
             "records_read": node.records_read,
             "records_written": node.records_written,
-            "retry_count": node.retry_count,
             "status": node.status.value,
             "work_cancelled": node.work_cancelled,
             "work_failed": node.work_failed,
@@ -880,26 +874,24 @@ def _evidence_document(
     checkpoints = dict(evidence.checkpoint_versions)
     work_document = [
         {
-            "attempt_count": work.completed_attempt_count,
             "checkpoint_version": checkpoints.get(work.work_item_id),
             "node_id": str(work.node_id),
+            "partition_key": str(work.partition_key),
             "state": work.state.value,
-            "work_item_id": str(work.work_item_id),
         }
-        for work in sorted(evidence.work, key=lambda item: str(item.work_item_id))
+        for work in sorted(
+            evidence.work,
+            key=lambda item: (str(item.node_id), str(item.partition_key)),
+        )
     ]
     return {
-        "finalization_version": 1,
+        "finalization_version": 2,
         "nodes": nodes_document,
         "plan_fingerprint": str(plan_fingerprint),
         "run": {
-            "created_at": str(run.created_at),
             "pipeline_id": str(run.pipeline_id),
             "pipeline_version": run.pipeline_version.number,
-            "run_id": str(run.run_id),
-            "runner_kind": run.runner_kind,
             "scenario_seed": run.scenario_seed,
-            "started_at": None if run.started_at is None else str(run.started_at),
         },
         "summary": summary_document,
         "work": work_document,

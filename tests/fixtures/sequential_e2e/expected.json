@@ -53,7 +53,7 @@
       "checkpoint_committed",
       "run_partially_succeeded"
     ],
-    "final_fingerprint": "8990aaa8a30bef16263a6668e05559eac3a382c8ee349c2235a7091a6e757f32",
+    "final_fingerprint": "723b4c63dbb1381403bcf4c4c6667c69ac5fb650875b77b3b9927da1f378ca0f",
     "recovered_count": 1,
     "recovery_findings": [
       "work_active_lease",
@@ -98,7 +98,7 @@
       "checkpoint_committed",
       "run_partially_succeeded"
     ],
-    "final_fingerprint": "35b6d93c74f7f6422c6a93bf8e05d84229e35ad0548876339f666c5579e1f92f",
+    "final_fingerprint": "723b4c63dbb1381403bcf4c4c6667c69ac5fb650875b77b3b9927da1f378ca0f",
     "node_aggregates": {
       "nod_e2e-export01": {
         "quarantined": 0,

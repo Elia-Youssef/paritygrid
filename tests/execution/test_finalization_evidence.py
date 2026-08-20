@@ -1034,6 +1034,100 @@ def test_evidence_document_covers_seed_and_fingerprint() -> None:
     del finalizer
 
 
+def test_final_fingerprint_ignores_runner_and_timing_evidence() -> None:
+    from paritygrid.application.execution.finalization import (
+        _AnalyticsProjection,
+        _final_fingerprint,
+    )
+
+    baseline = _evidence()
+    changed = replace(
+        baseline,
+        run=replace(
+            baseline.run,
+            runner_kind="threaded",
+            created_at=_time(0),
+            started_at=_time(1),
+        ),
+        nodes=(
+            replace(
+                baseline.nodes[0],
+                duration=Duration(2_000_000),
+                started_at=_time(1),
+                finished_at=_time(6),
+            ),
+            baseline.nodes[1],
+        ),
+        attempts=(
+            replace(
+                baseline.attempts[0],
+                started_at=_time(3),
+                finished_at=_time(5),
+                duration=Duration(2_000_000),
+            ),
+        ),
+    )
+    analytics = _Analytics()
+
+    def fingerprint(evidence: FinalizationEvidence) -> StateFingerprint:
+        source = RunStatisticsSourceSnapshot(
+            evidence.run,
+            evidence.nodes,
+            evidence.work,
+            evidence.attempts,
+        )
+        summary = analytics.get_summary(analytics.rebuild(source))
+        return _final_fingerprint(
+            PLAN_FINGERPRINT,
+            evidence,
+            _AnalyticsProjection(source.source_sha256, summary),
+        )
+
+    assert fingerprint(changed) == fingerprint(baseline)
+
+
+def test_final_fingerprint_ignores_run_scoped_identities() -> None:
+    from paritygrid.application.execution.finalization import (
+        _AnalyticsProjection,
+        _final_fingerprint,
+    )
+
+    baseline = _evidence()
+    other_run_id = RunId("run_final-other")
+    other_work_id = WorkItemId("wrk_final-other")
+    changed = replace(
+        baseline,
+        run=replace(baseline.run, run_id=other_run_id),
+        nodes=tuple(replace(node, run_id=other_run_id) for node in baseline.nodes),
+        work=(
+            replace(
+                baseline.work[0],
+                run_id=other_run_id,
+                work_item_id=other_work_id,
+            ),
+        ),
+        attempts=(replace(baseline.attempts[0], work_item_id=other_work_id),),
+        checkpoint_versions=((other_work_id, 1),),
+    )
+    analytics = _Analytics()
+
+    def fingerprint(evidence: FinalizationEvidence) -> StateFingerprint:
+        source = RunStatisticsSourceSnapshot(
+            evidence.run,
+            evidence.nodes,
+            evidence.work,
+            evidence.attempts,
+        )
+        summary = analytics.get_summary(analytics.rebuild(source))
+        return _final_fingerprint(
+            PLAN_FINGERPRINT,
+            evidence,
+            _AnalyticsProjection(source.source_sha256, summary),
+        )
+
+    assert fingerprint(changed) == fingerprint(baseline)
+
+
 def test_evidence_constructor_validates_exact_types() -> None:
     with pytest.raises(TypeError, match="must use RunRecord"):
         FinalizationEvidence(
