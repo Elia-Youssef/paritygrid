@@ -747,6 +747,19 @@ def test_cleanup_failures_do_not_acknowledge_incomplete_cleanup() -> None:
     assert captured.value is fatal
 
 
+def test_cleanup_failure_redacts_the_owned_resource_exception() -> None:
+    coordinator, _writer, _reader, _leases, _sink = _coordinator()
+    coordinator.register(_Resource(failure=RuntimeError("credential=secret C:\\machine")))
+    coordinator.request_cancellation(RUN_ID)
+
+    with pytest.raises(CancellationCleanupError) as captured:
+        coordinator.cancel()
+
+    assert "secret" not in str(captured.value)
+    assert captured.value.__cause__ is None
+    assert captured.value.__context__ is None
+
+
 def _writer_state_is_cancelled(coordinator: CancellationCoordinator) -> bool:
     reader = cast(_Reader, cast(object, coordinator)._reader)  # type: ignore[attr-defined]
     return reader.writer.state.run.state is RunState.CANCELLED

@@ -648,20 +648,19 @@ class CancellationCoordinator:
             resources = self._resources
             self._resources = ()
         closed = 0
-        first_failure: Exception | None = None
+        cleanup_failed = False
         for resource in resources:
             # Every registered resource gets its bounded close attempt even
             # after an earlier failure, so one bad resource never leaks the rest.
             try:
                 resource.close(timeout_seconds=self._settings.cleanup_timeout_seconds)
                 closed += 1
-            except Exception as error:
-                if first_failure is None:
-                    first_failure = error
-        if first_failure is not None:
+            except Exception:
+                cleanup_failed = True
+        if cleanup_failed:
             raise CancellationCleanupError(
                 "run cancelled but an owned resource failed bounded cleanup"
-            ) from first_failure
+            ) from None
         return closed
 
     def _active_request(self) -> tuple[WorkLeasePauseReservation, RunId]:
