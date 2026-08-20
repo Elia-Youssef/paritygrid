@@ -709,6 +709,7 @@ def test_cancelled_and_failed_replays_are_read_only() -> None:
 
     failed = _evidence(
         _FAILED_B,
+        node_a_status=RunNodeStatus.SUCCEEDED,
         run=_run(state=RunState.FAILED, finished_at=_time(19)),
     )
     failed_finalizer, failed_writer, _failed_reader, _failed_analytics, _clock2 = _finalizer(failed)
@@ -719,6 +720,68 @@ def test_cancelled_and_failed_replays_are_read_only() -> None:
     assert failed_report.outcome is FinalizationOutcome.FAILED
     assert failed_report.fingerprint is None
     assert failed_writer.commands == []
+
+
+def test_failed_replay_revalidates_nodes_checkpoints_and_aggregates() -> None:
+    active_node = _evidence(
+        _FAILED_B,
+        run=_run(state=RunState.FAILED, finished_at=_time(19)),
+    )
+    active_finalizer = _finalizer(active_node)[0]
+    with pytest.raises(FinalizationNotReadyError, match="non-terminal node"):
+        active_finalizer.finalize(
+            RUN_ID,
+            plan_nodes=PLAN_NODES,
+            plan_fingerprint=PLAN_FINGERPRINT,
+        )
+
+    complete = _evidence(
+        _SUCCESS_A,
+        _FAILED_B,
+        run=_run(state=RunState.FAILED, finished_at=_time(19)),
+    )
+    missing_checkpoint = replace(
+        complete,
+        checkpoint_versions=((_FAILED_B.work_id, 0),),
+    )
+    checkpoint_finalizer = _finalizer(missing_checkpoint)[0]
+    with pytest.raises(FinalizationConflictError, match="missing durable evidence"):
+        checkpoint_finalizer.finalize(
+            RUN_ID,
+            plan_nodes=PLAN_NODES,
+            plan_fingerprint=PLAN_FINGERPRINT,
+        )
+
+    drifted = replace(
+        complete,
+        nodes=(replace(complete.nodes[0], work_succeeded=0), complete.nodes[1]),
+    )
+    aggregate_finalizer = _finalizer(drifted)[0]
+    with pytest.raises(FinalizationConflictError, match="aggregates diverge"):
+        aggregate_finalizer.finalize(
+            RUN_ID,
+            plan_nodes=PLAN_NODES,
+            plan_fingerprint=PLAN_FINGERPRINT,
+        )
+
+
+def test_cancelled_replay_rejects_a_stored_final_fingerprint() -> None:
+    evidence = _evidence(
+        _WorkSpec(WorkItemId("wrk_final-c"), NODE_A, WorkItemState.CANCELLED),
+        run=_run(
+            state=RunState.CANCELLED,
+            fingerprint=StateFingerprint("3" * 64),
+            finished_at=_time(19),
+        ),
+    )
+    finalizer = _finalizer(evidence)[0]
+
+    with pytest.raises(FinalizationConflictError, match="must not store"):
+        finalizer.finalize(
+            RUN_ID,
+            plan_nodes=PLAN_NODES[:1],
+            plan_fingerprint=PLAN_FINGERPRINT,
+        )
 
 
 def test_cancellation_pause_and_queued_states_are_rejected() -> None:

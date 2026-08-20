@@ -419,6 +419,8 @@ class RunFinalizer:
         if stored is None:
             raise FinalizationConflictError("finalized run is missing its fingerprint")
         _require_work_terminal(evidence)
+        _require_checkpoint_frontier(evidence)
+        _require_nodes_terminal(evidence)
         summary = self._analytics_projection(evidence)
         fingerprint = _final_fingerprint(
             plan_fingerprint,
@@ -453,6 +455,9 @@ class RunFinalizer:
             raise FinalizationConflictError("replay evidence diverges from the stored run")
         if evidence.run.final_reconciliation_fingerprint is not None:
             raise FinalizationConflictError("failed run must not store a final fingerprint")
+        _require_checkpoint_frontier(evidence)
+        _require_nodes_terminal(evidence)
+        self._require_aggregate_consistency(evidence)
         return FinalizationReport(
             FinalizationAction.ALREADY_FINALIZED,
             FinalizationOutcome.FAILED,
@@ -476,6 +481,8 @@ class RunFinalizer:
         _require_work_terminal(evidence)
         _require_checkpoint_frontier(evidence)
         self._require_aggregate_consistency(evidence)
+        if evidence.run.final_reconciliation_fingerprint is not None:
+            raise FinalizationConflictError("cancelled run must not store a final fingerprint")
         return FinalizationReport(
             FinalizationAction.ALREADY_FINALIZED,
             FinalizationOutcome.CANCELLED,
