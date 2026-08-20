@@ -290,13 +290,41 @@ class ScenarioHarness:
 
     def close(self) -> None:
         """Release every owned resource in reverse acquisition order."""
-        self.analytics_coordinator.close()
-        self.writer.close(timeout_seconds=5.0)
-        self.database.close()
+        cleanup_failed = False
+        fatal_error: BaseException | None = None
+        try:
+            self.analytics_coordinator.close()
+        except BaseException as error:
+            cleanup_failed = True
+            if not isinstance(error, Exception):
+                fatal_error = error
+        try:
+            closed = self.writer.close(timeout_seconds=5.0)
+            cleanup_failed = cleanup_failed or not closed.drained
+        except BaseException as error:
+            cleanup_failed = True
+            if fatal_error is None and not isinstance(error, Exception):
+                fatal_error = error
+        try:
+            self.database.close()
+        except BaseException as error:
+            cleanup_failed = True
+            if fatal_error is None and not isinstance(error, Exception):
+                fatal_error = error
+        if fatal_error is not None:
+            raise fatal_error
+        if cleanup_failed:
+            raise ScenarioHarnessCleanupError(
+                "sequential scenario did not release every owned resource"
+            ) from None
 
     def partitions_of(self, node_id: NodeId) -> tuple[PartitionKey, ...]:
         """Return the plan's stable partition keys for one node."""
         return self.node_partition_keys[node_id]
+
+
+class ScenarioHarnessCleanupError(RuntimeError):
+    """One or more owned scenario resources did not close cleanly."""
 
 
 def prepare_harness(
@@ -800,6 +828,7 @@ __all__ = [
     "VALIDATE_NODE",
     "ScenarioExecutor",
     "ScenarioHarness",
+    "ScenarioHarnessCleanupError",
     "ScriptStep",
     "ScriptedOutcome",
     "StepClock",

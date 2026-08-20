@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator
+from dataclasses import replace
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, cast
@@ -17,6 +18,7 @@ from paritygrid.adapters.persistence import (
     SqlAlchemyWorkAttemptRepository,
     SqlAlchemyWorkItemRepository,
     SQLiteCancellationStateReader,
+    SQLiteConfigurationError,
     SQLiteDatabase,
     SQLiteDatabaseConfig,
     SQLiteFinalizationStateReader,
@@ -58,6 +60,7 @@ from paritygrid.quality.sequential_scenario import (
     VALIDATE_NODE,
     ScenarioExecutor,
     ScenarioHarness,
+    ScenarioHarnessCleanupError,
     artifact_bytes,
     compiled_plan,
     prepare_harness,
@@ -450,3 +453,54 @@ def test_scenario_helpers_and_scripted_paths_are_exact(tmp_path: Path) -> None:
         del plan
     finally:
         harness.close()
+
+
+def test_scenario_close_reports_an_undrained_writer(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = prepare_harness(
+        tmp_path / "undrained.db",
+        tmp_path / "undrained-artifacts",
+        tmp_path / "undrained.duckdb",
+    )
+    writer_type = type(prepared.writer)
+    original_close = writer_type.close
+
+    def report_undrained(self: Any, *, timeout_seconds: float) -> Any:
+        return replace(
+            original_close(self, timeout_seconds=timeout_seconds),
+            drained=False,
+        )
+
+    monkeypatch.setattr(writer_type, "close", report_undrained)
+    with pytest.raises(ScenarioHarnessCleanupError, match="every owned resource"):
+        prepared.close()
+    assert prepared.writer.snapshot().state.value == "closed"
+
+
+def test_scenario_close_continues_after_analytics_cleanup_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    prepared = prepare_harness(
+        tmp_path / "cleanup failure.db",
+        tmp_path / "cleanup-failure-artifacts",
+        tmp_path / "cleanup failure.duckdb",
+    )
+    coordinator_type = type(prepared.analytics_coordinator)
+    original_close = coordinator_type.close
+
+    def fail_after_close(self: Any) -> None:
+        original_close(self)
+        raise RuntimeError("synthetic analytics cleanup failure")
+
+    monkeypatch.setattr(coordinator_type, "close", fail_after_close)
+    with pytest.raises(ScenarioHarnessCleanupError, match="every owned resource"):
+        prepared.close()
+    assert prepared.writer.snapshot().state.value == "closed"
+    with (
+        pytest.raises(SQLiteConfigurationError, match="lifecycle is closed"),
+        prepared.database.transaction(),
+    ):
+        pass
