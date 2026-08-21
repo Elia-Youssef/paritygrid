@@ -54,6 +54,8 @@ jobs:
           cache-dependency-glob: uv.lock
       - name: Synchronize locked dependencies
         run: uv sync --locked --all-groups
+      - name: Audit locked Python environment
+        run: uv run python scripts/verify_python_dependencies.py
       - name: Check Python formatting
         run: uv run ruff format --check .
       - name: Lint Python
@@ -64,6 +66,10 @@ jobs:
         run: uv run paritygrid-check-boundaries
       - name: Run Python tests and coverage
         run: uv run pytest --cov=paritygrid --cov-report=term-missing
+      - name: Enforce scoped Python branch coverage
+        run: uv run python scripts/verify_python_coverage.py
+      - name: Verify isolated wheel and spawned-process import
+        run: uv run python scripts/verify_wheel_install.py
       - name: Run backend smoke check
         run: uv run paritygrid smoke
 

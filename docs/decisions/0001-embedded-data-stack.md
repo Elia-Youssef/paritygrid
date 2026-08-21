@@ -2,6 +2,8 @@
 
 **Status:** accepted
 **Date:** 2026-08-12
+**Decision scope:** Operational persistence, analytical storage, and local artifact storage
+**Supersedes:** None
 
 ## Context
 

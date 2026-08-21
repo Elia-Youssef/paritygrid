@@ -2,6 +2,8 @@
 
 **Status:** accepted
 **Date:** 2026-08-12
+**Decision scope:** SQLite operational schema, integrity constraints, and migration ownership
+**Supersedes:** None
 
 ## Context
 

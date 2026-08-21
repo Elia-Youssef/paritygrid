@@ -43,6 +43,7 @@ src/paritygrid/
 │   ├── commands/
 │   ├── queries/
 │   ├── services/
+│   ├── execution/
 │   ├── planner/
 │   └── ports/
 ├── adapters/
@@ -51,6 +52,7 @@ src/paritygrid/
 │   ├── artifacts/
 │   ├── connectors/
 │   ├── runners/
+│   │   └── process_workers/
 │   └── telemetry/
 ├── api/
 │   ├── routers/
@@ -94,7 +96,7 @@ The application layer coordinates use cases:
 - Create and publish a pipeline version.
 - Create, pause, resume, cancel, and recover a run.
 - Compile an execution plan.
-- Submit work through a selected runner.
+- Schedule dependency-ready partition work through selected runner mechanics.
 - Commit work results and checkpoints.
 - Generate, approve, and apply repair plans.
 - Query reconciliation and comparison views.
@@ -109,7 +111,7 @@ Adapters implement ports for:
 - DuckDB analytical queries.
 - Filesystem and Parquet artifacts.
 - HTTP and file connectors.
-- Sequential, threaded, async, and process runners.
+- Thread, task, queue, and subordinate process-pool mechanics.
 - Telemetry publication.
 
 Adapter-specific exceptions must be translated into typed application failures before crossing inward.
@@ -144,6 +146,22 @@ Runtime composition owns:
 
 Runtime is the only package allowed to instantiate the full dependency graph.
 
+## Execution ownership
+
+The application execution package owns runner-neutral policy:
+
+- DAG readiness and node dependency barriers.
+- Work admission, leasing, retries, pause generations, cancellation, and recovery.
+- Capacity and rate policy, bounded result flow, and the transactional-result boundary.
+- Versioned work assignments, results, lifecycle states, and recovery frontiers.
+- Sequential execution as the semantic reference.
+
+The scheduled and capacity-counted unit is one `(run_id, node_id, partition_key)` work item. Nodes are dependency barriers, not runner submissions. Attempts are immutable executions of a work-item identity. Connector calls are subordinate operations that consume connector permits; they are not independently leased work. A successor node becomes ready only after every predecessor work item is durably terminal with an allowed aggregate outcome. Phase 7 does not stream records across an unfinished dependency edge.
+
+Runner adapters own mechanics only. Threaded and asyncio adapters execute application-admitted work but do not decide DAG readiness, persist authoritative state, or publish durable progress. Process execution is a subordinate pool for registered connector-free CPU operations, not a full-plan runner. The parent process owns leases, artifact coordination, result validation, and SQLite writes. `src/paritygrid/adapters/runners/process_workers/` is the process isolation boundary; its transitive imports exclude persistence, runtime composition, connectors, and database libraries. Interpreter pools are optional and obey the same subordinate-worker boundary.
+
+Runtime captures immutable settings and capability facts before a run starts, registers only supported strategies, and owns their startup and shutdown. Capability detection reports structured unavailability; it does not silently substitute a different strategy.
+
 ## Typed ports
 
 At minimum, define protocols for:
@@ -159,6 +177,7 @@ At minimum, define protocols for:
 - `ArtifactStore`
 - `AnalyticsEngine`
 - `ExecutionRunner`
+- `ExecutionResultCoordinator`
 - `Connector`
 - `ResultSink`
 - `TelemetryPublisher`
@@ -190,14 +209,15 @@ sequenceDiagram
     Scheduler->>Runner: Submit bounded work
     Runner->>ArtifactStore: Commit output artifact
     ArtifactStore-->>Runner: Content hash and manifest
-    Runner->>Writer: Result and checkpoint
-    Writer->>SQLite: Commit result, checkpoint, and events
-    SQLite-->>Writer: Commit succeeds
-    Writer-->>Scheduler: Acknowledge durable result
+    Runner->>Scheduler: Bounded result submission
+    Scheduler->>Writer: Validate lease and rebase aggregate frontier
+    Writer->>SQLite: Commit result, checkpoint, aggregates, and events
+    SQLite-->>Writer: Commit succeeds with contiguous event sequence
+    Writer-->>Scheduler: Acknowledge durable result and release capacity
     Scheduler-->>Browser: Live progress after commit
 ```
 
-No work result is acknowledged as durable until its checkpoint and durable events commit successfully.
+No work result is acknowledged as durable, releases a dependency, or publishes authoritative progress until its checkpoint and durable events commit successfully. An unknown writer outcome stops new admission and places the run in recovery-required state.
 
 ## Read model
 
@@ -233,6 +253,9 @@ Configuration is validated once at startup and passed as immutable settings. It 
 - SQLite timeouts and writer queue capacity.
 - Artifact size limits.
 - Default runner limits.
+- Per-strategy capabilities and lifecycle limits.
+- Per-connector capacity and validated rate policy.
+- Bounded assignment, result, telemetry, and SQLite writer capacities.
 - Connector allowlists.
 - Telemetry settings.
 - Demo seed and failure profile.
@@ -278,7 +301,7 @@ A connector must provide typed configuration, capability metadata, cancellation,
 
 ### New runner
 
-A runner must implement the common contract and pass the runner-equivalence, cancellation, resource-bound, and recovery suites.
+A full-plan strategy must implement the versioned application contract and pass the common scheduling, lifecycle, recovery, cleanup, resource-bound, and execution-evidence suites. A subordinate process or interpreter pool instead passes the registered CPU-operation, wire-envelope, isolation, cancellation, and cleanup suites and must not be advertised as a full-plan strategy.
 
 ### New pipeline node
 
@@ -292,5 +315,6 @@ CI must fail when:
 - API routes directly import ORM models.
 - Adapters bypass application ports.
 - Worker code opens an uncoordinated SQLite write path.
+- `adapters/runners/process_workers` imports persistence, runtime composition, connectors, or database libraries directly or transitively.
 - DuckDB state becomes authoritative.
 - A public contract changes without a matching contract update and tests.

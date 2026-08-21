@@ -2,6 +2,8 @@
 
 **Status:** proposed
 **Date:** YYYY-MM-DD
+**Decision scope:** concise ownership or compatibility boundary
+**Supersedes:** None, or the decision identifiers and sections replaced
 
 ## Context
 

@@ -23,7 +23,9 @@ function Get-ProjectRelativePath {
 }
 
 $requiredFiles = @(
+    '.env.example',
     'README.md',
+    'docs/PHASE_STATUS.md',
     'docs/INDEX.md',
     'docs/PRODUCT.md',
     'docs/ARCHITECTURE.md',
@@ -40,7 +42,9 @@ $requiredFiles = @(
     'docs/WORK_PACKAGES.md',
     'docs/CI_RELEASE.md',
     'docs/PUBLIC_DOCUMENTATION.md',
-    'docs/INSTRUCTION_AUDIT.md'
+    'docs/INSTRUCTION_AUDIT.md',
+    'docs/decisions/0005-concurrent-execution-and-runner-contract.md',
+    'docs/decisions/0006-fingerprint-taxonomy.md'
 )
 
 foreach ($relativePath in $requiredFiles) {
@@ -102,11 +106,161 @@ foreach ($prohibitedName in $prohibitedNames) {
     $failures.Add("Prohibited instruction filename: $prohibitedName")
 }
 
-$unsafeTrackedExtensions = @('.db', '.duckdb', '.parquet', '.pem', '.key')
 $trackedFiles = git -C $projectRoot ls-files
+$unsafeTrackedExtensions = @(
+    '.cer', '.crt', '.db', '.der', '.duckdb', '.key', '.kdbx', '.log', '.parquet',
+    '.p12', '.pem', '.pfx', '.ppk', '.pyc', '.pyd', '.pyo', '.sqlite', '.sqlite3',
+    '.temp', '.tmp'
+)
+$unsafeTrackedNames = @('.coverage', '.ds_store', 'coverage.xml', 'desktop.ini', 'thumbs.db')
+$unsafeTrackedSuffixes = @('-shm', '-wal', '.db-shm', '.db-wal')
 foreach ($trackedFile in $trackedFiles) {
-    if ($unsafeTrackedExtensions -contains [IO.Path]::GetExtension($trackedFile).ToLowerInvariant()) {
+    $normalizedPath = $trackedFile.Replace('\', '/').ToLowerInvariant()
+    $fileName = [IO.Path]::GetFileName($normalizedPath)
+    $extension = [IO.Path]::GetExtension($normalizedPath)
+    $hasUnsafeSuffix = $false
+    foreach ($suffix in $unsafeTrackedSuffixes) {
+        if ($normalizedPath.EndsWith($suffix, [StringComparison]::OrdinalIgnoreCase)) {
+            $hasUnsafeSuffix = $true
+            break
+        }
+    }
+    $isEnvironmentFile = $fileName -eq '.env' -or $fileName.StartsWith('.env.')
+    $isApprovedEnvironmentExample = $normalizedPath -eq '.env.example'
+    $isRuntimeDirectory = $normalizedPath -match '(^|/)(__pycache__|\.hypothesis|\.mypy_cache|\.paritygrid|\.pyright|\.pytest_cache|\.ruff_cache|\.venv|build|coverage|data|dist|htmlcov|node_modules|playwright-report|test-results)(/|$)'
+    if (
+        $unsafeTrackedExtensions -contains $extension -or
+        $unsafeTrackedNames -contains $fileName -or
+        $fileName.StartsWith('.coverage.') -or
+        $hasUnsafeSuffix -or
+        ($isEnvironmentFile -and -not $isApprovedEnvironmentExample) -or
+        $isRuntimeDirectory
+    ) {
         $failures.Add("Unsafe tracked runtime or secret file: $trackedFile")
+    }
+}
+
+$decisionFiles = $repositoryFiles |
+    Where-Object { $_ -match '^docs/decisions/[0-9]{4}-.*\.md$' -and $_ -notmatch '/0000-' }
+$decisionIds = [System.Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+foreach ($decisionFile in $decisionFiles) {
+    $decisionId = [IO.Path]::GetFileName($decisionFile).Substring(0, 4)
+    if (-not $decisionIds.Add($decisionId)) {
+        $failures.Add("Duplicate ADR identifier: $decisionId")
+    }
+    $decisionText = Get-Content -LiteralPath (Join-Path $projectRoot $decisionFile) -Raw
+    if ($decisionText -notmatch '(?m)^\*\*Status:\*\* (accepted|proposed|deprecated|rejected|superseded)\r?$') {
+        $failures.Add("Invalid or missing ADR status metadata: $decisionFile")
+    }
+    if ($decisionText -notmatch '(?m)^\*\*Date:\*\* (?<date>[0-9]{4}-[0-9]{2}-[0-9]{2})\r?$') {
+        $failures.Add("Invalid or missing ADR date metadata: $decisionFile")
+    }
+    else {
+        try {
+            [void][datetime]::ParseExact(
+                $Matches['date'],
+                'yyyy-MM-dd',
+                [Globalization.CultureInfo]::InvariantCulture,
+                [Globalization.DateTimeStyles]::None
+            )
+        }
+        catch {
+            $failures.Add("Invalid ADR calendar date: $decisionFile")
+        }
+    }
+    if ($decisionText -notmatch '(?m)^\*\*Decision scope:\*\* \S.+\r?$') {
+        $failures.Add("Invalid or missing ADR decision-scope metadata: $decisionFile")
+    }
+    if ($decisionText -notmatch '(?m)^\*\*Supersedes:\*\* \S.+\r?$') {
+        $failures.Add("Invalid or missing ADR supersedes metadata: $decisionFile")
+    }
+}
+
+$strictUtf8 = [Text.UTF8Encoding]::new($false, $true)
+$credentialPatterns = @(
+    ('-----BEGIN ' + '(RSA |EC |OPENSSH )?PRIVATE KEY-----'),
+    ('AK' + 'IA[0-9A-Z]{16}'),
+    ('gh' + '[pousr]_[A-Za-z0-9]{30,}'),
+    ('github' + '_pat_[A-Za-z0-9_]{40,}'),
+    ('xox' + '[baprs]-[A-Za-z0-9-]{10,}'),
+    ('A' + 'Iza[0-9A-Za-z_-]{35}'),
+    ('s' + 'k-[A-Za-z0-9_-]{20,}')
+)
+$absoluteDeveloperPathPatterns = @(
+    '[A-Za-z]:[\\/]Users[\\/][A-Za-z0-9._-]+(?:[\\/]|(?![A-Za-z0-9._-]))',
+    '/(home|Users)/[A-Za-z0-9._-]+(?:/|(?![A-Za-z0-9._-]))'
+)
+foreach ($repositoryFile in $repositoryFiles) {
+    $repositoryPath = Join-Path $projectRoot $repositoryFile
+    try {
+        $repositoryBytes = [IO.File]::ReadAllBytes($repositoryPath)
+    }
+    catch {
+        $failures.Add("Unable to read repository file during content scan: $repositoryFile")
+        continue
+    }
+    if ($repositoryBytes -contains 0) {
+        continue
+    }
+    try {
+        $content = $strictUtf8.GetString($repositoryBytes)
+    }
+    catch [Text.DecoderFallbackException] {
+        continue
+    }
+    foreach ($pattern in $credentialPatterns) {
+        if ($content -match $pattern) {
+            $failures.Add("High-confidence credential material in repository file: $repositoryFile")
+            break
+        }
+    }
+    foreach ($pattern in $absoluteDeveloperPathPatterns) {
+        if ($content -match $pattern) {
+            $failures.Add("Absolute developer path in repository file: $repositoryFile")
+            break
+        }
+    }
+}
+
+$generatedFileInventory = @(
+    'tests/fixtures/persistence/v0001/manifest.json',
+    'tests/fixtures/persistence/v0001/schema.sql',
+    'tests/fixtures/persistence/v0001/seed.sql',
+    'tests/fixtures/sequential_e2e/expected.json',
+    'uv.lock',
+    'web/package-lock.json'
+)
+foreach ($generatedFile in $generatedFileInventory) {
+    if ($trackedFiles -notcontains $generatedFile) {
+        $failures.Add("Missing tracked generated-file inventory entry: $generatedFile")
+    }
+}
+
+$mediaExtensions = @('.gif', '.ico', '.jpeg', '.jpg', '.mov', '.mp3', '.mp4', '.pdf', '.png', '.svg', '.wav', '.webm', '.webp')
+$trackedMediaInventory = @()
+$unlistedMedia = $trackedFiles | Where-Object {
+    $mediaExtensions -contains [IO.Path]::GetExtension($_).ToLowerInvariant() -and
+    $trackedMediaInventory -notcontains $_
+}
+foreach ($mediaFile in $unlistedMedia) {
+    $failures.Add("Tracked media is missing from the explicit inventory: $mediaFile")
+}
+
+$requiredIgnoreRules = @(
+    '__pycache__/', '.pytest_cache/', '.mypy_cache/', '.pyright/', '.ruff_cache/',
+    '.hypothesis/', '.coverage', '.coverage.*', 'coverage.xml', 'htmlcov/', '.venv/', 'dist/', 'build/',
+    '*.egg-info/', 'node_modules/', 'web/coverage/', 'web/playwright-report/',
+    'web/test-results/', '.paritygrid/', 'data/', '*.db', '*.db-shm', '*.db-wal',
+    '*.sqlite', '*.sqlite3', '*-shm', '*-wal', '*.duckdb', '*.parquet', '.env', '.env.*',
+    '!.env.example', '*.pem', '*.key', '*.cer', '*.crt', '*.der', '*.kdbx', '*.p12',
+    '*.pfx', '*.ppk', '*.tmp', '*.temp', '*.log'
+)
+$ignoreRules = Get-Content -LiteralPath (Join-Path $projectRoot '.gitignore') |
+    ForEach-Object { $_.Trim() } |
+    Where-Object { $_ -and -not $_.StartsWith('#') }
+foreach ($requiredIgnoreRule in $requiredIgnoreRules) {
+    if ($ignoreRules -notcontains $requiredIgnoreRule) {
+        $failures.Add("Missing required .gitignore rule: $requiredIgnoreRule")
     }
 }
 
@@ -121,4 +275,4 @@ if ($failures.Count -gt 0) {
     exit 1
 }
 
-Write-Output "Instruction validation passed for $($markdownFiles.Count) Markdown files."
+Write-Output "Instruction validation passed for $($markdownFiles.Count) Markdown files, $($decisionFiles.Count) ADRs, $($generatedFileInventory.Count) generated files, and $($trackedMediaInventory.Count) media files."

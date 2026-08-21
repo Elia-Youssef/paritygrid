@@ -31,6 +31,7 @@ paritygrid-freeze-v0001 = "paritygrid.quality.frozen_schema:main"
 dev = [
   "hypothesis>=6.165.6,<7",
   "httpx>=0.28,<1",
+  "pip-audit>=2.9,<3",
   "pyright>=1.1.404,<2",
   "pytest>=8.4,<10",
   "pytest-cov>=6.2,<8",
@@ -42,7 +43,14 @@ dev = [
 packages = ["src/paritygrid"]
 
 [tool.pyright]
-include = ["src", "tests", "scripts/verify_frontend_api_path.py"]
+include = [
+  "src",
+  "tests",
+  "scripts/verify_frontend_api_path.py",
+  "scripts/verify_python_dependencies.py",
+  "scripts/verify_python_coverage.py",
+  "scripts/verify_wheel_install.py",
+]
 exclude = [".venv", "tests/fixtures"]
 pythonVersion = "3.14"
 typeCheckingMode = "strict"

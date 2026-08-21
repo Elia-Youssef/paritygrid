@@ -8,6 +8,7 @@ __pycache__/
 .ruff_cache/
 .hypothesis/
 .coverage
+.coverage.*
 coverage.xml
 htmlcov/
 .venv/
@@ -41,6 +42,13 @@ data/
 !.env.example
 *.pem
 *.key
+*.cer
+*.crt
+*.der
+*.kdbx
+*.p12
+*.pfx
+*.ppk
 
 # Editors and operating systems
 .idea/

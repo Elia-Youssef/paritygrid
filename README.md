@@ -2,7 +2,7 @@
 
 ParityGrid is a local-first data reconciliation and observable I/O execution showcase built with Python, FastAPI, SQLite, DuckDB, React, and TypeScript.
 
-The project demonstrates how heterogeneous and unreliable data sources can be normalized, compared, repaired, and verified while the same workload is executed sequentially, with bounded threads, or with structured asynchronous concurrency.
+The project is designed to show how heterogeneous and unreliable data sources can be normalized, compared, repaired, and verified across multiple execution strategies. The implemented reference strategy is sequential; bounded threaded, asynchronous, process, and optional interpreter strategies remain future work.
 
 ## Confidentiality statement
 
@@ -10,7 +10,9 @@ This public repository is an independently designed technical demonstration insp
 
 ## Current status
 
-The repository has completed its architecture baseline, toolchain foundation, and pure domain foundation. Trusted values, exact lifecycle state machines, reconciliation and non-destructive repair rules, versioned canonical encoding, stable state fingerprints, typed domain failures, and import-purity enforcement are implemented. SQLite persistence and migrations are the next delivery phase.
+Phases 0–5 are accepted: the repository includes its instruction and toolchain foundations, pure domain model, SQLite persistence and migrations, Parquet and DuckDB foundations, and the versioned pipeline planner. Phase 6 sequential execution, lifecycle coordination, finalization, and recovery are implemented on an acceptance candidate and are undergoing pre-Phase-7 remediation and exact-head review.
+
+No concurrent runner is implemented. Phase 7 runner implementation has not begun. See [Phase status](docs/PHASE_STATUS.md) for accepted commits, current evidence, limitations, and the active phase boundary.
 
 The authoritative instruction set begins at [Documentation index](docs/INDEX.md).
 

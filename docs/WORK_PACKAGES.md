@@ -140,26 +140,57 @@ Parallel work may proceed only when packages do not edit the same contracts or f
 | P6.7 | Checkpoint commit sequence | P3.13, P6.6 | Before/after commit failpoints |
 | P6.8 | Pause coordinator | P6.1, P6.7 | Stable-boundary tests |
 | P6.9 | Cancellation coordinator | P6.1, P6.2 | Prompt cleanup tests |
-| P6.10 | Run finalization and verification | P2.12, P4.9 | Final fingerprint tests |
+| P6.10 | Run finalization and execution-evidence verification | P2.12, P4.10, P6.7 | Versioned execution-evidence fingerprint tests |
 | P6.11 | Startup recovery scanner | P3.15, P4.11, P6.7 | Interrupted state matrix |
-| P6.12 | Sequential end-to-end integration fixture | P6.1–P6.11 | Complete pipeline test |
+| P6.12 | Synthetic Phase 2–6 sequential integration fixture | P6.1–P6.11 | Five-node durable-boundary scenario |
 
 ## Phase 7 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P7.1 | Shared runner conformance suite | P6.2 | Sequential suite passes |
-| P7.2 | Bounded thread runner | P7.1 | Bound and equivalence tests |
-| P7.3 | Structured async runner | P7.1 | Bound and equivalence tests |
-| P7.4 | Per-connector capacity limiter | P7.2, P7.3 | Saturation tests |
-| P7.5 | Rate limiter and delay parser | P6.5 | Clock-driven tests |
-| P7.6 | Bounded result channel | P6.6 | Backpressure and cancellation tests |
-| P7.7 | Process runner | P7.1, P7.6 | Serialization and isolation tests |
-| P7.8 | Runtime capability detection | P1.6, P7.2, P7.3, P7.7 | Supported and unavailable tests |
-| P7.9 | Optional interpreter runner | P7.1, P7.8 | Conformance or unavailable result |
-| P7.10 | Cross-runner comparison harness | P6.12, P7.2, P7.3 | Fingerprint equivalence |
-| P7.11 | Concurrency telemetry | P7.2–P7.7 | Metric name and bound tests |
-| P7.12 | Repeated scheduling stress suite | P7.10 | Shuffled repeated runs |
+| P7.0 | Lease event-correlation validation, invalid-result lease poisoning before writer admission, and abort-pause/runner TOCTOU normalization | Accepted P6.1–P6.12 | Three deterministic regression suites |
+| P7.1 | Execution-evidence fingerprint compatibility and persistence migration | P7.0, P3.16, P6.10 | Frozen-schema preservation and version backfill |
+| P7.2 | Versioned runner-neutral contract and bounded wire envelopes | P7.1 | Golden contract and rejection vectors |
+| P7.3 | Concurrent scheduler and durable `SchedulerFrontierV2` | P7.2, P5.11 | Readiness, admission, and frontier recovery tests |
+| P7.4 | Captured concurrency settings and strategy capabilities | P7.2, P1.6, P5.7 | Capture, support, and unavailability tests |
+| P7.5 | Injected clock, validated delay parser, and rate-policy values | P7.4, P6.5 | Clock-driven boundary tests |
+| P7.6 | Global, strategy, node, connector, and CPU-pool capacity/rate limiters | P7.3, P7.5 | Saturation and cancellation-safety tests |
+| P7.7 | Bounded closeable assignment, result, and telemetry channels | P7.2, P7.3, P6.9 | Backpressure, close-order, and blocked-peer tests |
+| P7.8 | Versioned concurrency telemetry schemas | P7.3, P7.4, P7.7 | Schema, bound, and non-authority tests |
+| P7.9 | Concurrent result coordinator and serialized SQLite boundary | P7.1, P7.3, P7.7, P7.8, P3.13, P6.6, P6.7 | Out-of-order commit and writer-failure tests |
+| P7.10 | Concurrent pause, cancellation, lifecycle, and durable recovery | P7.3, P7.7, P7.9, P6.8, P6.9, P6.11 | Race, fencing, recovery, and cleanup tests |
+| P7.11 | Shared full-plan and subordinate-pool conformance suites | Accepted P6.1–P6.12, P7.0–P7.10 | Sequential and controlled-double baselines pass |
+| P7.12 | Bounded threaded full-plan strategy | P7.6–P7.11 | Conformance, deadlock, bound, and join tests |
+| P7.13 | Structured asyncio full-plan strategy and safe sync adaptation | P7.6–P7.11 | Conformance, loop-safety, bound, and cleanup tests |
+| P7.14 | Subordinate process CPU pool, versioned codec, and import isolation | P7.2, P7.6, P7.7, P7.9–P7.11 | Spawn, serialization, isolation, and orphan tests |
+| P7.15 | Runtime capability detection and strategy registration | P7.4, P7.12–P7.14 | Exact registration and lifecycle tests |
+| P7.16 | Optional subordinate interpreter CPU pool | P7.11, P7.14, P7.15 | Pool conformance or structured unavailability |
+| P7.17 | Cross-strategy execution-evidence comparison harness | P6.12, P7.1, P7.8–P7.16 | Versioned evidence and causal-event comparison |
+| P7.18 | Full lifecycle, recovery, backpressure, and cleanup matrix | P7.10, P7.12–P7.16 | All strategy and failpoint cells pass |
+| P7.19 | Repeated stress, installed-wheel, and cross-platform spawn proof | P7.17, P7.18 | Shuffled runs and Windows/Linux package tests |
+
+### Phase 7 acceptance details
+
+- **P7.0:** Lease event correlation accepts `None` or 1–96 ASCII characters matching `[A-Za-z0-9][A-Za-z0-9._:-]*` and rejects empty, whitespace, non-ASCII, and overlong values before clock access, reservation, or writer admission. A public typed pre-admission validation failure retains the active lease and permits one corrected bounded resubmission; a generic invalid-result failure remains outcome-unknown because it may occur after admission. Abort-pause/runner TOCTOU behavior is normalized with compare-and-set on the same unacknowledged generation; if acknowledgement wins, pause completes and an explicit resume is required. Barrier-controlled tests prove exactly one pause-race winner, a stable scheduler frontier with no active node, released gates, exact executor-call counts, and no leaked pause-coordinator exception.
+- **P7.1:** The forward migration replaces the former run-column meaning with `execution_evidence_fingerprint` plus its explicit version. Every existing non-null digest is preserved byte-for-byte and backfilled as version 2; null values remain null. Empty and frozen prior schemas, mixed values, repository compatibility reads, new writes, and the downgrade policy are tested before P7.2 starts.
+- **P7.2:** Contract version 1 freezes capabilities, immutable assignment/result envelopes, control generations, lifecycle states, idempotent cleanup evidence, and durable recovery-frontier shape. Golden encodings and adversarial bounds reject sessions, writers, callbacks, clients, resolved secrets, unrestricted paths, lease credentials, unsupported primitives, and unknown versions. Sync and async facades cannot block an active event loop or invoke a nested loop runner.
+- **P7.3:** `(run_id, node_id, partition_key)` is the sole admitted work unit. Independent ready nodes and partitions overlap, successors wait for every predecessor work item to be durably terminal, retry waits use the durable frontier, and no streaming edge is introduced. `SchedulerFrontierV2` round-trips plan identity, control generation, ready, admitted, awaiting-commit, retry-wait, node aggregate, and recovery-required state.
+- **P7.4:** One immutable settings snapshot records every configured bound and capability fact used for a run. Unsupported strategies return structured unavailability and are never silently substituted. Startup and shutdown own each registered strategy exactly once.
+- **P7.5:** All delay and rate behavior uses an injected clock. Negative, non-finite, overflowed, malformed, and policy-exceeding delays are rejected without sleeping; seeded schedules reproduce exact eligibility times.
+- **P7.6:** Global, strategy, node, connector, and subordinate CPU-pool limits never exceed their captured values under saturation. Acquisition order is stable, reservations are released exactly once on cancellation or failed admission, and a connector call cannot bypass its connector permit.
+- **P7.7:** Assignment, result, telemetry, and writer-facing flow are bounded and closeable. With the writer deliberately blocked, producer progress stops at the configured bound, memory does not grow with offered work, cancellation unblocks every waiter, and close order neither loses an accepted result nor deadlocks.
+- **P7.8:** Telemetry uses versioned bounded names and values for queue depth, capacity, wait, service, and cleanup state. It may be sampled or dropped and cannot release dependencies, advance a checkpoint, reconstruct recovery, or publish authoritative progress.
+- **P7.9:** The parent coordinator validates the work-local lease fence and rebases run/node aggregates and the event frontier at serialized writer admission. Deliberately reversed completions commit correct aggregates and contiguous per-run event sequences without stale global row-version failures. No thread, task, process, or interpreter worker can access the SQLite writer. A pre-admission rejection retains the lease; a known rollback is retryable within policy; an unknown outcome stops admission and requires recovery.
+- **P7.10:** Pause quiesces admission at a stable durable boundary, cancellation closes producers and owned resources within a bound, and late results from an earlier control generation or coordinator owner are fenced. Exclusive startup recovery rebuilds only from durable evidence, handles non-expired leases explicitly, and never serializes futures, tasks, queues, or worker state. Cleanup is idempotent and returns structured unresolved-resource evidence.
+- **P7.11:** Sequential, threaded, and asyncio full-plan strategies share scheduling, retry, result, pause, cancellation, recovery, bounds, and cleanup assertions. Process and optional interpreter pools use a separate subordinate-operation suite that forbids plan scheduling, connectors, artifact ownership, and persistence. Controlled doubles prove every required assertion fails for the intended defect.
+- **P7.12:** The threaded strategy passes the full-plan suite, shares no session or connection across threads, prevents nested-pool starvation, respects every bound, and joins all owned threads after success, failure, pause, cancellation, and shutdown.
+- **P7.13:** The asyncio strategy passes the full-plan suite with structured task ownership, bounded queues and semaphores, propagated cancellation, and closed clients and streams. Tests cover calls from no loop, an active loop, task failure, cancellation, and shutdown without nested `asyncio.run` or event-loop blocking.
+- **P7.14:** The process pool accepts only registered connector-free CPU operations and bounded versioned primitive envelopes. The parent owns artifacts, results, leases, and SQLite. Spawn, worker crash, cancellation, pool failure, and shutdown leave no orphan process. A transitive scan of `src/paritygrid/adapters/runners/process_workers/` rejects persistence, runtime composition, connector, and database-library imports, and a canary proves a worker cannot open the operational database.
+- **P7.15:** Runtime registers sequential, threaded, and asyncio strategies only when their exact capabilities are present and registers the subordinate process pool separately. Captured capabilities match exposed choices; partial startup rolls back in reverse order and shutdown is idempotent.
+- **P7.16:** An enabled interpreter pool passes the subordinate-operation, isolation, bound, cancellation, and cleanup suite. An unavailable runtime returns a stable reason and leaves the default demo and required strategy gate unaffected.
+- **P7.17:** Comparison uses the explicit execution-evidence kind and version plus sorted durable work states, checkpoints, counts, artifact-manifest identities, and normalized causal events. It ignores timing and valid concurrent global event order. It never labels the result reconciliation equivalence, repair equivalence, or target-state parity, and negative fixtures lock that distinction.
+- **P7.18:** A reviewed matrix covers every full-plan strategy and every enabled subordinate pool across normal completion, retry, pause at each frontier, pause-abort race, cancellation under saturation, blocked writer, worker failure, unknown writer outcome, forced termination around every durable boundary, restart, and repeated cleanup. Every cell asserts bounds, no duplicate committed effect, no missing checkpoint, fenced stale results, contiguous events, and zero owned-resource leaks.
+- **P7.19:** At least fifty seeded shuffled executions preserve versioned execution evidence across required strategies. Windows and Linux install the built wheel into an isolated environment, start process workers with spawn semantics, run the process import/isolation gate, complete the lifecycle matrix, and prove all threads, tasks, processes, queues, files, and database owners close within configured bounds.
 
 ## Phase 8 packages
 
@@ -213,7 +244,7 @@ Parallel work may proceed only when packages do not edit the same contracts or f
 | P10.9 | Repair routes | P9.9–P9.12, P10.4 | Approval and application tests |
 | P10.10 | Artifact routes | P4.12 | Range and path-safety tests |
 | P10.11 | Durable SSE stream | P3.10 | Replay, gap, and slow-client tests |
-| P10.12 | Live WebSocket telemetry | P7.11 | Connect and disconnect tests |
+| P10.12 | Live WebSocket telemetry | P7.8 | Connect and disconnect tests |
 | P10.13 | OpenAPI export | P10.1–P10.12 | Deterministic snapshot |
 | P10.14 | TypeScript type generation | P10.13 | Clean regeneration diff |
 | P10.15 | Production frontend serving | P1.7, P10.1 | SPA and API 404 tests |
@@ -257,8 +288,8 @@ Parallel work may proceed only when packages do not edit the same contracts or f
 | P12.15 | Conflict inspector | P12.14 | Field-difference tests |
 | P12.16 | Repair-plan review | P10.9, P12.15 | Stale and confirmation tests |
 | P12.17 | Repair application progress | P12.16, P11.7 | Replay-safe browser test |
-| P12.18 | Runner comparison dashboard | P7.10, P10.8 | Correctness-first display tests |
-| P12.19 | System capabilities page | P7.8, P10.1 | Available/unavailable tests |
+| P12.18 | Runner comparison dashboard | P7.17, P10.8 | Correctness-first display tests |
+| P12.19 | System capabilities page | P7.15, P10.1 | Available/unavailable tests |
 | P12.20 | Visual regression baseline | P12.1–P12.19 | Canonical screenshots |
 
 ## Phase 13 packages
@@ -271,7 +302,7 @@ Parallel work may proceed only when packages do not edit the same contracts or f
 | P13.4 | Demo CLI orchestration | P10.15, P13.2 | Start, URL, and shutdown test |
 | P13.5 | Controlled fault controls | P8.2, P13.4 | Reproducible fault test |
 | P13.6 | Controlled process interruption | P6.11, P13.4 | Resume test |
-| P13.7 | Cross-runner verification manifest | P7.10, P13.2 | Required fingerprint match |
+| P13.7 | Cross-runner verification manifest | P7.17, P13.2 | Required execution-evidence match |
 | P13.8 | Headless smoke command | P13.4 | Sequential clean run |
 | P13.9 | Required runner smoke profiles | P13.8 | Threaded and async clean runs |
 | P13.10 | Canonical browser scenario | P12, P13.4 | Chromium end-to-end test |
@@ -284,7 +315,7 @@ Parallel work may proceed only when packages do not edit the same contracts or f
 |---|---|---|---|
 | P14.1 | Windows verification matrix | P13 | Clean Windows run |
 | P14.2 | Linux verification matrix | P13 | Clean Linux run |
-| P14.3 | Runtime capability matrix | P7.8, P13 | Supported profile tests |
+| P14.3 | Runtime capability matrix | P7.15, P13 | Supported profile tests |
 | P14.4 | Performance harness | P13.3 | Reproducible JSON result |
 | P14.5 | Memory and queue profiling | P14.4 | Bounded growth assertions |
 | P14.6 | Threat-model verification | Security packages | Threat test suite |
@@ -292,7 +323,7 @@ Parallel work may proceed only when packages do not edit the same contracts or f
 | P14.8 | Content Security Policy | P10.15, P12 | Browser policy test |
 | P14.9 | Python package build | P13.4 | Install and run built package |
 | P14.10 | Frontend distribution verification | P12, P10.15 | Rebuild produces no diff |
-| P14.11 | Nightly stress workflow | P7.12, P13 | Successful repeated run |
+| P14.11 | Nightly stress workflow | P7.19, P13 | Successful repeated run |
 | P14.12 | Release verification command | P14.1–P14.11 | One-command complete gate |
 | P14.13 | Third-party notices | P14.7 | License inventory review |
 

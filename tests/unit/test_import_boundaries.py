@@ -12,6 +12,7 @@ from paritygrid.quality.import_boundaries import (
     _find_file_violations,
     _resolve_from_import,
     find_domain_import_violations,
+    find_process_worker_import_violations,
     main,
 )
 
@@ -81,6 +82,8 @@ def test_plain_import_reports_outer_dependency(tmp_path: Path) -> None:
         ("import logging\n", "logging"),
         ("import os\n", "os"),
         ("from pathlib import Path\n", "pathlib.Path"),
+        ("import requests\n", "requests"),
+        ("import importlib.util\n", "importlib.util"),
         ("from pydantic_settings import BaseSettings\n", "pydantic_settings.BaseSettings"),
         ("import shutil\n", "shutil"),
         ("import sqlite3 as database\n", "sqlite3"),
@@ -317,6 +320,89 @@ def test_recursive_scan_checks_nested_domain_packages(tmp_path: Path) -> None:
     )
 
 
+def test_missing_future_process_worker_root_passes(tmp_path: Path) -> None:
+    assert find_process_worker_import_violations(tmp_path / "src") == ()
+
+
+def test_future_process_worker_allows_pure_contract_imports(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    worker_root = source_root / "paritygrid" / "adapters" / "runners" / "process_workers"
+    worker_root.mkdir(parents=True)
+    (worker_root / "probe.py").write_text(
+        "from dataclasses import dataclass\n"
+        "from paritygrid.application.planner.execution_plan import ExecutionPlan\n",
+        encoding="utf-8",
+    )
+
+    assert find_process_worker_import_violations(source_root) == ()
+
+
+@pytest.mark.parametrize(
+    ("source_text", "expected"),
+    [
+        ("import sqlite3\n", "sqlite3"),
+        (
+            "from paritygrid.adapters.persistence import SQLiteDatabase\n",
+            "paritygrid.adapters.persistence.SQLiteDatabase",
+        ),
+        (
+            "from paritygrid.application.ports.writer import TransactionalWriter\n",
+            "paritygrid.application.ports.writer.TransactionalWriter",
+        ),
+        (
+            "from paritygrid.application.ports.execution import RunRepository\n",
+            "paritygrid.application.ports.execution.RunRepository",
+        ),
+        (
+            "from paritygrid.application import execution\n",
+            "paritygrid.application.execution",
+        ),
+        ("import asyncio\n", "asyncio"),
+        ("import http.client as client\n", "http.client"),
+        ("from ssl import SSLContext\n", "ssl.SSLContext"),
+        (
+            "from ....application.writes import StartRun\n",
+            "paritygrid.application.writes.StartRun",
+        ),
+        ("from ..... import escaped\n", "<relative-import-escape>"),
+        ("from pathlib import Path\n", "pathlib.Path"),
+        (
+            "from typing import TYPE_CHECKING\n"
+            "if TYPE_CHECKING:\n"
+            "    from paritygrid.application.writes import StartRun\n",
+            "paritygrid.application.writes.StartRun",
+        ),
+        ("__import__('sqlite3')\n", "builtins.__import__"),
+    ],
+)
+def test_future_process_worker_rejects_write_and_dynamic_access(
+    tmp_path: Path,
+    source_text: str,
+    expected: str,
+) -> None:
+    source_root = tmp_path / "src"
+    worker_root = source_root / "paritygrid" / "adapters" / "runners" / "process_workers"
+    worker_root.mkdir(parents=True)
+    source = worker_root / "unsafe.py"
+    source.write_text(source_text, encoding="utf-8")
+
+    violations = find_process_worker_import_violations(source_root)
+
+    assert expected in {violation.imported_module for violation in violations}
+
+
+def test_invalid_future_process_worker_python_fails_closed(tmp_path: Path) -> None:
+    source_root = tmp_path / "src"
+    worker_root = source_root / "paritygrid" / "adapters" / "runners" / "process_workers"
+    worker_root.mkdir(parents=True)
+    source = worker_root / "broken.py"
+    source.write_text("def broken(:\n", encoding="utf-8")
+
+    assert find_process_worker_import_violations(source_root) == (
+        ImportViolation(source, 1, "<invalid-python>"),
+    )
+
+
 def test_missing_domain_root_fails_closed(tmp_path: Path) -> None:
     source_root = tmp_path / "src"
 
@@ -387,3 +473,22 @@ def test_command_reports_invalid_python_as_failure(
     assert exit_code == 1
     assert captured.out == ""
     assert captured.err == "paritygrid/domain/broken.py:1: <invalid-python>\n"
+
+
+def test_command_reports_process_worker_violation(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    source_root = tmp_path / "src"
+    domain_root = source_root / "paritygrid" / "domain"
+    domain_root.mkdir(parents=True)
+    (domain_root / "__init__.py").write_text("", encoding="utf-8")
+    worker_root = source_root / "paritygrid" / "adapters" / "runners" / "process_workers"
+    worker_root.mkdir(parents=True)
+    (worker_root / "unsafe.py").write_text("import sqlite3\n", encoding="utf-8")
+
+    exit_code = main(["--source-root", str(source_root)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert captured.out == ""
+    assert captured.err == ("paritygrid/adapters/runners/process_workers/unsafe.py:1: sqlite3\n")
