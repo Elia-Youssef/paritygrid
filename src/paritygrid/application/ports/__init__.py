@@ -275,6 +275,7 @@ from paritygrid.application.ports.repair_audit import (
     validate_audit_page_limit,
     validate_repair_page_limit,
 )
+from paritygrid.application.ports.result_sink import ResultSink
 from paritygrid.application.ports.run_aggregates import (
     MAX_WORK_METRIC,
     RunNodeAggregateRepository,
@@ -569,6 +570,7 @@ __all__ = [
     "RepairStateConflictError",
     "RepairStorageError",
     "RepairStorageUnavailableError",
+    "ResultSink",
     "RunEventCounterRecord",
     "RunNodeAggregateRepository",
     "RunNodePage",

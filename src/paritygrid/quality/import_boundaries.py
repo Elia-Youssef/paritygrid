@@ -1,9 +1,9 @@
-"""Static checks for domain dependency boundaries."""
+"""Static checks for dependency and process-isolation boundaries."""
 
 import argparse
 import ast
 import sys
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -58,6 +58,64 @@ _DANGEROUS_RUNTIME_REFERENCES = _BUILTIN_CALL_NAMES | {
 _INVALID_PYTHON = "<invalid-python>"
 _MISSING_DOMAIN_ROOT = "<missing-domain-root>"
 _RELATIVE_IMPORT_ESCAPE = "<relative-import-escape>"
+_PROCESS_WORKER_FORBIDDEN_PREFIXES = (
+    "alembic",
+    "aiohttp",
+    "anyio",
+    "asyncio",
+    "builtins",
+    "concurrent.futures",
+    "dbm",
+    "duckdb",
+    "fileinput",
+    "ftplib",
+    "glob",
+    "http",
+    "httpx",
+    "imaplib",
+    "importlib",
+    "io",
+    "mmap",
+    "multiprocessing",
+    "os",
+    "pathlib",
+    "pkgutil",
+    "poplib",
+    "requests",
+    "runpy",
+    "shelve",
+    "shutil",
+    "smtplib",
+    "socket",
+    "socketserver",
+    "sqlite3",
+    "sqlalchemy",
+    "ssl",
+    "subprocess",
+    "tarfile",
+    "tempfile",
+    "threading",
+    "urllib",
+    "websockets",
+    "xmlrpc",
+    "zipfile",
+    "zipimport",
+    "paritygrid.adapters.analytics",
+    "paritygrid.adapters.artifacts",
+    "paritygrid.adapters.connectors",
+    "paritygrid.adapters.persistence",
+    "paritygrid.api",
+    "paritygrid.application.execution",
+    "paritygrid.application.execution.checkpoint_commit",
+    "paritygrid.application.execution.finalization",
+    "paritygrid.application.execution.leasing",
+    "paritygrid.application.execution.recovery",
+    "paritygrid.application.execution.result_sink",
+    "paritygrid.application.ports",
+    "paritygrid.application.writes",
+    "paritygrid.cli",
+    "paritygrid.runtime",
+)
 
 
 @dataclass(frozen=True, slots=True, order=True)
@@ -110,6 +168,15 @@ def _is_allowed_domain_import(imported_module: str) -> bool:
         return True
     module_root = imported_module.partition(".")[0]
     return module_root in _ALLOWED_DOMAIN_MODULE_ROOTS
+
+
+def _is_allowed_process_worker_import(imported_module: str) -> bool:
+    if imported_module == _RELATIVE_IMPORT_ESCAPE:
+        return False
+    return not any(
+        imported_module == prefix or imported_module.startswith(f"{prefix}.")
+        for prefix in _PROCESS_WORKER_FORBIDDEN_PREFIXES
+    )
 
 
 def _import_aliases(tree: ast.AST, current_module: str, is_package: bool) -> dict[str, str]:
@@ -185,7 +252,12 @@ def _qualified_call_name(node: ast.expr, aliases: dict[str, str]) -> str | None:
     return None
 
 
-def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolation]:
+def _find_file_violations(
+    path: Path,
+    package_root: Path,
+    *,
+    is_allowed_import: Callable[[str], bool] = _is_allowed_domain_import,
+) -> list[ImportViolation]:
     try:
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
     except (OSError, SyntaxError, UnicodeError) as error:
@@ -215,7 +287,7 @@ def _find_file_violations(path: Path, package_root: Path) -> list[ImportViolatio
             violations.extend(
                 ImportViolation(path=path, line=import_line, imported_module=imported_module)
                 for imported_module in imported_modules
-                if not _is_allowed_domain_import(imported_module)
+                if not is_allowed_import(imported_module)
             )
         if isinstance(node, ast.Call):
             call_name = _qualified_call_name(node.func, aliases)
@@ -262,6 +334,24 @@ def find_domain_import_violations(source_root: Path) -> tuple[ImportViolation, .
     return tuple(sorted(violations))
 
 
+def find_process_worker_import_violations(source_root: Path) -> tuple[ImportViolation, ...]:
+    """Reject persistence, write, filesystem, and dynamic access in process workers."""
+    package_root = source_root / _PACKAGE_NAME
+    worker_root = package_root / "adapters" / "runners" / "process_workers"
+    if not worker_root.exists():
+        return ()
+    violations = [
+        violation
+        for path in sorted(worker_root.rglob("*.py"))
+        for violation in _find_file_violations(
+            path,
+            package_root,
+            is_allowed_import=_is_allowed_process_worker_import,
+        )
+    ]
+    return tuple(sorted(violations))
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the import-boundary check and return a process status code."""
     parser = argparse.ArgumentParser(description=__doc__)
@@ -273,7 +363,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     )
     arguments = parser.parse_args(argv)
     source_root = arguments.source_root.resolve()
-    violations = find_domain_import_violations(source_root)
+    violations = (
+        *find_domain_import_violations(source_root),
+        *find_process_worker_import_violations(source_root),
+    )
     if not violations:
         print("Import boundaries passed.")
         return 0

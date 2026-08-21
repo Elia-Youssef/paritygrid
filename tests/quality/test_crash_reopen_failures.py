@@ -323,7 +323,7 @@ def test_worker_rejects_an_undrained_normal_close(
         {"failpoint": "normal"},
         {"seed": True},
         {"startup_timeout_seconds": 0.0},
-        {"boundary_timeout_seconds": 16.0},
+        {"boundary_timeout_seconds": 46.0},
     ],
 )
 def test_harness_config_rejects_invalid_values(tmp_path: Path, values: dict[str, object]) -> None:

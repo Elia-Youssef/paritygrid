@@ -1,6 +1,8 @@
 """Closed transactional write commands and results."""
 
 from paritygrid.application.writes.execution import (
+    WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
+    WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION,
     BootstrapWork,
     BootstrapWorkResult,
     CheckpointWrite,
@@ -35,6 +37,8 @@ from paritygrid.application.writes.repairs import (
 )
 
 __all__ = [
+    "WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION",
+    "WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION",
     "ApproveRepairPlan",
     "BeginRepairApplication",
     "BeginRepairApplicationResult",

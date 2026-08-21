@@ -2,6 +2,8 @@
 
 **Status:** accepted
 **Date:** 2026-08-12
+**Decision scope:** Canonical domain encodings and logical-state fingerprints
+**Supersedes:** None
 
 ## Context
 

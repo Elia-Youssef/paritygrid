@@ -1,0 +1,219 @@
+{
+  "cancellation": {
+    "action": "cancelled",
+    "cancelled_work": [
+      "nod_e2e-source01",
+      "partition-00000000"
+    ],
+    "cancelled_work_outcomes": [
+      "cancelled"
+    ],
+    "event_kinds": [
+      "run_created",
+      "run_started",
+      "work_created",
+      "work_claimed",
+      "work_cancelled",
+      "run_cancelling",
+      "run_cancelled"
+    ],
+    "started_nodes": [
+      "nod_e2e-source01"
+    ]
+  },
+  "interrupted": {
+    "abandoned_work": "partition-00000000",
+    "abandoned_work_outcomes": [
+      "lease_expired"
+    ],
+    "event_kinds": [
+      "run_created",
+      "run_started",
+      "work_created",
+      "work_claimed",
+      "checkpoint_committed",
+      "work_created",
+      "work_claimed",
+      "checkpoint_committed",
+      "work_created",
+      "work_claimed",
+      "work_lease_expired",
+      "work_claimed",
+      "checkpoint_committed",
+      "work_created",
+      "work_created",
+      "work_claimed",
+      "work_retry_wait",
+      "work_claimed",
+      "checkpoint_committed",
+      "work_claimed",
+      "work_quarantined",
+      "work_created",
+      "work_claimed",
+      "checkpoint_committed",
+      "run_partially_succeeded"
+    ],
+    "final_fingerprint": "723b4c63dbb1381403bcf4c4c6667c69ac5fb650875b77b3b9927da1f378ca0f",
+    "recovered_count": 1,
+    "recovery_findings": [
+      "work_active_lease",
+      "work_committed",
+      "work_committed"
+    ],
+    "recovery_status": "active"
+  },
+  "main": {
+    "artifact_sha256": "54c715157f3efa5439991d1c21508acceff143157d9e8a811a5c8be34cde6fd5",
+    "artifact_work": [
+      "nod_e2e-export01",
+      "partition-00000000"
+    ],
+    "event_kinds": [
+      "run_created",
+      "run_started",
+      "work_created",
+      "work_claimed",
+      "work_claim_renewed",
+      "checkpoint_committed",
+      "run_pausing",
+      "run_paused",
+      "run_resuming",
+      "run_started",
+      "work_created",
+      "work_claimed",
+      "checkpoint_committed",
+      "work_created",
+      "work_claimed",
+      "checkpoint_committed",
+      "work_created",
+      "work_created",
+      "work_claimed",
+      "work_retry_wait",
+      "work_claimed",
+      "checkpoint_committed",
+      "work_claimed",
+      "work_quarantined",
+      "work_created",
+      "work_claimed",
+      "checkpoint_committed",
+      "run_partially_succeeded"
+    ],
+    "final_fingerprint": "723b4c63dbb1381403bcf4c4c6667c69ac5fb650875b77b3b9927da1f378ca0f",
+    "node_aggregates": {
+      "nod_e2e-export01": {
+        "quarantined": 0,
+        "retry_count": 0,
+        "succeeded": 1,
+        "total": 1
+      },
+      "nod_e2e-normal01": {
+        "quarantined": 0,
+        "retry_count": 0,
+        "succeeded": 1,
+        "total": 1
+      },
+      "nod_e2e-parti01": {
+        "quarantined": 1,
+        "retry_count": 1,
+        "succeeded": 1,
+        "total": 2
+      },
+      "nod_e2e-source01": {
+        "quarantined": 0,
+        "retry_count": 0,
+        "succeeded": 1,
+        "total": 1
+      },
+      "nod_e2e-valid01": {
+        "quarantined": 0,
+        "retry_count": 0,
+        "succeeded": 1,
+        "total": 1
+      }
+    },
+    "notification_offered": 28,
+    "pause_started_nodes": [
+      "nod_e2e-source01"
+    ],
+    "post_resume_started_nodes": [
+      "nod_e2e-normal01",
+      "nod_e2e-valid01",
+      "nod_e2e-parti01",
+      "nod_e2e-export01"
+    ],
+    "run_row_version": 28,
+    "run_state": "partially_succeeded",
+    "work": [
+      [
+        "nod_e2e-source01",
+        "partition-00000000",
+        {
+          "attempts": 1,
+          "outcomes": [
+            "succeeded"
+          ],
+          "state": "succeeded"
+        }
+      ],
+      [
+        "nod_e2e-normal01",
+        "partition-00000000",
+        {
+          "attempts": 1,
+          "outcomes": [
+            "succeeded"
+          ],
+          "state": "succeeded"
+        }
+      ],
+      [
+        "nod_e2e-valid01",
+        "partition-00000000",
+        {
+          "attempts": 1,
+          "outcomes": [
+            "succeeded"
+          ],
+          "state": "succeeded"
+        }
+      ],
+      [
+        "nod_e2e-parti01",
+        "partition-00000000",
+        {
+          "attempts": 2,
+          "outcomes": [
+            "retry_scheduled",
+            "succeeded"
+          ],
+          "state": "succeeded"
+        }
+      ],
+      [
+        "nod_e2e-parti01",
+        "partition-00000001",
+        {
+          "attempts": 1,
+          "outcomes": [
+            "quarantined"
+          ],
+          "state": "quarantined"
+        }
+      ],
+      [
+        "nod_e2e-export01",
+        "partition-00000000",
+        {
+          "attempts": 1,
+          "outcomes": [
+            "succeeded"
+          ],
+          "state": "succeeded"
+        }
+      ]
+    ]
+  },
+  "reopen": {
+    "run_state": "partially_succeeded"
+  }
+}

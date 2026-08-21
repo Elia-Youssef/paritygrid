@@ -41,14 +41,20 @@ while level 0 is rejected.
 - A SQLAlchemy `Session` or `AsyncSession` belongs to one task and one transaction scope.
 - Sessions must never be shared between concurrent tasks or threads.
 - Process workers must not write directly to SQLite.
+- `src/paritygrid/adapters/runners/process_workers/` must not import persistence, runtime
+  composition, connectors, or database libraries directly or transitively.
 - Read sessions must remain short-lived to prevent checkpoint starvation.
 - Migrations run before the API becomes ready.
 
 ### Transactional writer
 
-Worker outputs enter a bounded result queue. A transactional writer:
+Worker outputs enter a bounded result channel and then a parent-side result coordinator.
+The coordinator validates the work-local lease fence and payload before writer admission. It
+must not rely on run, node, or event row versions captured when concurrent work was admitted;
+it rebases current aggregate and event frontiers at the serialized write boundary. The
+transactional writer then:
 
-1. Validates result and checkpoint versions.
+1. Revalidates the result, lease, and checkpoint versions.
 2. Opens a short database transaction.
 3. Writes the attempt result.
 4. Advances the work item.
@@ -58,7 +64,11 @@ Worker outputs enter a bounded result queue. A transactional writer:
 8. Commits.
 9. Publishes committed notifications.
 
-If commit fails, no notification may describe the result as durable. Retriable database contention uses a bounded policy. Permanent persistence failure stops new scheduling and marks the run for recovery.
+If commit fails, no notification may describe the result as durable. A known rollback may use
+a bounded contention policy. An unknown commit outcome stops admission and marks the run
+recovery-required. Scheduled-work capacity and dependency readiness are released only after a
+known durable commit. A payload rejected before writer admission retains its active lease so a
+corrected bounded result may be submitted.
 
 ## Operational schema
 
@@ -99,7 +109,7 @@ If commit fails, no notification may describe the result as durable. Retriable d
 - Lifecycle state and monotonic row version.
 - Canonical scenario seed where applicable.
 - Start, finish, cancellation, and recovery timestamps.
-- Final reconciliation fingerprint.
+- Execution-evidence fingerprint and its explicit fingerprint version.
 
 ### `run_event_counters`
 
@@ -160,7 +170,7 @@ If commit fails, no notification may describe the result as durable. Retriable d
 
 - Counts by classification.
 - Source and target fingerprints.
-- Final reconciliation fingerprint.
+- Reconciliation fingerprint.
 - Analytical query version.
 
 ### `reconciliation_conflicts`
@@ -222,6 +232,22 @@ Checkpoint-head equality with the maximum checkpoint history version and event-c
 the maximum event sequence plus one are verified by repository transactions and startup integrity
 checks. SQLite metadata cannot express these cross-row aggregate invariants directly.
 
+## Fingerprint persistence
+
+Fingerprint fields name the fact they identify and store an explicit kind-specific version. The plan
+fingerprint belongs to immutable planning metadata. `runs.execution_evidence_fingerprint` and
+`runs.execution_evidence_fingerprint_version` identify execution finalization evidence. Reconciliation
+summaries retain the independently computed reconciliation fingerprint and analytical query version.
+Target-state verification stores its own canonical fingerprint and input identity when Phase 9 adds
+that fact. These values are not aliases and must not be copied between kinds.
+
+The current Phase 6 finalization document is execution-evidence version 2. The first Phase 7 migration
+renames the former `runs.final_reconciliation_fingerprint` storage meaning, adds the explicit version,
+preserves every existing non-null digest byte-for-byte, and backfills its version as 2. Compatibility
+reads of the former name are confined to the repository migration boundary; all new writes and public
+contracts use the execution-evidence name. Empty-database, frozen-schema upgrade, downgrade-policy,
+and mixed null/non-null fixtures must prove the migration before runner-contract work begins.
+
 ## Migration policy
 
 Each schema change must include:
@@ -234,6 +260,9 @@ Each schema change must include:
 - Clear handling for intentional irreversibility.
 
 Migrations must not depend on network access or developer-specific state.
+
+A compatibility rename must also document the old and new semantic names, the version assigned to
+existing values, the repository compatibility window, and a byte-for-byte preservation assertion.
 
 ## Artifact store
 
@@ -303,8 +332,12 @@ Required tests include:
 
 - Constraint and transaction tests against file-based SQLite.
 - WAL concurrency and busy handling.
+- Out-of-order concurrent result commits with rebased run/node aggregates and contiguous event sequences.
+- Rejected pre-admission results retaining their lease and accepting one corrected resubmission.
+- Unknown writer outcomes stopping admission and requiring durable recovery.
 - Crash reopening.
 - Migration from frozen fixtures.
+- Execution-evidence fingerprint rename, version backfill, and byte-for-byte preservation.
 - Failpoints at each artifact commit step.
 - Manifest and file cross-checking.
 - DuckDB rebuild from committed inputs.

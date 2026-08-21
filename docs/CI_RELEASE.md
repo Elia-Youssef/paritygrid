@@ -20,11 +20,14 @@ The initial required lane uses these reproducible commands:
 
 ```powershell
 uv sync --locked --all-groups
+uv run python scripts/verify_python_dependencies.py
 uv run ruff format --check .
 uv run ruff check .
 uv run pyright
 uv run paritygrid-check-boundaries
 uv run pytest --cov=paritygrid --cov-report=term-missing
+uv run python scripts/verify_python_coverage.py
+uv run python scripts/verify_wheel_install.py
 uv run paritygrid smoke
 npm --prefix web ci
 npm --prefix web run format:check
@@ -35,7 +38,13 @@ npm --prefix web run build
 uv run python scripts/verify_frontend_api_path.py
 ```
 
-The frontend API smoke command runs after both locked environments are installed. Later phases add the stable `paritygrid verify` profiles without removing these underlying checks.
+The frontend API smoke command runs after both locked environments are installed and exercises the Vite development proxy against the FastAPI application factory. Later phases add the stable `paritygrid verify` profiles without removing these underlying checks.
+
+The dependency audit exports every locked group to a temporary hash-pinned requirements file, omits only the unpublished local project, and audits that exact set in strict mode. The scoped coverage command consumes the same `.coverage` data as the aggregate report and independently requires at least 90 percent branch coverage for `paritygrid.application.execution` and 95 percent for the sequential runner. New adapter runner scopes must be registered in `scripts/verify_python_coverage.py` when they are introduced.
+
+The wheel verifier builds into a temporary directory, exports locked runtime dependencies, installs them and the wheel into a fresh virtual environment, and runs import, CLI smoke, and spawned-child import probes outside the checkout. Temporary build, environment, and probe files are removed when verification finishes.
+
+The import-boundary command enforces both domain purity and the reserved `src/paritygrid/adapters/runners/process_workers/` boundary. The reserved directory may be absent; any future Python file below it is scanned for persistence, result-commit, connector, filesystem, database, network, and dynamic-import access.
 
 ## Pull-request lane
 

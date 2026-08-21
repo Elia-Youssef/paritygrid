@@ -1,5 +1,6 @@
 """Authoritative SQLite persistence foundation."""
 
+from paritygrid.adapters.persistence.cancellation import SQLiteCancellationStateReader
 from paritygrid.adapters.persistence.capabilities import (
     MINIMUM_SQLITE_VERSION,
     REQUIRED_BUSY_TIMEOUT_MS,
@@ -21,11 +22,14 @@ from paritygrid.adapters.persistence.errors import (
     SQLiteCapabilityError,
     SQLiteConfigurationError,
 )
+from paritygrid.adapters.persistence.finalization import SQLiteFinalizationStateReader
 from paritygrid.adapters.persistence.migration import (
     HEAD_REVISION,
     MigrationReport,
     upgrade_to_head,
 )
+from paritygrid.adapters.persistence.pause import SQLitePauseStateReader
+from paritygrid.adapters.persistence.recovery import SQLiteRecoveryStateReader
 from paritygrid.adapters.persistence.repositories import (
     MAX_CANONICAL_DOCUMENT_BYTES,
     SqlAlchemyCheckpointRepository,
@@ -83,13 +87,17 @@ __all__ = (
     "RepairActionApplicationStatus",
     "RepairPlanStatus",
     "RunNodeState",
+    "SQLiteCancellationStateReader",
     "SQLiteCapabilities",
     "SQLiteCapabilityError",
     "SQLiteConfigurationError",
     "SQLiteDatabase",
     "SQLiteDatabaseConfig",
+    "SQLiteFinalizationStateReader",
     "SQLiteLibraryInfo",
+    "SQLitePauseStateReader",
     "SQLitePragmaState",
+    "SQLiteRecoveryStateReader",
     "SQLiteTransactionalWriter",
     "SecretReferenceName",
     "SessionFactory",

@@ -4,7 +4,7 @@
 
 Verification must prove the claims that make ParityGrid valuable:
 
-- Logical equivalence across execution strategies.
+- Equivalent versioned execution evidence across required full-plan strategies.
 - No partial durable transition.
 - Idempotent recovery and repair effects.
 - Explicit quarantine of invalid data.
@@ -21,7 +21,10 @@ Python:
 - Ruff lint and format check.
 - Pyright strict checking.
 - Import-boundary verification.
+- A direct static isolation guard for the reserved process-worker package; P7.14 adds
+  reachable-import verification before worker code is accepted.
 - Packaging metadata validation.
+- Isolated built-wheel installation and Windows/Linux spawn verification.
 - Dependency audit.
 
 Frontend:
@@ -41,6 +44,7 @@ Unit tests cover:
 - State transitions.
 - Canonical serialization.
 - Fingerprinting.
+- Fingerprint-kind and version separation.
 - DAG validation.
 - Reconciliation rules.
 - Retry and rate-limit policies.
@@ -54,7 +58,7 @@ Hypothesis covers:
 
 - Canonicalization independent of input order.
 - Stable round trips for versioned encodings.
-- Runner equivalence on generated datasets.
+- Required-strategy execution-evidence equivalence on generated datasets.
 - DAG cycle and reachability detection.
 - Checkpoint monotonicity.
 - Idempotent application.
@@ -74,6 +78,9 @@ Use temporary file-based SQLite databases. Cover:
 - Busy handling.
 - Writer queue backpressure.
 - Concurrent command conflicts.
+- Out-of-order result commits with rebased aggregates and contiguous event sequences.
+- Invalid pre-admission result correction without lease loss.
+- Unknown writer outcome stopping admission and requiring recovery.
 - Abrupt process termination and reopening.
 - Event sequence and checkpoint atomicity.
 
@@ -103,16 +110,27 @@ Every connector runs the same conformance suite:
 - Redaction.
 - Resource cleanup.
 
-Every runner runs the same conformance suite:
+Sequential, threaded, and asyncio full-plan strategies run the same conformance suite:
 
 - Dependency ordering.
+- Independent-node and partition overlap.
 - Attempt event shape.
-- Cancellation.
+- Pause generations and pause-abort races.
+- Cancellation under saturation.
 - Retry.
-- Result submission.
-- Cleanup.
+- Bounded result submission and durable acknowledgement.
+- Restart from the durable scheduler frontier.
+- Idempotent cleanup with no owned-resource leaks.
 - Resource bounds.
-- Logical equivalence.
+- Versioned execution-evidence equivalence.
+
+The process CPU pool and any enabled interpreter CPU pool run a separate subordinate-operation suite:
+
+- Only registered connector-free CPU operations.
+- Bounded versioned primitive envelopes.
+- No plan scheduling, connectors, artifact ownership, or persistence access.
+- Spawn startup, worker failure, cancellation, shutdown, and orphan prevention.
+- Transitive import isolation for `src/paritygrid/adapters/runners/process_workers/`.
 
 ### API tests
 
@@ -131,12 +149,15 @@ Every runner runs the same conformance suite:
 ### Concurrency tests
 
 - Maximum threads, tasks, processes, and requests are respected.
-- Slow persistence propagates backpressure.
+- Independent ready nodes and partitions overlap without releasing successors before durable predecessor completion.
+- Slow or blocked persistence propagates backpressure through every bounded channel.
 - Cancellation under saturation completes within a bound.
-- Pause reaches a stable checkpoint.
-- Repeated shuffled completion order preserves the fingerprint.
+- Pause reaches a stable checkpoint and its acknowledgement/abort race has exactly one durable winner.
+- Repeated shuffled completion order preserves the versioned execution-evidence fingerprint and normalized causal evidence.
 - Concurrent repair application produces one logical winner.
-- Process workers cannot bypass the result sink.
+- Out-of-order results rebase aggregates and preserve a contiguous per-run event sequence.
+- An unknown writer outcome stops new admission and enters recovery-required state.
+- Process and interpreter workers cannot bypass the parent result coordinator or open SQLite.
 
 ### Recovery tests
 
@@ -146,6 +167,9 @@ Run the application in a subprocess and terminate at controlled failpoints:
 - After artifact rename and before manifest commit.
 - Before checkpoint commit.
 - After checkpoint commit and before acknowledgement.
+- While a result waits behind a blocked writer.
+- After worker completion with an unknown writer outcome.
+- During pause acknowledgement and abort coordination.
 - During repair application.
 - During final verification.
 - During shutdown.
@@ -154,22 +178,40 @@ After restart, assert:
 
 - No duplicate effect.
 - No missing committed checkpoint.
+- No stale result from prior ownership is accepted.
+- Durable scheduler state reconstructs without serialized in-memory runner objects.
+- Run and node aggregates and per-run event sequences remain consistent.
 - Orphan files are reported.
 - Ambiguous integrity failures are not silently accepted.
-- The final fingerprint remains correct after recovery.
+- The versioned execution-evidence fingerprint remains correct after recovery.
+- Every owned thread, task, process, interpreter, queue, client, file, and database owner closes within the bound.
 
 ### Smoke tests
 
-Required commands:
+The current Phase 6 gate uses the implemented application smoke path and the synthetic
+five-node sequential durable-boundary fixture:
 
 ```powershell
 uv run paritygrid smoke
+uv run pytest tests/execution/test_sequential_end_to_end.py
+```
+
+These commands verify the capability currently present; the synthetic fixture is not a
+production-connector or complete reconciliation workflow.
+
+The following Phase 13 runner smoke commands are planned and unavailable until their owning
+packages and canonical scenario are accepted:
+
+```powershell
 uv run paritygrid demo --headless --runner sequential
 uv run paritygrid demo --headless --runner threaded
 uv run paritygrid demo --headless --runner asyncio
 ```
 
-Each verifies startup, migrations, simulator health, pipeline publication, run completion, artifact integrity, reconciliation summary, expected fingerprint, and clean shutdown.
+At Phase 13, each command must verify startup, migrations, simulator health, pipeline
+publication, run completion, artifact integrity, reconciliation summary, the expected
+kind-and-version fingerprints, and clean shutdown. A process CPU pool is a subordinate
+capability and is not exposed as a full-plan `--runner` value.
 
 ### Frontend component tests
 
@@ -232,7 +274,8 @@ Run mutation testing nightly or before release for:
 |---|---:|
 | Pure domain | 95% |
 | Reconciliation | 95% |
-| Execution engine | 90% |
+| Application execution and recovery | 90% |
+| Runner adapters and worker mechanics | 90% |
 | Persistence invariants | 90% |
 | API | 85% |
 | Frontend state and utilities | 85% |
@@ -267,4 +310,4 @@ A phase is accepted only when:
 - No hard gate fails.
 - Verification evidence is reproducible from documented commands.
 
-Hard-gate failures include data loss, runner fingerprint mismatch, unresolved critical security issues, broken clean-clone setup, failing migrations, failing required tests, or repository-content violations.
+Hard-gate failures include data loss, required-strategy execution-evidence mismatch, exceeded concurrency bounds, unreleased owned resources, process-worker isolation failure, direct worker SQLite access, unresolved critical security issues, broken clean-clone setup, failing migrations, failing required tests, or repository-content violations.

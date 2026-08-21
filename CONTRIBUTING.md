@@ -4,7 +4,7 @@ Thank you for improving ParityGrid. Changes are accepted when they preserve dete
 
 ## Before starting
 
-Read the [documentation index](docs/INDEX.md), then the governing product, architecture, engineering, repository, and quality documents for the area you plan to change. Select one or more work packages from the [work package catalog](docs/WORK_PACKAGES.md) and confirm their dependencies are accepted.
+Read the [documentation index](docs/INDEX.md), then the governing product, architecture, engineering, repository, and quality documents for the area you plan to change. Check the [phase status](docs/PHASE_STATUS.md), select one or more work packages from the [work package catalog](docs/WORK_PACKAGES.md), and confirm their dependencies are accepted.
 
 Use the [Git workflow](docs/GIT_WORKFLOW.md). Topic branches target the current phase branch; phase branches target `main` only after their acceptance gate passes.
 

@@ -33,6 +33,7 @@ from paritygrid.application.ports.consistency import (
     RedactedDocument,
 )
 from paritygrid.application.ports.execution import (
+    ExecutionStateConflictError,
     RunRecord,
     WorkClaim,
     WorkCompletion,
@@ -58,6 +59,8 @@ from paritygrid.application.ports.writer import (
     WriterInvalidRequestError,
 )
 from paritygrid.application.writes.execution import (
+    WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION,
+    WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION,
     BootstrapWork,
     BootstrapWorkResult,
     CheckpointWrite,
@@ -90,8 +93,9 @@ from paritygrid.application.writes.repairs import (
     RepairCompanions,
     RepairMutationResult,
 )
-from paritygrid.domain.execution import RunState, WorkItemState
+from paritygrid.domain.execution import FailureClassification, RunState, WorkItemState
 from paritygrid.domain.models import (
+    ArtifactId,
     AttemptNumber,
     NodeId,
     PipelineId,
@@ -175,12 +179,23 @@ def validate_command(command: WriterCommand) -> ClosedCommand:
     elif isinstance(closed, ClaimWork):
         _exact(closed.node_id, NodeId, "node identity")
         _exact(closed.work_item_id, WorkItemId, "work identity")
+        _exact(closed.expected_attempt_number, AttemptNumber, "attempt number")
         _bounded_text(closed.lease_owner, "lease owner")
         _exact(closed.started_at, UtcTimestamp, "claim start time")
         _exact(closed.lease_expires_at, UtcTimestamp, "lease expiry time")
         _bounded_text(closed.runner_kind, "runner kind")
         _bounded_text(closed.worker_identity, "worker identity")
-        _validate_work_event(closed.event, closed.run_id, closed.work_item_id, "work_claimed")
+        _validate_work_lease_event(
+            closed.event,
+            run_id=closed.run_id,
+            work_item_id=closed.work_item_id,
+            node_id=closed.node_id,
+            attempt_number=closed.expected_attempt_number,
+            runner_kind=closed.runner_kind,
+            occurred_at=closed.started_at,
+            lease_expires_at=closed.lease_expires_at,
+            event_kind="work_claimed",
+        )
         _positive(closed.expected_work_row_version, "work row version")
         _positive(closed.expected_node_row_version, "node row version")
         _positive(closed.expected_run_row_version, "run row version")
@@ -189,7 +204,17 @@ def validate_command(command: WriterCommand) -> ClosedCommand:
         claim = _exact(closed.claim, WorkClaim, "work claim")
         _exact(closed.renewed_at, UtcTimestamp, "claim renewal time")
         _exact(closed.lease_expires_at, UtcTimestamp, "lease expiry time")
-        _validate_work_event(closed.event, closed.run_id, claim.work_item_id, "work_claim_renewed")
+        _validate_work_lease_event(
+            closed.event,
+            run_id=closed.run_id,
+            work_item_id=claim.work_item_id,
+            node_id=closed.node_id,
+            attempt_number=claim.attempt_number,
+            runner_kind=claim.runner_kind,
+            occurred_at=closed.renewed_at,
+            lease_expires_at=closed.lease_expires_at,
+            event_kind="work_claim_renewed",
+        )
         _positive(closed.expected_run_row_version, "run row version")
     elif isinstance(closed, (CommitWorkAttempt, CommitWorkWithCheckpoint)):
         _validate_completion_command(closed)
@@ -295,6 +320,8 @@ def _claim_work(session: Session, command: ClaimWork) -> DispatchOutcome:
         runner_kind=command.runner_kind,
         worker_identity=command.worker_identity,
     )
+    if claim.attempt_number != command.expected_attempt_number:
+        raise WriterInvalidRequestError("claimed attempt number is inconsistent")
     _require_claim_parent(session, claim, command.run_id, command.node_id)
     events = _append_event(session, command.run_id, command.event)
     node = SqlAlchemyRunNodeAggregateRepository(session).apply_claim(
@@ -337,12 +364,14 @@ def _commit_with_checkpoint(session: Session, command: CommitWorkWithCheckpoint)
         command.claim, command.completion
     )
     _require_work_parent(completed.work_item, command.run_id, command.node_id)
+    if completed.work_item.partition_key != command.checkpoint.expected_partition_key:
+        raise ExecutionStateConflictError("checkpoint partition does not match durable work")
     checkpoint = SqlAlchemyCheckpointRepository(session).append(
         command.run_id,
         command.node_id,
         completed.work_item.partition_key,
         expected_current_version=CheckpointVersion(completed.work_item.expected_checkpoint_version),
-        expected_head_row_version=command.checkpoint.expected_head_row_version,
+        expected_head_row_version=completed.work_item.expected_checkpoint_version + 1,
         expected_work_row_version=completed.work_item.row_version,
         payload_schema_version=command.checkpoint.payload_schema_version,
         source_cursor=command.checkpoint.source_cursor,
@@ -602,6 +631,8 @@ def _validate_run_command(command: CreateCapturedRun | TransitionRun) -> None:
     if expected_kind is None:
         raise WriterInvalidRequestError("run transition target is invalid")
     _validate_run_event(command.event, command.run_id, expected_kind)
+    if command.event.event.occurred_at != command.transitioned_at:
+        raise WriterInvalidRequestError("run transition event time is inconsistent")
 
 
 def _validate_completion_command(
@@ -616,6 +647,22 @@ def _validate_completion_command(
     _positive(command.expected_node_row_version, "node row version")
     _positive(command.expected_run_row_version, "run row version")
     target = command.completion.target_state
+    _exact(target, WorkItemState, "completion target")
+    _exact(command.completion.finished_at, UtcTimestamp, "completion finish time")
+    classification = command.completion.failure_classification
+    if target is WorkItemState.SUCCEEDED:
+        if classification is not None:
+            raise WriterInvalidRequestError("successful completion cannot have a failure class")
+    else:
+        _exact(classification, FailureClassification, "completion failure classification")
+    retry_at = command.completion.retry_available_at
+    if target is WorkItemState.RETRY_WAIT:
+        _exact(retry_at, UtcTimestamp, "completion retry availability")
+    elif retry_at is not None:
+        raise WriterInvalidRequestError("only retry completion has retry availability")
+    if command.completion.redacted_detail is not None:
+        _bounded_text(command.completion.redacted_detail, "completion detail")
+    _optional_document(command.completion.result_reference, "completion result reference")
     if isinstance(command, CommitWorkAttempt):
         if target is WorkItemState.SUCCEEDED:
             raise WriterInvalidRequestError("successful work requires a checkpoint")
@@ -625,13 +672,42 @@ def _validate_completion_command(
             raise WriterInvalidRequestError("checkpointed work must succeed")
         if type(command.checkpoint) is not CheckpointWrite:
             raise WriterInvalidRequestError("checkpoint write type is invalid")
-        _positive(command.checkpoint.expected_head_row_version, "checkpoint row version")
+        _exact(command.checkpoint.expected_partition_key, PartitionKey, "checkpoint partition")
         _positive(command.checkpoint.payload_schema_version, "checkpoint schema version")
         _optional_document(command.checkpoint.source_cursor, "checkpoint source cursor")
         _optional_document(command.checkpoint.output_position, "checkpoint output position")
+        if command.checkpoint.artifact_id is not None:
+            _exact(command.checkpoint.artifact_id, ArtifactId, "checkpoint artifact identity")
         _exact(command.checkpoint.committed_at, UtcTimestamp, "checkpoint commit time")
         event_kind = "checkpoint_committed"
-    _validate_work_event(command.event, command.run_id, claim.work_item_id, event_kind)
+    event = _validate_work_event(command.event, command.run_id, claim.work_item_id, event_kind)
+    if event.occurred_at != command.completion.finished_at:
+        raise WriterInvalidRequestError("durable result event time is inconsistent")
+    if event.payload_schema_version != WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION:
+        raise WriterInvalidRequestError("durable result event schema is inconsistent")
+    payload = _exact(event.payload, RedactedDocument, "durable result event payload")
+    expected_payload: dict[str, object] = {
+        "attempt_number": int(claim.attempt_number),
+        "failure_classification": None if classification is None else classification.value,
+        "node_id": str(command.node_id),
+        "retry_available_at": None if retry_at is None else str(retry_at),
+        "runner_kind": claim.runner_kind,
+        "target_state": target.value,
+    }
+    if isinstance(command, CommitWorkWithCheckpoint):
+        expected_payload.update(
+            {
+                "artifact_id": (
+                    None
+                    if command.checkpoint.artifact_id is None
+                    else str(command.checkpoint.artifact_id)
+                ),
+                "checkpoint_payload_schema_version": command.checkpoint.payload_schema_version,
+                "partition_key": str(command.checkpoint.expected_partition_key),
+            }
+        )
+    if payload.to_mapping() != expected_payload:
+        raise WriterInvalidRequestError("durable result event payload is inconsistent")
 
 
 def _validate_repair_command(command: RepairCommand) -> None:
@@ -787,7 +863,7 @@ def _validate_work_event(
     run_id: RunId,
     work_item_id: WorkItemId,
     event_kind: str,
-) -> None:
+) -> PendingExecutionEvent:
     _exact(run_id, RunId, "event run identity")
     event = _validate_event_request(request, event_kind)
     if (
@@ -796,6 +872,34 @@ def _validate_work_event(
         or event.subject_id != work_item_id
     ):
         raise WriterInvalidRequestError("durable event work subject is inconsistent")
+    return event
+
+
+def _validate_work_lease_event(
+    request: EventAppendRequest,
+    *,
+    run_id: RunId,
+    work_item_id: WorkItemId,
+    node_id: NodeId,
+    attempt_number: AttemptNumber,
+    runner_kind: str,
+    occurred_at: UtcTimestamp,
+    lease_expires_at: UtcTimestamp,
+    event_kind: str,
+) -> None:
+    event = _validate_work_event(request, run_id, work_item_id, event_kind)
+    if event.occurred_at != occurred_at:
+        raise WriterInvalidRequestError("durable lease event time is inconsistent")
+    if event.payload_schema_version != WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION:
+        raise WriterInvalidRequestError("durable lease event schema is inconsistent")
+    payload = _exact(event.payload, RedactedDocument, "durable lease event payload")
+    if payload.to_mapping() != {
+        "attempt_number": int(attempt_number),
+        "lease_expires_at": str(lease_expires_at),
+        "node_id": str(node_id),
+        "runner_kind": runner_kind,
+    }:
+        raise WriterInvalidRequestError("durable lease event payload is inconsistent")
 
 
 def _validate_event_request(

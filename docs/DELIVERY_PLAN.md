@@ -162,7 +162,7 @@ A phase cannot receive an A when a hard gate fails. Rubric points are earned fro
 - Unknown nodes and incompatible ports are rejected.
 - Published versions cannot change.
 - Visual layout does not affect logical plan fingerprints.
-- Approval is required before repair application.
+- Every path to a `repair.apply` node is rejected unless it first crosses a `repair.approval` node.
 
 **Rubric:**
 
@@ -180,18 +180,18 @@ A phase cannot receive an A when a hard gate fails. Rubric points are earned fro
 
 **Objective:** Implement the reference runner, scheduler, checkpoint commit sequence, lifecycle controls, and recovery.
 
-**Outputs:** Scheduler, sequential runner, leasing, retry policy, normalized events, checkpoint commits, pause, resume, cancellation, and startup recovery.
+**Outputs:** Scheduler, sequential runner, leasing, retry policy, normalized events, checkpoint commits, pause, resume, cancellation, run finalization, and startup recovery.
 
 **Dependencies:** Phases 3, 4, and 5.
 
 **Acceptance evidence:**
 
-- A complete pipeline runs through normal boundaries.
-- Retries and quarantine are correctly classified.
-- Pause reaches a stable checkpoint.
-- Cancellation cleans up resources.
-- Failpoint termination resumes without duplicate effect.
-- Expected event ordering and fingerprint are locked.
+- A published and compiled synthetic Phase 2–6 fixture executes a five-node plan through the reference sequential runner and durable boundaries without claiming production connectors.
+- The deterministic fixture locks bounded retry and quarantine classification.
+- Pause reaches a stable checkpoint and resume continues from the captured scheduler frontier.
+- Cancellation reaches its durable terminal state and cleans up owned resources.
+- Controlled interruption and reopen resume from durable evidence without a duplicate committed effect.
+- Expected durable event ordering and the versioned execution-evidence finalization fingerprint are locked.
 
 **Rubric:**
 
@@ -207,32 +207,38 @@ A phase cannot receive an A when a hard gate fails. Rubric points are earned fro
 
 ## Phase 7 — Concurrent execution strategies
 
-**Objective:** Implement bounded threaded, asynchronous, process, and optional interpreter execution behind one contract.
+**Objective:** Add bounded threaded and asyncio full-plan strategies behind application-owned scheduling, plus isolated subordinate CPU pools, without changing durable execution semantics.
 
-**Outputs:** Runner conformance suite, thread runner, async runner, capacity limits, rate limiting, process runner, capability detection, and comparison harness.
+**Outputs:** Carried Phase 6 race corrections, execution-evidence fingerprint migration, versioned runner-neutral contract, concurrent scheduler frontier, captured settings and capabilities, clock-driven rate policy, bounded capacity and channels, concurrency telemetry, parent-side result coordination, lifecycle and recovery coordination, shared conformance suites, threaded and asyncio strategies, subordinate process CPU pool, capability registration, optional interpreter pool, execution-evidence comparison, lifecycle matrix, and cross-platform stress and packaging proof.
 
 **Dependencies:** Phase 6.
 
 **Acceptance evidence:**
 
-- Required runners pass the common contract.
-- Limits hold under saturation.
-- Cancellation completes under load.
-- Backpressure prevents unbounded growth.
-- Repeated shuffled executions preserve the reference fingerprint.
-- Process workers cannot bypass persistence coordination.
+- P7.0 closes the lease-correlation validation, invalid-result resubmission, and pause acknowledgement/abort race findings with deterministic barriers.
+- Existing Phase 6 execution-evidence digests are preserved byte-for-byte, named accurately, and backfilled with explicit version 2 before the runner contract lands.
+- `(run_id, node_id, partition_key)` is the sole scheduled work unit; independent ready work overlaps and successors wait for durable predecessor completion.
+- Sequential, threaded, and asyncio strategies pass the same versioned full-plan contract, lifecycle, recovery, bounds, and cleanup suite.
+- Every configured capacity holds under saturation, and blocked persistence propagates bounded backpressure without memory growth or deadlock.
+- Pause, cancellation, unknown writer outcomes, forced termination, restart, and stale-result fencing pass the complete lifecycle matrix.
+- Out-of-order results commit through the parent coordinator with correct rebased aggregates, contiguous per-run durable events, and no direct worker SQLite access.
+- The process pool executes only registered connector-free CPU operations through bounded versioned envelopes. `src/paritygrid/adapters/runners/process_workers/` passes transitive import isolation, spawn, crash, cancellation, shutdown, and orphan-process tests.
+- An interpreter pool is either unavailable with a structured reason or passes the subordinate-pool suite; it is not required for core acceptance.
+- At least fifty seeded shuffled runs preserve the versioned execution-evidence fingerprint and normalized causal evidence across required strategies. The comparison makes no Phase 9 reconciliation, repair, or target-state equivalence claim.
+- Windows and Linux install the built wheel in isolation, exercise process spawn semantics, and close all owned threads, tasks, processes, queues, clients, files, and database owners within configured bounds.
 
 **Rubric:**
 
 | Criterion | Points |
 |---|---:|
-| Cross-runner equivalence | 30 |
+| Runner-neutral contract and execution-evidence equivalence | 25 |
 | Bounded concurrency | 20 |
-| Cancellation and backpressure | 20 |
-| Stress and race evidence | 20 |
+| Lifecycle, recovery, and SQLite coordination | 25 |
+| Backpressure, isolation, and cleanup | 20 |
+| Stress and packaging evidence | 10 |
 | Implementation clarity | 10 |
 
-**Hard gates:** Fingerprint mismatch, exceeded configured bound, unreleased worker resource, or direct process write to SQLite.
+**Hard gates:** Required-strategy execution-evidence mismatch, exceeded configured bound, premature dependency release, non-contiguous durable events, accepted stale result, unresolved writer ambiguity, deadlock, unreleased owned resource, failed process isolation, direct worker SQLite access, or missing Windows/Linux installed-wheel spawn evidence.
 
 ## Phase 8 — Synthetic systems and connectors
 

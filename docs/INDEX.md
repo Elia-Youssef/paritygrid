@@ -2,6 +2,8 @@
 
 This directory is the authoritative instruction set for ParityGrid. When documents conflict, use the precedence order below and resolve the inconsistency before implementation continues.
 
+Current delivery state, accepted commits, and active limitations are tracked in [Phase status](PHASE_STATUS.md). That status record reports evidence and does not change the precedence of governing requirements.
+
 ## Precedence
 
 1. [Product charter](PRODUCT.md)
@@ -22,6 +24,16 @@ This directory is the authoritative instruction set for ParityGrid. When documen
 16. [Instruction audit](INSTRUCTION_AUDIT.md)
 
 Product requirements take precedence over implementation convenience. Security and data-integrity requirements are hard gates even when another document does not repeat them.
+
+### Decision-record precedence
+
+[Decision records](decisions/) govern a deliberately narrow architecture or contract question:
+
+- A proposed decision record has no authority.
+- An accepted decision record amends the highest-precedence governing document that it explicitly names for the decision's stated scope.
+- A decision record cannot silently override the product charter or a security or data-integrity hard gate. Any such conflict blocks implementation until the record and the governing document are reconciled in the same change.
+- When accepted decision records cover the same scope, the later record supersedes the earlier one only when it says so explicitly. Otherwise the conflict must be resolved before implementation continues.
+- Superseded and rejected records remain historical evidence and do not govern new work.
 
 ## Requirement language
 

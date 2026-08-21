@@ -1,5 +1,10 @@
 # Decision: versioned pipeline document contract
 
+**Status:** accepted
+**Date:** 2026-08-14
+**Decision scope:** Published pipeline-document syntax, bounds, and version separation
+**Supersedes:** None
+
 ## Context
 
 Pipeline publication needs one dependency-neutral document boundary before node definitions, graph
