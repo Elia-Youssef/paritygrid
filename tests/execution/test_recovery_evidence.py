@@ -575,7 +575,7 @@ def _corrupt_evidence(kind: str) -> RecoveryEvidence:
             "run_cancellation_requested_at": ("cancellation_requested_at", object()),
             "run_recovery_started_at": ("recovery_started_at", object()),
             "run_recovered_at": ("recovered_at", object()),
-            "run_fingerprint": ("final_reconciliation_fingerprint", object()),
+            "run_fingerprint": ("execution_evidence_fingerprint", object()),
             "run_runner_kind": ("runner_kind", 42),
             "run_configuration": ("runner_configuration", object()),
         }

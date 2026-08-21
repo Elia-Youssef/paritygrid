@@ -70,7 +70,8 @@ def run_row(**overrides: object) -> RowMapping:
         "cancellation_requested_at": None,
         "recovery_started_at": None,
         "recovered_at": None,
-        "final_reconciliation_fingerprint": None,
+        "execution_evidence_fingerprint": None,
+        "execution_evidence_fingerprint_version": None,
     }
     values.update(overrides)
     return row(**values)
@@ -362,11 +363,12 @@ def test_run_mapping_accepts_cancellation_and_success_matrices() -> None:
             state="succeeded",
             started_at="2026-08-12T12:00:00.000000Z",
             finished_at="2026-08-12T12:00:01.000000Z",
-            final_reconciliation_fingerprint="4" * 64,
+            execution_evidence_fingerprint="4" * 64,
+            execution_evidence_fingerprint_version=2,
         )
     )
     assert cancelled.finished_at is not None
-    assert succeeded.final_reconciliation_fingerprint is not None
+    assert succeeded.execution_evidence_fingerprint is not None
 
 
 @pytest.mark.parametrize(
@@ -729,6 +731,7 @@ def test_run_defensive_helpers_cover_empty_counter_and_time_guard() -> None:
             run_record(),
             RunState.FAILED,
             UtcTimestamp.parse("2026-08-11T12:00:00Z"),
+            None,
             None,
         )
 

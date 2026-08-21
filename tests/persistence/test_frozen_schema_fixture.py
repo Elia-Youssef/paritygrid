@@ -157,7 +157,17 @@ def _reconstruct(connection: sqlite3.Connection) -> None:
     reconstruct_fixture(connection, SCHEMA_PATH.read_bytes(), SEED_PATH.read_bytes())
 
 
-def _snapshot(connection: Connection) -> tuple[tuple[str, tuple[tuple[object, ...], ...]], ...]:
+def _snapshot(
+    connection: Connection,
+    *,
+    upgraded_runs: bool = False,
+) -> tuple[tuple[str, tuple[tuple[object, ...], ...]], ...]:
+    """Read every logical row under its revision-appropriate runs projection.
+
+    After the 0002 upgrade, the runs digest is read under the new storage name
+    together with its explicit version, so preservation comparisons stay exact
+    instead of depending on dropped v0001 column names.
+    """
     manifest = json.loads(MANIFEST_PATH.read_text(encoding="utf-8"))
     result: list[tuple[str, tuple[tuple[object, ...], ...]]] = []
     for table in sorted(EXPECTED_ROW_COUNTS):
@@ -165,6 +175,15 @@ def _snapshot(connection: Connection) -> tuple[tuple[str, tuple[tuple[object, ..
         columns = [str(column) for column in description["columns"]]
         primary_key = [str(column) for column in description["primary_key_columns"]]
         order = primary_key or columns
+        if table == "runs" and upgraded_runs:
+            columns = [
+                (
+                    "execution_evidence_fingerprint"
+                    if column == "final_reconciliation_fingerprint"
+                    else column
+                )
+                for column in columns
+            ] + ["execution_evidence_fingerprint_version"]
         columns_sql = ", ".join(f'"{column}"' for column in columns)
         order_sql = ", ".join(f'"{column}"' for column in order)
         rows = tuple(
@@ -175,6 +194,24 @@ def _snapshot(connection: Connection) -> tuple[tuple[str, tuple[tuple[object, ..
         )
         result.append((table, rows))
     return tuple(result)
+
+
+def _with_upgraded_runs_projection(
+    snapshot: tuple[tuple[str, tuple[tuple[object, ...], ...]], ...],
+) -> tuple[tuple[str, tuple[tuple[object, ...], ...]], ...]:
+    """Map a v0001 snapshot onto the upgraded runs projection.
+
+    Every non-runs table is unchanged. A preserved runs digest gains its
+    backfilled version 2, and a null digest stays null without a version.
+    """
+    mapped: list[tuple[str, tuple[tuple[object, ...], ...]]] = []
+    for table, rows in snapshot:
+        if table != "runs":
+            mapped.append((table, rows))
+            continue
+        upgraded_rows = tuple((*tuple(row), 2 if row[-1] is not None else None) for row in rows)
+        mapped.append((table, upgraded_rows))
+    return tuple(mapped)
 
 
 @pytest.fixture
@@ -339,12 +376,12 @@ def test_upgrade_repeat_and_reopen_preserve_every_logical_row(
         before = _snapshot(connection)
         connection.rollback()
         first_report = upgrade_to_head(connection)
-        after_first = _snapshot(connection)
+        after_first = _snapshot(connection, upgraded_runs=True)
         assert connection.exec_driver_sql("PRAGMA quick_check").all() == [("ok",)]
         assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
         connection.rollback()
         second_report = upgrade_to_head(connection)
-        after_second = _snapshot(connection)
+        after_second = _snapshot(connection, upgraded_runs=True)
         assert connection.exec_driver_sql("PRAGMA quick_check").all() == [("ok",)]
         assert connection.exec_driver_sql("PRAGMA foreign_key_check").all() == []
         connection.rollback()
@@ -352,7 +389,7 @@ def test_upgrade_repeat_and_reopen_preserve_every_logical_row(
     reconstructed_engine.dispose()
     with reconstructed_engine.connect() as reopened:
         reopen_report = upgrade_to_head(reopened)
-        after_reopen = _snapshot(reopened)
+        after_reopen = _snapshot(reopened, upgraded_runs=True)
         assert reopened.exec_driver_sql("PRAGMA quick_check").all() == [("ok",)]
         assert reopened.exec_driver_sql("PRAGMA foreign_key_check").all() == []
         reopened.rollback()
@@ -360,7 +397,8 @@ def test_upgrade_repeat_and_reopen_preserve_every_logical_row(
     assert first_report == MigrationReport(V0001_REVISION, HEAD_REVISION, HEAD_REVISION)
     assert second_report == MigrationReport(HEAD_REVISION, HEAD_REVISION, HEAD_REVISION)
     assert reopen_report == MigrationReport(HEAD_REVISION, HEAD_REVISION, HEAD_REVISION)
-    assert before == after_first == after_second == after_reopen
+    assert _with_upgraded_runs_projection(before) == after_first
+    assert after_first == after_second == after_reopen
 
 
 def test_v0001_snapshot_ignores_additive_future_columns(reconstructed_engine: Engine) -> None:

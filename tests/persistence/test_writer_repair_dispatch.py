@@ -175,7 +175,8 @@ def seed_reconciliation(database: SQLiteDatabase) -> None:
             expected_row_version=2,
             target_state=RunState.SUCCEEDED,
             transitioned_at=timestamp(1),
-            final_reconciliation_fingerprint=FINGERPRINT,
+            execution_evidence_fingerprint=FINGERPRINT,
+            execution_evidence_fingerprint_version=2,
         )
         session.execute(
             insert(reconciliation_summaries).values(

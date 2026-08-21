@@ -250,6 +250,7 @@ def test_real_wal_pause_and_resume_persist_exact_ordered_frontier(tmp_path: Path
                 RunState.RUNNING,
                 _time(2),
                 None,
+                None,
                 _event(2, "run_started", _time(2)),
             ),
         )

@@ -1394,6 +1394,7 @@ def _prepare_real_lease(
                 RunState.RUNNING,
                 _timestamp(2),
                 None,
+                None,
                 _event_request(2, "run_started", RUN_ID, _timestamp(2)),
             ),
         )
@@ -1613,6 +1614,7 @@ def test_terminal_node_accepts_authoritative_maximum_attempt_finish(tmp_path: Pa
                 RunState.RUNNING,
                 _timestamp(2),
                 None,
+                None,
                 _event_request(2, "run_started", RUN_ID, _timestamp(2)),
             ),
         )
@@ -1819,6 +1821,7 @@ def test_real_wal_commit_reopen_and_duplicate_guard(tmp_path: Path) -> None:
                 1,
                 RunState.RUNNING,
                 _timestamp(2),
+                None,
                 None,
                 _event_request(2, "run_started", RUN_ID, _timestamp(2)),
             ),

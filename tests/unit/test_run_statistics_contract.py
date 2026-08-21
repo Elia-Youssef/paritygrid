@@ -51,7 +51,7 @@ def _run() -> RunRecord:
         cancellation_requested_at=None,
         recovery_started_at=None,
         recovered_at=None,
-        final_reconciliation_fingerprint=None,
+        execution_evidence_fingerprint=None,
     )
 
 

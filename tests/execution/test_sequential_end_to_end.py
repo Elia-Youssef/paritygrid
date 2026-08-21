@@ -205,7 +205,7 @@ def test_main_scenario_matches_locked_golden_expectations(harness: ScenarioHarne
     assert record.state.value == golden["run_state"]
     assert record.row_version == golden["run_row_version"]
     assert str(finalized.fingerprint) == golden["final_fingerprint"]
-    assert finalized.fingerprint == record.final_reconciliation_fingerprint
+    assert finalized.fingerprint == record.execution_evidence_fingerprint
 
     assert _run_events(database, MAIN_RUN_ID) == golden["event_kinds"]
 
@@ -389,7 +389,7 @@ def test_scenario_reopen_preserves_exact_durable_state(tmp_path: Path) -> None:
             run = SqlAlchemyRunRepository(session).get(MAIN_RUN_ID)
             assert run is not None
             assert run.state.value == golden["run_state"]
-            assert run.final_reconciliation_fingerprint == fingerprint
+            assert run.execution_evidence_fingerprint == fingerprint
         assert _run_events(reopened, MAIN_RUN_ID) == events_before
     finally:
         reopened.close()

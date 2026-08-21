@@ -71,7 +71,7 @@ def test_packaged_history_has_one_initial_head(engine: Engine) -> None:
     assert script.get_heads() == [HEAD_REVISION]
     revision = script.get_revision(HEAD_REVISION)
     assert revision.revision == HEAD_REVISION
-    assert revision.down_revision is None
+    assert revision.down_revision == "0001_operational"
 
 
 def test_revision_is_self_contained_and_has_fixed_statement_inventory() -> None:
@@ -145,11 +145,11 @@ def test_fresh_upgrade_installs_exact_structural_baseline(engine: Engine) -> Non
 
     assert report == MigrationReport(None, HEAD_REVISION, HEAD_REVISION)
     assert len(table_names) == 21
-    assert column_count == 211
+    assert column_count == 212
     assert primary_key_count == 21
     assert unique_count == 11
     assert foreign_key_count == 18
-    assert check_count == 209
+    assert check_count == 211
     assert len(indexes) == 27
     assert trigger_count == 47
     assert sum("sqlite_where" in index.get("dialect_options", {}) for index in indexes) == 1
@@ -342,8 +342,10 @@ def test_downgrade_is_irreversible_before_schema_changes(engine: Engine) -> None
         connection.rollback()
         config = _migration_config(connection)
 
-        with pytest.raises(RuntimeError, match="cannot be downgraded"):
+        with pytest.raises(RuntimeError, match=r"cannot be downgraded|restore from backup"):
             command.downgrade(config, "base")
+        with pytest.raises(RuntimeError, match=r"cannot be downgraded|restore from backup"):
+            command.downgrade(config, "0001_operational")
 
         if connection.in_transaction():
             connection.rollback()
@@ -395,7 +397,7 @@ def test_root_alembic_heads_works_from_arbitrary_cwd(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "0001_operational (head)"
+    assert result.stdout.strip() == "0002_execution_evidence (head)"
     assert tuple(tmp_path.iterdir()) == ()
 
 
@@ -444,7 +446,7 @@ from paritygrid.adapters.persistence.migration import upgrade_to_head
 engine = create_engine(f"sqlite+pysqlite:///{Path(sys.argv[2])}")
 with engine.connect() as connection:
     report = upgrade_to_head(connection)
-    assert report.current_revision == "0001_operational"
+    assert report.current_revision == "0002_execution_evidence"
     table_count = connection.exec_driver_sql(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
         "AND name NOT LIKE 'sqlite_%' AND name <> 'alembic_version'"

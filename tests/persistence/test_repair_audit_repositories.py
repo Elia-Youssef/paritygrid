@@ -184,7 +184,8 @@ def seed_reconciliation(database: SQLiteDatabase) -> None:
             expected_row_version=2,
             target_state=RunState.SUCCEEDED,
             transitioned_at=timestamp(1),
-            final_reconciliation_fingerprint=RECONCILIATION,
+            execution_evidence_fingerprint=RECONCILIATION,
+            execution_evidence_fingerprint_version=2,
         )
         session.execute(
             insert(reconciliation_summaries).values(
@@ -450,7 +451,11 @@ def test_repair_creation_rejects_a_nonterminal_run_parent(database: SQLiteDataba
         session.execute(
             sql_update(runs)
             .where(runs.c.run_id == RUN_ID.value)
-            .values(state=RunState.QUEUED.value, final_reconciliation_fingerprint=None)
+            .values(
+                state=RunState.QUEUED.value,
+                execution_evidence_fingerprint=None,
+                execution_evidence_fingerprint_version=None,
+            )
         )
         with pytest.raises(RepairStateConflictError, match="has not completed"):
             create_plan(SqlAlchemyRepairRepository(session))
@@ -469,7 +474,7 @@ def test_freshness_rejects_run_and_summary_fingerprint_divergence(
         session.execute(
             sql_update(runs)
             .where(runs.c.run_id == RUN_ID.value)
-            .values(final_reconciliation_fingerprint="9" * 64)
+            .values(execution_evidence_fingerprint="9" * 64)
         )
         if operation == "approve":
             with pytest.raises(RepairCorruptionError, match="fingerprints diverge"):
@@ -1164,16 +1169,16 @@ def test_defensive_repair_cas_classification_paths(  # pyright: ignore[reportPri
                 RECONCILIATION,
             )
         for row in (
-            {"run_state": 1, "final_reconciliation_fingerprint": RECONCILIATION.value},
-            {"run_state": "unknown", "final_reconciliation_fingerprint": RECONCILIATION.value},
-            {"run_state": RunState.SUCCEEDED.value, "final_reconciliation_fingerprint": None},
+            {"run_state": 1, "execution_evidence_fingerprint": RECONCILIATION.value},
+            {"run_state": "unknown", "execution_evidence_fingerprint": RECONCILIATION.value},
+            {"run_state": RunState.SUCCEEDED.value, "execution_evidence_fingerprint": None},
         ):
             with pytest.raises(RepairCorruptionError):
                 repository._validate_run_fingerprint(row, RECONCILIATION)
         repository._validate_run_fingerprint(
             {
                 "run_state": RunState.PARTIALLY_SUCCEEDED.value,
-                "final_reconciliation_fingerprint": RECONCILIATION.value,
+                "execution_evidence_fingerprint": RECONCILIATION.value,
             },
             RECONCILIATION,
         )

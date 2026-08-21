@@ -1010,7 +1010,8 @@ def test_private_canonicalizers_copy_nested_documents_and_optional_run_fields() 
         cancellation_requested_at=_time(3),
         recovery_started_at=_time(4),
         recovered_at=_time(5),
-        final_reconciliation_fingerprint=StateFingerprint("2" * 64),
+        execution_evidence_fingerprint=StateFingerprint("2" * 64),
+        execution_evidence_fingerprint_version=2,
     )
     assert pause_module._snapshot_run(rich) == rich
     assert pause_module._snapshot_document(document) == document

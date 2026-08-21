@@ -111,6 +111,7 @@ def _run(
         None,
         None,
         fingerprint,
+        None if fingerprint is None else 2,
     )
 
 
@@ -396,7 +397,7 @@ class _Writer:
             )
         else:
             selected = cast(TransitionRun, command)
-            previous_fingerprint = selected.final_reconciliation_fingerprint
+            previous_fingerprint = selected.execution_evidence_fingerprint
             run = replace(
                 _run(
                     state=selected.target_state,
@@ -495,7 +496,7 @@ def test_clean_success_finalizes_with_exact_fingerprint_and_event() -> None:
     assert report.run.finished_at == _time(20)
     assert report.run.row_version == 9
     assert report.fingerprint is not None
-    assert report.fingerprint == report.run.final_reconciliation_fingerprint
+    assert report.fingerprint == report.run.execution_evidence_fingerprint
     assert report.submission_ids == (WriterSubmissionId(1),)
     assert [item.event_kind for item in report.events.items] == ["run_succeeded"]
     assert report.events.items[0].payload.to_mapping() == {
@@ -524,7 +525,7 @@ def test_terminal_failure_derives_failed_without_fingerprint() -> None:
     assert report.outcome is FinalizationOutcome.FAILED
     assert report.run.state is RunState.FAILED
     assert report.fingerprint is None
-    assert report.run.final_reconciliation_fingerprint is None
+    assert report.run.execution_evidence_fingerprint is None
     assert [item.event_kind for item in report.events.items] == ["run_failed"]
 
 
