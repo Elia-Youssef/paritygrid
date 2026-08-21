@@ -343,7 +343,8 @@ runs = Table(
     _column("cancellation_requested_at", String(27), nullable=True),
     _column("recovery_started_at", String(27), nullable=True),
     _column("recovered_at", String(27), nullable=True),
-    _column("final_reconciliation_fingerprint", String(64), nullable=True),
+    _column("execution_evidence_fingerprint", String(64), nullable=True),
+    _column("execution_evidence_fingerprint_version", Integer, nullable=True),
     _pk("runs", "run_id"),
     _fk(
         "runs",
@@ -372,15 +373,32 @@ runs = Table(
             "recovered_at",
         )
     ),
-    _sha256("final_reconciliation_fingerprint", "final_fingerprint_shape", nullable=True),
+    _sha256(
+        "execution_evidence_fingerprint",
+        "execution_evidence_fingerprint_shape",
+        nullable=True,
+    ),
+    CheckConstraint(
+        "execution_evidence_fingerprint_version IS NULL "
+        "OR (typeof(execution_evidence_fingerprint_version) = 'integer' "
+        "AND execution_evidence_fingerprint_version BETWEEN 1 AND 2147483647)",
+        name="execution_evidence_fingerprint_version_range",
+    ),
+    CheckConstraint(
+        "(execution_evidence_fingerprint IS NULL "
+        "AND execution_evidence_fingerprint_version IS NULL) "
+        "OR (execution_evidence_fingerprint IS NOT NULL "
+        "AND execution_evidence_fingerprint_version IS NOT NULL)",
+        name="execution_evidence_fingerprint_pairing",
+    ),
     CheckConstraint(
         "state NOT IN ('succeeded','partially_succeeded','failed','cancelled') "
         "OR finished_at IS NOT NULL",
         name="terminal_finish",
     ),
     CheckConstraint(
-        "final_reconciliation_fingerprint IS NULL OR state IN ('succeeded','partially_succeeded')",
-        name="final_fingerprint_terminal",
+        "execution_evidence_fingerprint IS NULL OR state IN ('succeeded','partially_succeeded')",
+        name="execution_evidence_fingerprint_terminal",
     ),
     CheckConstraint("started_at IS NULL OR started_at >= created_at", name="started_at_order"),
     CheckConstraint("finished_at IS NULL OR finished_at >= created_at", name="finished_at_order"),
