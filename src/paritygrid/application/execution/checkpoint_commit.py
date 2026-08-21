@@ -12,9 +12,9 @@ from paritygrid.application.execution.result_sink import (
     ResultSinkAdmissionError,
     ResultSinkCommitted,
     ResultSinkError,
-    ResultSinkInvalidResultError,
     ResultSinkOutcome,
     ResultSinkOutcomeUnknownError,
+    ResultSinkPreAdmissionError,
     ResultSinkProtocolError,
     ResultSinkRejected,
     ResultSubmission,
@@ -172,7 +172,7 @@ class CheckpointCommitError(ResultSinkError):
 
 class CheckpointCommitInvalidRequestError(
     CheckpointCommitError,
-    ResultSinkInvalidResultError,
+    ResultSinkPreAdmissionError,
 ):
     """A result cannot be translated into one closed checkpoint command."""
 
