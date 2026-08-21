@@ -934,8 +934,8 @@ def _snapshot_run(run: RunRecord) -> RunRecord:
         None if run.recovered_at is None else UtcTimestamp.parse(str(run.recovered_at)),
         (
             None
-            if run.final_reconciliation_fingerprint is None
-            else StateFingerprint(run.final_reconciliation_fingerprint.value)
+            if run.execution_evidence_fingerprint is None
+            else StateFingerprint(run.execution_evidence_fingerprint.value)
         ),
     )
 

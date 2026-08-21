@@ -1059,6 +1059,7 @@ def _transition_command(
         target,
         _snapshot_timestamp(transitioned_at),
         None,
+        None,
         EventAppendRequest(
             EventSequence(state.next_event_sequence.number),
             state.event_counter_row_version,
@@ -1130,7 +1131,7 @@ def _expected_run(previous: RunRecord, command: TransitionRun) -> RunRecord:
         clean.cancellation_requested_at,
         clean.recovery_started_at,
         clean.recovered_at,
-        clean.final_reconciliation_fingerprint,
+        clean.execution_evidence_fingerprint,
     )
 
 
@@ -1209,7 +1210,11 @@ def _snapshot_run(value: object) -> RunRecord:
         _optional_timestamp(value.cancellation_requested_at),
         _optional_timestamp(value.recovery_started_at),
         _optional_timestamp(value.recovered_at),
-        _optional_fingerprint(value.final_reconciliation_fingerprint),
+        _optional_fingerprint(value.execution_evidence_fingerprint),
+        _optional_integer(
+            value.execution_evidence_fingerprint_version,
+            "execution-evidence fingerprint version",
+        ),
     )
 
 
