@@ -703,7 +703,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
                     reconciliation_summaries.c.reconciliation_fingerprint,
                     reconciliation_summaries.c.created_at,
                     runs.c.state.label("run_state"),
-                    runs.c.final_reconciliation_fingerprint,
+                    runs.c.execution_evidence_fingerprint,
                 )
                 .join(runs, runs.c.run_id == reconciliation_summaries.c.run_id)
                 .where(reconciliation_summaries.c.run_id == run.value)
@@ -819,7 +819,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
                 select(
                     reconciliation_summaries.c.reconciliation_fingerprint,
                     runs.c.state.label("run_state"),
-                    runs.c.final_reconciliation_fingerprint,
+                    runs.c.execution_evidence_fingerprint,
                 )
                 .join(runs, runs.c.run_id == reconciliation_summaries.c.run_id)
                 .where(reconciliation_summaries.c.run_id == plan.run_id.value)
@@ -849,7 +849,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
             raise RepairCorruptionError("repair run state is corrupt") from error
         if state not in {RunState.SUCCEEDED, RunState.PARTIALLY_SUCCEEDED}:
             raise RepairStateConflictError("repair run has not completed reconciliation")
-        fingerprint_value = row["final_reconciliation_fingerprint"]
+        fingerprint_value = row["execution_evidence_fingerprint"]
         if fingerprint_value is None:
             raise RepairCorruptionError("repair run final fingerprint is missing")
         final = stored_fingerprint(fingerprint_value, "repair run final fingerprint")
