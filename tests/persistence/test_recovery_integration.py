@@ -399,7 +399,7 @@ def test_real_recovery_advances_same_node_frontier_between_expired_work(tmp_path
         database.close()
 
 
-def test_real_committed_artifact_prevents_duplicate_effect_classification(tmp_path: Path) -> None:
+def test_real_committed_artifact_without_checkpoint_fails_closed(tmp_path: Path) -> None:
     database = _open_database(tmp_path / "recovery artifact.db")
     artifact_root = tmp_path / "artifacts"
     artifact_root.mkdir()
@@ -436,13 +436,22 @@ def test_real_committed_artifact_prevents_duplicate_effect_classification(tmp_pa
         _commit_artifact(database, artifact_root)
         scanner = _scanner(writer, database, artifact_root, _time(30))
         scan = scanner.scan(RUN_ID)
-        assert scan.status is RecoveryStatus.RECOVERABLE
+        assert scan.status is RecoveryStatus.AMBIGUOUS
         finding = next(
             f
             for f in scan.findings
             if f.kind is RecoveryFindingKind.WORK_EXPIRED_WITH_COMMITTED_ARTIFACT
         )
         assert finding.work_item_id == WORK_A
+        assert scan.recoverable_findings == ()
+        with pytest.raises(RecoveryAmbiguousError):
+            scanner.recover(RUN_ID)
+        with database.transaction() as session:
+            from paritygrid.adapters.persistence import SqlAlchemyWorkItemRepository
+
+            recovered = SqlAlchemyWorkItemRepository(session).get(WORK_A)
+            assert recovered is not None
+            assert recovered.state is WorkItemState.RUNNING
         closed = writer.close(timeout_seconds=5.0)
         assert closed.drained
         writer = None

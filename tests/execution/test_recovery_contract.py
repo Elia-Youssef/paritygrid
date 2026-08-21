@@ -459,7 +459,7 @@ def test_expired_lease_without_effect_is_recoverable_and_applied() -> None:
     assert report.submission_ids == (WriterSubmissionId(1),)
 
 
-def test_expired_lease_with_committed_artifact_notes_idempotency() -> None:
+def test_expired_lease_with_committed_artifact_fails_closed() -> None:
     from paritygrid.application.ports.artifacts import ArtifactRelativePath
     from paritygrid.domain.models import ArtifactId
 
@@ -477,15 +477,19 @@ def test_expired_lease_with_committed_artifact_notes_idempotency() -> None:
         CLAIMED,
     )
     evidence = _evidence(work=(_work(),), artifacts=(manifest,))
-    scanner, _writer, _reader = _scanner(evidence)
+    scanner, writer, _reader = _scanner(evidence)
     scan = scanner.scan(RUN_ID)
-    assert scan.status is RecoveryStatus.RECOVERABLE
+    assert scan.status is RecoveryStatus.AMBIGUOUS
     finding = next(
         finding
         for finding in scan.findings
         if finding.kind is RecoveryFindingKind.WORK_EXPIRED_WITH_COMMITTED_ARTIFACT
     )
-    assert finding.detail == "committed artifact identity prevents duplicate effects"
+    assert finding.detail == "committed artifact without checkpoint prevents automatic retry"
+    assert scan.recoverable_findings == ()
+    with pytest.raises(RecoveryAmbiguousError):
+        scanner.recover(RUN_ID)
+    assert writer.commands == []
 
 
 def _artifact_id() -> Any:

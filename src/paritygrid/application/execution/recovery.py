@@ -170,7 +170,6 @@ class RecoveryFindingKind(StrEnum):
 _RECOVERABLE_KINDS = frozenset(
     {
         RecoveryFindingKind.WORK_EXPIRED_NO_EFFECT,
-        RecoveryFindingKind.WORK_EXPIRED_WITH_COMMITTED_ARTIFACT,
     }
 )
 _CORRUPT_KINDS = frozenset(
@@ -706,10 +705,10 @@ def _classify(
                             run_id,
                             work.node_id,
                             work.work_item_id,
-                            detail="committed artifact identity prevents duplicate effects",
+                            detail="committed artifact without checkpoint prevents automatic retry",
                         )
                     )
-                    status = _worse(status, RecoveryStatus.RECOVERABLE)
+                    status = _worse(status, RecoveryStatus.AMBIGUOUS)
                 else:
                     findings.append(
                         RecoveryFinding(

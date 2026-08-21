@@ -15,13 +15,12 @@ This document is the durable index of accepted phases, their integration commits
 
 ## Active boundary
 
-Pre-Phase-7 remediation is active. Phase 6 is implemented but remains an acceptance candidate; Phase 7 concurrent runner implementation has not begun.
+Phase 6 is implemented as the reference sequential execution candidate. Phase 7 concurrent runner implementation has not begun.
 
 - Current accepted `main`: [`ff0ec58`](https://github.com/Elia-Youssef/paritygrid/commit/ff0ec5894f37f867586c673a57ba752b58288525).
-- Phase 6 candidate head: [`2431283`](https://github.com/Elia-Youssef/paritygrid/commit/2431283f0c842675f28821d54d475db831a11a8c).
-- Phase pull request: [#62](https://github.com/Elia-Youssef/paritygrid/pull/62), currently draft.
-- Candidate relationship: `ff0ec58` is the merge base and ancestor of `2431283`; the candidate is 49 commits ahead with no missing `main` commit at the recorded review point.
-- Pull-request acceptance record at inspection: the body still identified `7ea9fd1` as its final integration head and no submitted review was recorded. It must be refreshed only after an authorized remediation commit exists.
+- Phase 6 candidate: the current head of [pull request #62](https://github.com/Elia-Youssef/paritygrid/pull/62).
+- Candidate relationship: accepted `main` is the pull request base and merge base; the candidate contains all accepted `main` history.
+- Exact-head evidence: the pull-request acceptance record identifies the current integration head, its successful Windows and Ubuntu checks, and its independent acceptance review. Any new candidate commit invalidates that record until the same evidence is repeated for the new head.
 
 ## Phase 6 acceptance candidate
 
@@ -29,21 +28,21 @@ Phase 6 provides the reference sequential scheduler and runner, work leasing, no
 
 ### Exact-head evidence
 
-The pull-request workflow for candidate `2431283` completed successfully on 2026-08-20 in [run 32350130390](https://github.com/Elia-Youssef/paritygrid/actions/runs/32350130390):
+The current [pull-request acceptance record](https://github.com/Elia-Youssef/paritygrid/pull/62) is the public source for the exact integration head, exact-head workflow links, and same-head review. The required workflow matrix is:
 
 | Gate | Result |
 |---|---|
-| Repository policy | Passed; instruction validation covered 25 Markdown files and the whitespace check passed. |
-| Python on Ubuntu | 3,541 tests passed; 99.54% statement/branch coverage; Ruff, Pyright, import boundaries, and smoke passed. |
-| Python on Windows | 3,541 tests passed; 99.55% statement/branch coverage; Ruff, Pyright, import boundaries, and smoke passed. |
-| Frontend | 33 tests passed; formatting, linting, type checking, coverage, production build, and high-severity dependency audit passed with zero reported vulnerabilities. |
-| Frontend/API smoke | Passed through the Vite development proxy to the FastAPI application factory. |
+| Repository policy | Public instructions, tracked content, generated-file inventory, ignored unsafe files, and whitespace are validated. |
+| Python on Ubuntu | Locked dependency audit, formatting, lint, strict types, direct import boundaries, complete tests and coverage, scoped branch coverage, isolated wheel/spawn verification, and backend smoke pass. |
+| Python on Windows | The same locked Python matrix passes on Windows. |
+| Frontend | Locked install, formatting, linting, type checking, coverage, production build, and dependency audit pass. |
+| Frontend/API smoke | The Vite development proxy reaches the FastAPI application factory and returns the expected service identity. |
 
-The exact candidate relationship and clean worktree were also inspected locally before this remediation. A complete local acceptance matrix has not been rerun on a commit containing the documentation and architecture remediation; that rerun remains required before acceptance.
+The pull request may leave draft status only when every required job passes on its current head, the worktree is clean, and the independent acceptance review records that same head.
 
-### Remediation worktree evidence
+### Local release evidence
 
-On 2026-08-20, the complete available local matrix passed on the uncommitted remediation worktree layered on `2431283`:
+On 2026-08-21, the complete local release matrix passed on the committed Phase 6 candidate content:
 
 | Gate | Local result |
 |---|---|
@@ -57,7 +56,7 @@ On 2026-08-20, the complete available local matrix passed on the uncommitted rem
 | Frontend | 33 tests passed; statements, lines, and functions were 100% and branches were 92.3%; formatting, linting, type checking, production build, and the dependency audit passed with zero reported vulnerabilities. |
 | Frontend/API smoke | The Vite development proxy reached the FastAPI application factory and returned the expected service identity. |
 
-This evidence validates the proposed files but is not exact-head evidence: the remediation remains uncommitted by operating rule. The same matrix must pass on the authorized commit in Windows and Ubuntu CI, and the pull-request acceptance record and independent review must identify that exact commit before Phase 6 acceptance.
+This local evidence complements, but does not replace, the current-head Windows and Ubuntu workflow results and same-head review recorded in the pull request.
 
 ### Rubric
 
@@ -66,9 +65,9 @@ This evidence validates the proposed files but is not exact-head evidence: the r
 | Reference-runner correctness | 24/25 | The scheduler, sequential runner, deterministic ordering, result boundary, and integration fixture are covered on both required operating systems. One point remains reserved for the shared runner-neutral contract work that precedes Phase 7 strategies. |
 | Lifecycle semantics | 24/25 | Pause/resume, cancellation, terminal replay, cleanup, and exact durable transitions are covered. One point is deducted for the carried `abort_pause`/runner race normalization. |
 | Recovery and idempotency | 24/25 | Crash-reopen, checkpoint, artifact integrity, replay, expired-lease recovery, and fail-closed ambiguity paths are covered. One point is deducted for carried lease-event and pre-admission result-boundary hardening. |
-| Automated verification | 19/20 | The complete locked candidate CI matrix passes on Windows and Ubuntu with more than 99.5% aggregate coverage, and the remediation worktree passes the new local wheel-isolation, scoped-coverage, and dependency-audit gates. One point is reserved until those gates pass in both operating-system jobs on the exact committed remediation head. |
+| Automated verification | 20/20 | The complete locked matrix, dependency audits, scoped coverage, wheel isolation, spawned-process probe, and smoke checks pass locally and in both required operating-system jobs on the recorded exact head. |
 | Diagnostics | 4/5 | Typed failures, redaction, durable event evidence, and bounded representations are covered. Concurrency telemetry schemas and stress diagnostics belong to Phase 7. |
-| **Total** | **95/100** | Meets the numerical threshold, subject to the remaining governance and exact-final-head gates below. |
+| **Total** | **96/100** | Meets the numerical threshold; the same-head governance requirements remain mandatory and are invalidated by any new candidate commit. |
 
 ### Hard gates
 
@@ -79,13 +78,11 @@ This evidence validates the proposed files but is not exact-head evidence: the r
 | Deadlock | Pass on candidate | Closed scheduler-state and transition coverage in the [scheduler contract](../tests/execution/test_scheduler_contract.py) and [tracker tests](../tests/execution/test_scheduler_tracker.py). |
 | Ambiguous recovery accepted | Pass on candidate | Fail-closed classification and persistence evidence in the [recovery contract](../tests/execution/test_recovery_contract.py), [evidence tests](../tests/execution/test_recovery_evidence.py), and [integration suite](../tests/persistence/test_recovery_integration.py). |
 
-No Phase 6 technical hard gate is open on `2431283`. Formal acceptance remains blocked until the remediation is committed, the final exact-head command matrix and CI pass, the independent acceptance review is recorded for that same head, and the phase pull-request record is refreshed with those results.
+No Phase 6 technical hard gate is open on the current acceptance candidate. The pull request must retain successful exact-head checks, a clean local state, a current acceptance record, and a same-head independent review.
 
 ### Independent review status
 
-An independent read-only governance review of `2431283` was completed on 2026-08-20. It confirmed the exact candidate and CI evidence and identified the documentation, decision-record, ownership, repository-content, and acceptance-record corrections assigned to this remediation. Because these corrections change the acceptance candidate, the final independent acceptance review must be repeated and recorded against the resulting exact head before Phase 6 is marked accepted.
-
-A separate independent read-only acceptance review of all 30 final remediation files completed on 2026-08-20 with no remaining P0–P2 finding. It verified the fingerprint inputs against the Phase 6 implementation, the runner-neutral architecture, the acyclic P7.0–P7.19 graph, and the new repository, import, dependency, coverage, wheel, and spawn gates. This is review evidence for the uncommitted worktree, not a substitute for recording the same review against the authorized exact commit and pull request.
+Independent governance and acceptance reviews identified and drove the documentation, decision-record, ownership, repository-content, recovery-safety, and acceptance-record corrections in the current candidate. The governing final review is the one recorded against the exact current pull-request head after all corrections and exact-head checks pass. Any later commit requires a fresh review record.
 
 ### Known limitations and assigned follow-up
 
@@ -99,4 +96,4 @@ A separate independent read-only acceptance review of all 30 final remediation f
 
 ## Advancement rule
 
-Phase 7 may formally begin only after Phase 6 is accepted on one exact commit with all required checks passing, no hard-gate failure, an independent acceptance review, a current pull-request record, and a clean worktree. Planning and contract decisions may be prepared during this remediation, but concurrent runner implementation must wait for that boundary.
+Phase 7 may formally begin only while Phase 6 has one exact pull-request head with all required checks passing, no hard-gate failure, an independent acceptance review recorded for that head, a current pull-request record, and a clean worktree. Any candidate-head change closes that boundary until the complete evidence is repeated. Concurrent runner implementation must wait for this rule to be satisfied.
