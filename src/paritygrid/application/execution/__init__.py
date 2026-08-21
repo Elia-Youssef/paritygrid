@@ -100,6 +100,7 @@ from paritygrid.application.execution.finalization import (
 )
 from paritygrid.application.execution.leasing import (
     MAX_LEASE_CONTENTION_ATTEMPTS,
+    MAX_LEASE_EVENT_CORRELATION_ID_LENGTH,
     MAX_LEASE_OWNER_LENGTH,
     MAX_LEASE_ROW_VERSION,
     MAX_LEASE_WRITER_TIMEOUT_SECONDS,
@@ -202,6 +203,7 @@ from paritygrid.application.execution.result_sink import (
     ResultSinkOutcome,
     ResultSinkOutcomeKind,
     ResultSinkOutcomeUnknownError,
+    ResultSinkPreAdmissionError,
     ResultSinkProtocolError,
     ResultSinkRejected,
     ResultSubmission,
@@ -302,6 +304,7 @@ __all__ = [
     "MAX_FINALIZATION_TIMEOUT_SECONDS",
     "MAX_HTTP_429_RETRY_DELAY_MICROSECONDS",
     "MAX_LEASE_CONTENTION_ATTEMPTS",
+    "MAX_LEASE_EVENT_CORRELATION_ID_LENGTH",
     "MAX_LEASE_OWNER_LENGTH",
     "MAX_LEASE_ROW_VERSION",
     "MAX_LEASE_WRITER_TIMEOUT_SECONDS",
@@ -461,6 +464,7 @@ __all__ = [
     "ResultSinkOutcome",
     "ResultSinkOutcomeKind",
     "ResultSinkOutcomeUnknownError",
+    "ResultSinkPreAdmissionError",
     "ResultSinkProtocolError",
     "ResultSinkRejected",
     "ResultSubmission",
