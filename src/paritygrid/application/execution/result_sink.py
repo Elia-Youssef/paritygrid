@@ -74,6 +74,10 @@ class ResultSinkInvalidResultError(ResultSinkError, ValueError):
     """A result violates the closed, bounded worker-result contract."""
 
 
+class ResultSinkPreAdmissionError(ResultSinkInvalidResultError):
+    """A result was proven invalid before any writer admission occurred."""
+
+
 class ResultSinkAdmissionError(ResultSinkError):
     """A sink rejected admission before allocating a durable submission identity."""
 
@@ -550,6 +554,10 @@ def submit_work_result(
         outcome = sink_value.submit(selected)
     except ResultSinkAdmissionError:
         failure_type = ResultSinkAdmissionError
+        failure_disposition = WorkLeaseCompletionDisposition.RETAIN_ACTIVE
+        outcome = None
+    except ResultSinkPreAdmissionError:
+        failure_type = ResultSinkPreAdmissionError
         failure_disposition = WorkLeaseCompletionDisposition.RETAIN_ACTIVE
         outcome = None
     except ResultSinkInvalidResultError:
@@ -1067,6 +1075,7 @@ __all__ = [
     "ResultSinkOutcome",
     "ResultSinkOutcomeKind",
     "ResultSinkOutcomeUnknownError",
+    "ResultSinkPreAdmissionError",
     "ResultSinkProtocolError",
     "ResultSinkRejected",
     "ResultSubmission",

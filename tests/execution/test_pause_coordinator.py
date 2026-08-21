@@ -402,7 +402,9 @@ def test_pause_waits_for_all_run_scoped_lease_counts() -> None:
     states.clear()
     runs.clear()
     assert reservation is not None
-    coordinator.abort_pause()
+    with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+        coordinator.abort_pause()
+    coordinator.pause(_acknowledgement(coordinator))
 
 
 @pytest.mark.parametrize(
@@ -426,7 +428,8 @@ def test_first_arrow_failure_classification(
     with pytest.raises(expected):
         coordinator.pause(_acknowledgement(coordinator))
     if not isinstance(failure, WriterResultTimeoutError):
-        coordinator.abort_pause()
+        with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+            coordinator.abort_pause()
     else:
         with pytest.raises(PauseCoordinatorInvalidRequestError):
             coordinator.abort_pause()
@@ -472,13 +475,15 @@ def test_reader_clock_state_and_headroom_rejections_are_typed() -> None:
     )
     with pytest.raises(PauseCoordinatorInvalidRequestError, match="two arrows"):
         coordinator.pause(_acknowledgement(coordinator))
-    coordinator.abort_pause()
+    with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+        coordinator.abort_pause()
 
     slow, _writer2, _reader2, _leases2 = _coordinator(clock=_Clock(_time(1)))
     slow.request_pause(RUN_ID)
     with pytest.raises(PauseCoordinatorClockError, match="behind"):
         slow.pause(_acknowledgement(slow))
-    slow.abort_pause()
+    with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+        slow.abort_pause()
 
 
 def test_pause_token_and_settings_validate_exact_values() -> None:
@@ -502,12 +507,14 @@ def test_pause_token_and_settings_validate_exact_values() -> None:
     authority = token._bind_runner(_token=runner_token)
     with pytest.raises(PauseCoordinatorBusyError, match="already bound"):
         token._bind_runner(_token=runner_token)
-    with pytest.raises(PauseCoordinatorInvalidRequestError, match="unrequested"):
+    assert (
         token._acknowledge_for_runner(
             _scheduler_state(),
             authority=authority,
             _token=runner_token,
         )
+        is None
+    )
     with pytest.raises(PauseCoordinatorInvalidRequestError, match="authority is foreign"):
         token._acknowledge_for_runner(
             _scheduler_state(),
@@ -528,6 +535,7 @@ def test_pause_token_and_settings_validate_exact_values() -> None:
         authority=authority,
         _token=runner_token,
     )
+    assert acknowledgement is not None
     assert acknowledgement.generation == 2
     assert "authority=<redacted>" in repr(acknowledgement)
     object.__setattr__(acknowledgement, "_scheduler_state", object())
@@ -537,6 +545,7 @@ def test_pause_token_and_settings_validate_exact_values() -> None:
         authority=authority,
         _token=runner_token,
     )
+    assert acknowledgement is not None
     object.__setattr__(acknowledgement.scheduler_state, "version", 99)
     assert token.snapshot_acknowledgement(acknowledgement, 2) is None
     with pytest.raises(TypeError):
@@ -702,7 +711,8 @@ def test_runner_pause_contract_rejects_wrong_token_and_unstable_reports() -> Non
             (),
             acknowledgement,
         )
-    coordinator.abort_pause()
+    with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+        coordinator.abort_pause()
 
 
 def test_coordinator_rejects_foreign_boundary_while_real_runner_is_active() -> None:
@@ -756,7 +766,8 @@ def test_coordinator_rejects_foreign_boundary_while_real_runner_is_active() -> N
     assert reports[0].status is RunnerStatus.PAUSED
     assert reports[0].pause_acknowledgement is not None
     coordinator.pause(reports[0].pause_acknowledgement)
-    foreign.abort_pause()
+    with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+        foreign.abort_pause()
 
 
 def test_scheduler_pause_rejects_terminal_or_nonactive_node() -> None:
@@ -831,7 +842,8 @@ def test_pause_control_operations_reject_overlap_and_incompatible_request() -> N
         lock.release()
     with pytest.raises(PauseCoordinatorBusyError, match="owns a request"):
         coordinator.request_pause(OTHER_RUN_ID)
-    coordinator.abort_pause()
+    with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+        coordinator.abort_pause()
 
 
 def test_paused_authority_rejects_repeat_forgery_mutation_and_stale_state() -> None:
@@ -904,7 +916,8 @@ def test_writer_ordinary_admission_and_result_failures_are_redacted() -> None:
     with pytest.raises(PauseCoordinatorAdmissionError) as captured:
         coordinator.pause(_acknowledgement(coordinator))
     assert "top-secret" not in str(captured.value)
-    coordinator.abort_pause()
+    with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+        coordinator.abort_pause()
 
     coordinator, writer, _reader, _leases = _coordinator()
     coordinator.request_pause(RUN_ID)
@@ -932,7 +945,8 @@ def test_clock_invalid_value_and_exception_are_typed_without_cause() -> None:
             coordinator.pause(_acknowledgement(coordinator))
         assert captured.value.__cause__ is None
         assert captured.value.__context__ is None
-        coordinator.abort_pause()
+        with pytest.raises(PauseCoordinatorInvalidRequestError, match="acknowledged"):
+            coordinator.abort_pause()
 
 
 def test_private_canonicalizers_reject_malformed_outer_and_nested_evidence() -> None:

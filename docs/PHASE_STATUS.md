@@ -12,23 +12,23 @@ This document is the durable index of accepted phases, their integration commits
 | 3 — SQLite persistence and migrations | Accepted | [`8d63ee1`](https://github.com/Elia-Youssef/paritygrid/commit/8d63ee19e495df9e4b3be62b379737022edb6cce) | [Phase pull request #20](https://github.com/Elia-Youssef/paritygrid/pull/20) | Authoritative SQLite schema, migration, repositories, transactional writer, WAL stress, and crash-reopen harness | Higher-level execution lifecycle coordination was deferred to Phase 6. |
 | 4 — Artifact, Parquet, and DuckDB foundation | Accepted | [`4338409`](https://github.com/Elia-Youssef/paritygrid/commit/4338409d882bf3af52caad69a4572f80092d0e9a) | [Phase pull request #35](https://github.com/Elia-Youssef/paritygrid/pull/35) | Safe artifact paths, atomic manifests, versioned Parquet schemas, DuckDB views, analytical queries, and integrity scanning | Product reconciliation workflows and final-state verification were deferred. |
 | 5 — Pipeline specification and planner | Accepted | [`dfd89ed`](https://github.com/Elia-Youssef/paritygrid/commit/dfd89ed6714300d831273df6bbd43e175fc4e693) | [Phase pull request #48](https://github.com/Elia-Youssef/paritygrid/pull/48) | Versioned pipeline documents, closed node registry, graph and resource validation, repair-path safety, immutable publication, deterministic plan compilation, partitioning, and plan fingerprints | The planner validates approval-before-effect graph structure; it does not apply repairs. |
+| 6 — Sequential execution and recovery | Accepted | [`28d3540`](https://github.com/Elia-Youssef/paritygrid/commit/28d35406636f8b7b556ef813d31736b037624340) | [Phase pull request #62](https://github.com/Elia-Youssef/paritygrid/pull/62) with [post-merge verification run 32458747051](https://github.com/Elia-Youssef/paritygrid/actions/runs/32458747051) | Reference sequential scheduler and runner, work leasing, normalized attempt events, retry classification, result submission, checkpoint commit coordination, pause and resume, cancellation, run finalization, startup recovery, and the synthetic Phase 2–6 integration fixture | Three carried findings moved to Phase 7 P7.0: lease-event correlation bounds, pre-admission invalid-result handling, and the pause acknowledgement/abort race. Threaded, asynchronous, process, and interpreter runners are not implemented. |
 
 ## Active boundary
 
-Phase 6 is implemented as the reference sequential execution candidate. Phase 7 concurrent runner implementation has not begun.
+Phase 7 is active at package P7.0 on the integration branch `phase/07-concurrent-execution`.
 
-- Current accepted `main`: [`ff0ec58`](https://github.com/Elia-Youssef/paritygrid/commit/ff0ec5894f37f867586c673a57ba752b58288525).
-- Phase 6 candidate: the current head of [pull request #62](https://github.com/Elia-Youssef/paritygrid/pull/62).
-- Candidate relationship: accepted `main` is the pull request base and merge base; the candidate contains all accepted `main` history.
-- Exact-head evidence: the pull-request acceptance record identifies the current integration head, its successful Windows and Ubuntu checks, and its independent acceptance review. Any new candidate commit invalidates that record until the same evidence is repeated for the new head.
+- Accepted `main`: [`28d3540`](https://github.com/Elia-Youssef/paritygrid/commit/28d35406636f8b7b556ef813d31736b037624340).
+- Phase 6 acceptance evidence: [pull request #62](https://github.com/Elia-Youssef/paritygrid/pull/62) and its exact-head Windows and Ubuntu checks, plus the successful [post-merge run 32458747051](https://github.com/Elia-Youssef/paritygrid/actions/runs/32458747051) on that merge commit.
+- Phase 7 scope begins with the P7.0 carried-correctness corrections; no concurrent strategy is implemented yet.
 
-## Phase 6 acceptance candidate
+## Phase 6 acceptance record
 
-Phase 6 provides the reference sequential scheduler and runner, work leasing, normalized attempt events, retry classification, result submission, checkpoint commit coordination, pause and resume, cancellation, run finalization, startup recovery, and a deterministic synthetic Phase 2–6 integration fixture. The fixture does not contain production connectors or the Phase 9 reconciliation workflow.
+Phase 6 was accepted at merge commit [`28d3540`](https://github.com/Elia-Youssef/paritygrid/commit/28d35406636f8b7b556ef813d31736b037624340) through [pull request #62](https://github.com/Elia-Youssef/paritygrid/pull/62). It delivered the reference sequential scheduler and runner, work leasing, normalized attempt events, retry classification, result submission, checkpoint commit coordination, pause and resume, cancellation, run finalization, startup recovery, and a deterministic synthetic Phase 2–6 integration fixture. The fixture does not contain production connectors or the Phase 9 reconciliation workflow.
 
 ### Exact-head evidence
 
-The current [pull-request acceptance record](https://github.com/Elia-Youssef/paritygrid/pull/62) is the public source for the exact integration head, exact-head workflow links, and same-head review. The required workflow matrix is:
+The accepted [pull-request acceptance record](https://github.com/Elia-Youssef/paritygrid/pull/62) is the public source for the accepted integration head, exact-head workflow links, and same-head review. The required workflow matrix was:
 
 | Gate | Result |
 |---|---|
@@ -38,11 +38,11 @@ The current [pull-request acceptance record](https://github.com/Elia-Youssef/par
 | Frontend | Locked install, formatting, linting, type checking, coverage, production build, and dependency audit pass. |
 | Frontend/API smoke | The Vite development proxy reaches the FastAPI application factory and returns the expected service identity. |
 
-The pull request may leave draft status only when every required job passes on its current head, the worktree is clean, and the independent acceptance review records that same head.
+The pull request left draft status only after every required job passed on its accepted head, the worktree was clean, and the independent acceptance review recorded that same head.
 
 ### Local release evidence
 
-On 2026-08-21, the complete local release matrix passed on the committed Phase 6 candidate content:
+On 2026-08-21, the complete local release matrix passed on the committed Phase 6 content that was accepted:
 
 | Gate | Local result |
 |---|---|
@@ -56,7 +56,7 @@ On 2026-08-21, the complete local release matrix passed on the committed Phase 6
 | Frontend | 33 tests passed; statements, lines, and functions were 100% and branches were 92.3%; formatting, linting, type checking, production build, and the dependency audit passed with zero reported vulnerabilities. |
 | Frontend/API smoke | The Vite development proxy reached the FastAPI application factory and returned the expected service identity. |
 
-This local evidence complements, but does not replace, the current-head Windows and Ubuntu workflow results and same-head review recorded in the pull request.
+This local evidence complemented the accepted-head Windows and Ubuntu workflow results and same-head review recorded in the pull request.
 
 ### Rubric
 
@@ -78,22 +78,39 @@ This local evidence complements, but does not replace, the current-head Windows 
 | Deadlock | Pass on candidate | Closed scheduler-state and transition coverage in the [scheduler contract](../tests/execution/test_scheduler_contract.py) and [tracker tests](../tests/execution/test_scheduler_tracker.py). |
 | Ambiguous recovery accepted | Pass on candidate | Fail-closed classification and persistence evidence in the [recovery contract](../tests/execution/test_recovery_contract.py), [evidence tests](../tests/execution/test_recovery_evidence.py), and [integration suite](../tests/persistence/test_recovery_integration.py). |
 
-No Phase 6 technical hard gate is open on the current acceptance candidate. The pull request must retain successful exact-head checks, a clean local state, a current acceptance record, and a same-head independent review.
+No Phase 6 technical hard gate is open at the accepted merge commit.
 
 ### Independent review status
 
-Independent governance and acceptance reviews identified and drove the documentation, decision-record, ownership, repository-content, recovery-safety, and acceptance-record corrections in the current candidate. The governing final review is the one recorded against the exact current pull-request head after all corrections and exact-head checks pass. Any later commit requires a fresh review record.
+Independent governance and acceptance reviews identified and drove the documentation, decision-record, ownership, repository-content, recovery-safety, and acceptance-record corrections before acceptance. The governing final review is the one recorded against the accepted pull-request head after all corrections and exact-head checks passed.
 
 ### Known limitations and assigned follow-up
 
-- Phase 7 P7.0: bound and validate lease-event correlation identifiers.
-- Phase 7 P7.0: prevent invalid-result lease poisoning before writer admission.
-- Phase 7 P7.0: normalize the `abort_pause`/runner race and its failure type.
 - Phase 7 comparison and stress work: prove concurrent pause, recovery, backpressure, cleanup, and execution-evidence equivalence across every required runner.
 - Phase 9: compute and persist the reconciliation/final-state fingerprint; the Phase 6 fingerprint covers execution evidence only.
 - Phase 10: decide the durable handling of stranded in-progress idempotency reservations.
 - Threaded, asynchronous, process, and optional interpreter runners are not implemented.
 
+## Phase 7 progress
+
+Phase 7 implements bounded concurrent execution behind application-owned scheduling. Work lands package by package on `phase/07-concurrent-execution` and is recorded here as each package is accepted.
+
+### Accepted Phase 7 packages
+
+| Package | Status | Evidence |
+|---|---|---|
+| P7.0 — carried Phase 6 correctness corrections | Accepted on the phase branch | Lease-event correlation accepts `None` or 1–96 ASCII characters matching `[A-Za-z0-9][A-Za-z0-9._:-]*` and is rejected before clock access, reservation, in-flight mutation, or writer admission on both acquire and renew paths (`MAX_LEASE_EVENT_CORRELATION_ID_LENGTH`). `ResultSinkPreAdmissionError` distinguishes proven pre-writer-admission validation failures, which retain the active lease and permit one corrected bounded resubmission, from generic invalid-result failures, which keep the outcome-unknown disposition; `CheckpointCommitInvalidRequestError` now uses the pre-admission base while the admission classification keeps catch precedence. The pause acknowledgement/abort race is a compare-and-set over the same unacknowledged pause generation (`PauseToken.abort_for_coordinator`): an abort that wins releases the admission gate and the runner continues or reports its own redacted `RunnerProtocolError` without leaking a pause-coordinator exception; an acknowledgement that wins completes pause and requires an explicit resume. Barrier-controlled regressions in `tests/execution/test_p7_0_carried_correctness.py` cover both boundaries and both race winners with exact executor-call counts, stable frontiers, and released gates. |
+
+### Next package
+
+P7.1 — execution-evidence fingerprint compatibility and persistence migration.
+
+### Remaining Phase 7 limitations
+
+- P7.1 through P7.19 are not implemented.
+- No threaded, asyncio, process, or interpreter strategy exists yet.
+- Concurrency settings, clock/rate policy, capacity limiters, bounded channels, concurrency telemetry, and the concurrent result coordinator are not implemented.
+
 ## Advancement rule
 
-Phase 7 may formally begin only while Phase 6 has one exact pull-request head with all required checks passing, no hard-gate failure, an independent acceptance review recorded for that head, a current pull-request record, and a clean worktree. Any candidate-head change closes that boundary until the complete evidence is repeated. Concurrent runner implementation must wait for this rule to be satisfied.
+Phase 7 began from the accepted Phase 6 merge commit with all required checks passing, no hard-gate failure, an independent acceptance review recorded for that head, a current pull-request record, and a clean worktree. The Phase 7 integration branch `phase/07-concurrent-execution` carries Phase 7 work and may merge into `main` only after the complete phase gate passes.
