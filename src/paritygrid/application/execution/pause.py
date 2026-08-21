@@ -224,8 +224,14 @@ class PauseToken:
         *,
         authority: object,
         _token: object,
-    ) -> PauseAcknowledgement:
-        """Issue proof only while the matching pause generation remains requested."""
+    ) -> PauseAcknowledgement | None:
+        """Claim the requested pause generation or lose to a coordinator abort.
+
+        The claim succeeds only while the pause generation is still requested,
+        so an abort that cleared the signal first makes this compare-and-set
+        lose without raising: exactly one side wins, and no pause-coordinator
+        failure can leak through the runner.
+        """
         if _token is not _PAUSE_RUNNER_TOKEN:
             raise PauseCoordinatorInvalidRequestError(
                 "pause acknowledgements are sequential-runner-issued only"
@@ -246,9 +252,7 @@ class PauseToken:
                     "pause acknowledgement runner authority is foreign"
                 )
             if not self._requested:
-                raise PauseCoordinatorInvalidRequestError(
-                    "runner cannot acknowledge an unrequested pause"
-                )
+                return None
             acknowledgement = PauseAcknowledgement(
                 clean,
                 self._generation,
@@ -289,6 +293,21 @@ class PauseToken:
         """Clear only the exact generation that completed durable resume."""
         with self._lock:
             if self._generation != generation:
+                return False
+            self._requested = False
+            self._acknowledgement = None
+            self._acknowledged_state = None
+            return True
+
+    def abort_for_coordinator(self, generation: int) -> bool:
+        """Abort only while the exact generation remains unacknowledged.
+
+        This is the coordinator side of the compare-and-set that
+        ``_acknowledge_for_runner`` claims: exactly one of an abort or a
+        runner acknowledgement can win the same unacknowledged generation.
+        """
+        with self._lock:
+            if self._generation != generation or self._acknowledgement is not None:
                 return False
             self._requested = False
             self._acknowledgement = None
@@ -819,8 +838,13 @@ class PauseCoordinator:
                         "durable or ambiguous pause state cannot be aborted"
                     )
                 generation = self._generation
-            if generation is None or not self._token.clear_for_coordinator(generation):
+            if generation is None:
                 raise PauseCoordinatorProtocolError("pause signal evidence is invalid")
+            if not self._token.abort_for_coordinator(generation):
+                raise PauseCoordinatorInvalidRequestError(
+                    "acknowledged pause generation cannot be aborted; an explicit "
+                    "resume is required"
+                )
             release_failed = False
             try:
                 self._lease_service.release_pause(reservation)
