@@ -684,7 +684,7 @@ class FakeValidationConnection:
             "journal_mode": FakeScalarResult("wal"),
             "synchronous": FakeScalarResult(2),
             "busy_timeout": FakeScalarResult(5_000),
-            "version_num": FakeScalarResult(rows=[("0001_operational",)]),
+            "version_num": FakeScalarResult(rows=[("0002_execution_evidence",)]),
             "type='table'": FakeScalarResult(21),
             "type='trigger'": FakeScalarResult(47),
         }

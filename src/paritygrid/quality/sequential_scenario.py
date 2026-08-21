@@ -755,7 +755,8 @@ class ScenarioExecutor:
                 expected_run_row_version=1,
                 target_state=RunState.RUNNING,
                 transitioned_at=started_at,
-                final_reconciliation_fingerprint=None,
+                execution_evidence_fingerprint=None,
+                execution_evidence_fingerprint_version=None,
                 event=_carrier_event(2, 2, self._run_id, "run_started", started_at),
             ),
         )

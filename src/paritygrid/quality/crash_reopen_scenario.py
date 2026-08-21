@@ -196,7 +196,8 @@ def transition_run_command() -> TransitionRun:
         expected_run_row_version=1,
         target_state=RunState.RUNNING,
         transitioned_at=timestamp(2),
-        final_reconciliation_fingerprint=None,
+        execution_evidence_fingerprint=None,
+        execution_evidence_fingerprint_version=None,
         event=event_request(2, "run_started", RUN_ID, timestamp(2)),
     )
 
@@ -446,6 +447,7 @@ def _run_row(seed: int, row_version: int) -> tuple[object, ...]:
         None,
         None,
         None,
+        None,
     )
 
 
@@ -636,7 +638,7 @@ def _validate_reopened_database(connection: Connection) -> None:
     if pragmas != (1, "wal", 2, 5_000):
         raise CrashDatabaseIntegrityError("SQLite durability pragmas changed after reopen")
     version_rows = _rows(connection, "SELECT version_num FROM alembic_version")
-    if version_rows != (("0001_operational",),):
+    if version_rows != (("0002_execution_evidence",),):
         raise CrashDatabaseIntegrityError("migration version is invalid after reopen")
     operational_tables = connection.exec_driver_sql(
         "SELECT count(*) FROM sqlite_master WHERE type='table' "

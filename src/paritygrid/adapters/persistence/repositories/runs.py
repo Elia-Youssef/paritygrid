@@ -127,7 +127,7 @@ class SqlAlchemyRunRepository(RunRepository):
                     cancellation_requested_at=None,
                     recovery_started_at=None,
                     recovered_at=None,
-                    final_reconciliation_fingerprint=None,
+                    execution_evidence_fingerprint=None,
                 )
                 .on_conflict_do_nothing(index_elements=[runs.c.run_id])
                 .returning(*runs.c)
@@ -211,7 +211,8 @@ class SqlAlchemyRunRepository(RunRepository):
         expected_row_version: int,
         target_state: RunState,
         transitioned_at: UtcTimestamp,
-        final_reconciliation_fingerprint: StateFingerprint | None = None,
+        execution_evidence_fingerprint: StateFingerprint | None = None,
+        execution_evidence_fingerprint_version: int | None = None,
     ) -> RunRecord:
         self._require_transaction()
         identity = require_run_id(run_id)
@@ -222,20 +223,38 @@ class SqlAlchemyRunRepository(RunRepository):
         current = self._require_run(identity, expected)
         current.state.transition_to(target_state)
         successful = target_state in {RunState.SUCCEEDED, RunState.PARTIALLY_SUCCEEDED}
+        if (execution_evidence_fingerprint is None) != (
+            execution_evidence_fingerprint_version is None
+        ):
+            raise ExecutionInvalidRequestError(
+                "execution-evidence fingerprint and version must be present together"
+            )
         if successful:
-            if final_reconciliation_fingerprint is None:
+            if execution_evidence_fingerprint is None:
                 raise ExecutionInvalidRequestError(
-                    "successful run transition requires a final reconciliation fingerprint"
+                    "successful run transition requires an execution-evidence fingerprint"
                 )
-            fingerprint = require_fingerprint(final_reconciliation_fingerprint)
-        else:
-            if final_reconciliation_fingerprint is not None:
+            fingerprint = require_fingerprint(execution_evidence_fingerprint)
+            if type(execution_evidence_fingerprint_version) is not int or (
+                not 1 <= execution_evidence_fingerprint_version <= 2_147_483_647
+            ):
                 raise ExecutionInvalidRequestError(
-                    "final reconciliation fingerprint is allowed for successful runs only"
+                    "execution-evidence fingerprint version is outside the supported range"
+                )
+        else:
+            if execution_evidence_fingerprint is not None:
+                raise ExecutionInvalidRequestError(
+                    "execution-evidence fingerprint is allowed for successful runs only"
                 )
             fingerprint = None
         require_incrementable(expected, "run row version")
-        values = self._transition_values(current, target_state, timestamp, fingerprint)
+        values = self._transition_values(
+            current,
+            target_state,
+            timestamp,
+            fingerprint,
+            execution_evidence_fingerprint_version,
+        )
         row = self._update_run(
             identity,
             expected_row_version=expected,
@@ -404,6 +423,7 @@ class SqlAlchemyRunRepository(RunRepository):
         target: RunState,
         timestamp: UtcTimestamp,
         fingerprint: StateFingerprint | None,
+        fingerprint_version: int | None,
     ) -> dict[str, object]:
         if timestamp < current.created_at:
             raise ExecutionInvalidRequestError("run transition cannot precede creation")
@@ -432,7 +452,8 @@ class SqlAlchemyRunRepository(RunRepository):
         if target.is_terminal:
             values["finished_at"] = str(timestamp)
         if fingerprint is not None:
-            values["final_reconciliation_fingerprint"] = str(fingerprint)
+            values["execution_evidence_fingerprint"] = str(fingerprint)
+            values["execution_evidence_fingerprint_version"] = fingerprint_version
         return values
 
     def _require_run(self, run_id: RunId, expected: int) -> RunRecord:

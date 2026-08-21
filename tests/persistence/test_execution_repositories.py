@@ -331,13 +331,14 @@ def test_run_lifecycle_recovery_and_success_fingerprint(database: SQLiteDatabase
             expected_row_version=4,
             target_state=RunState.SUCCEEDED,
             transitioned_at=timestamp(5),
-            final_reconciliation_fingerprint=fingerprint,
+            execution_evidence_fingerprint=fingerprint,
+            execution_evidence_fingerprint_version=2,
         )
         assert running.started_at == timestamp(2)
         assert recovering.recovery_started_at == timestamp(3)
         assert recovered.recovered_at == timestamp(4)
         assert succeeded.finished_at == timestamp(5)
-        assert succeeded.final_reconciliation_fingerprint == fingerprint
+        assert succeeded.execution_evidence_fingerprint == fingerprint
         with pytest.raises(ExecutionStateConflictError):
             repository.mark_recovery_started(
                 RUN_ID, expected_row_version=5, started_at=timestamp(6)
@@ -1216,13 +1217,23 @@ def test_run_non_success_rejects_fingerprint_and_transition_time_regression(
     start_run(database)
     with database.transaction() as session:
         repository = SqlAlchemyRunRepository(session)
+        with pytest.raises(ExecutionInvalidRequestError):
+            repository.transition(
+                RUN_ID,
+                expected_row_version=2,
+                target_state=RunState.FAILED,
+                transitioned_at=timestamp(3),
+                execution_evidence_fingerprint=StateFingerprint("4" * 64),
+                execution_evidence_fingerprint_version=2,
+            )
         with pytest.raises(ExecutionInvalidRequestError, match="successful runs only"):
             repository.transition(
                 RUN_ID,
                 expected_row_version=2,
                 target_state=RunState.FAILED,
                 transitioned_at=timestamp(3),
-                final_reconciliation_fingerprint=StateFingerprint("4" * 64),
+                execution_evidence_fingerprint=StateFingerprint("4" * 64),
+                execution_evidence_fingerprint_version=2,
             )
         with pytest.raises(ExecutionInvalidRequestError, match="monotonic"):
             repository.transition(

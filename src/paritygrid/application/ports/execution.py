@@ -109,7 +109,18 @@ class RunRecord:
     cancellation_requested_at: UtcTimestamp | None
     recovery_started_at: UtcTimestamp | None
     recovered_at: UtcTimestamp | None
-    final_reconciliation_fingerprint: StateFingerprint | None
+    execution_evidence_fingerprint: StateFingerprint | None
+    execution_evidence_fingerprint_version: int | None = None
+
+    def __post_init__(self) -> None:
+        fingerprint = self.execution_evidence_fingerprint
+        version = self.execution_evidence_fingerprint_version
+        if (fingerprint is None) != (version is None):
+            raise ValueError("execution-evidence fingerprint and version must be present together")
+        if version is not None and (type(version) is not int or not 1 <= version <= 2_147_483_647):
+            raise ValueError(
+                "execution-evidence fingerprint version is outside the supported range"
+            )
 
     def __repr__(self) -> str:
         return (
@@ -119,7 +130,7 @@ class RunRecord:
             f"state={self.state!r}, row_version={self.row_version!r}, "
             f"created_at={self.created_at!r}, started_at={self.started_at!r}, "
             f"finished_at={self.finished_at!r}, "
-            f"final_reconciliation_fingerprint={self.final_reconciliation_fingerprint!r}, "
+            f"execution_evidence_fingerprint={self.execution_evidence_fingerprint!r}, "
             "runner_configuration=<redacted>)"
         )
 
@@ -314,7 +325,8 @@ class RunRepository(Protocol):
         expected_row_version: int,
         target_state: RunState,
         transitioned_at: UtcTimestamp,
-        final_reconciliation_fingerprint: StateFingerprint | None = None,
+        execution_evidence_fingerprint: StateFingerprint | None = None,
+        execution_evidence_fingerprint_version: int | None = None,
     ) -> RunRecord: ...
 
     def mark_recovery_started(

@@ -63,9 +63,10 @@ def run_from_row(row: RowMapping) -> RunRecord:
                 row["recovery_started_at"], "run recovery start time"
             ),
             recovered_at=stored_optional_timestamp(row["recovered_at"], "run recovery time"),
-            final_reconciliation_fingerprint=stored_optional_fingerprint(
-                row["final_reconciliation_fingerprint"]
+            execution_evidence_fingerprint=stored_optional_fingerprint(
+                _stored_execution_evidence_fingerprint(row)
             ),
+            execution_evidence_fingerprint_version=_stored_execution_evidence_version(row),
         )
         _validate_run_chronology(record)
         return record
@@ -357,7 +358,37 @@ def stored_optional_fingerprint(value: object) -> StateFingerprint | None:
             raise TypeError
         return StateFingerprint.parse(value)
     except (TypeError, ValueError) as error:
-        raise ExecutionCorruptionError("final reconciliation fingerprint is corrupt") from error
+        raise ExecutionCorruptionError("execution-evidence fingerprint is corrupt") from error
+
+
+EXECUTION_EVIDENCE_FINGERPRINT_STORAGE_VERSION = 2
+
+
+def _stored_execution_evidence_fingerprint(row: RowMapping) -> object:
+    """Read the digest under its current storage name with migration-window fallback."""
+    if "execution_evidence_fingerprint" in row:
+        return row["execution_evidence_fingerprint"]
+    return row["final_reconciliation_fingerprint"]
+
+
+def _stored_execution_evidence_version(row: RowMapping) -> int | None:
+    """Read the explicit digest version, inferring 2 for former-name storage.
+
+    During the migration window a row may still carry the former storage name
+    without a version column; a preserved Phase 6 digest is execution-evidence
+    version 2 by definition, so the compatibility read infers exactly that.
+    """
+    if "execution_evidence_fingerprint_version" not in row:
+        if "execution_evidence_fingerprint" in row:
+            return None
+        legacy = row["final_reconciliation_fingerprint"]
+        return EXECUTION_EVIDENCE_FINGERPRINT_STORAGE_VERSION if legacy is not None else None
+    version = row["execution_evidence_fingerprint_version"]
+    if version is None:
+        return None
+    if type(version) is not int or not 1 <= version <= 2_147_483_647:
+        raise ExecutionCorruptionError("execution-evidence fingerprint version is corrupt")
+    return version
 
 
 def _validate_run_chronology(record: RunRecord) -> None:
@@ -384,8 +415,11 @@ def _validate_run_chronology(record: RunRecord) -> None:
     if terminal != (record.finished_at is not None):
         raise ExecutionCorruptionError("run terminal timestamp is corrupt")
     successful = record.state in {RunState.SUCCEEDED, RunState.PARTIALLY_SUCCEEDED}
-    if successful != (record.final_reconciliation_fingerprint is not None):
+    if successful != (record.execution_evidence_fingerprint is not None):
         raise ExecutionCorruptionError("run final fingerprint is corrupt")
+    version = record.execution_evidence_fingerprint_version
+    if version is not None and version != EXECUTION_EVIDENCE_FINGERPRINT_STORAGE_VERSION:
+        raise ExecutionCorruptionError("run execution-evidence version is unsupported")
     active_started = {
         RunState.RUNNING,
         RunState.PAUSING,
