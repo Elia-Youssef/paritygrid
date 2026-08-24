@@ -99,16 +99,17 @@ Phase 7 implements bounded concurrent execution behind application-owned schedul
 
 | Package | Status | Evidence |
 |---|---|---|
+| P7.2 — versioned runner-neutral contract | Accepted on the phase branch | Contract version 1 freezes `StrategyCapabilitiesV1`, `WorkAssignmentV1`, `WorkResultV1`, and `RecoveryFrontierV1` as immutable exact-type envelopes with stable protocol identifiers, closed primitives, explicit string/list/map/nesting/byte/metric/failure-detail bounds, canonical deterministic wire encoding with strict fail-closed decoding, and `work_identity()` returning `(run_id, node_id, partition_key)`. Live-object leak rejection refuses sessions, writers, connections, clients, callbacks, futures, tasks, queues, coroutine objects, paths, and exceptions; public-text validation rejects secret markers and unrestricted paths. Sync entry points refuse to run inside an active event loop and async facades never nest a loop runner. Golden encodings, round trips, bound edges, adversarial vectors, and loop-safety tests live in `tests/execution/test_runner_contract.py`. No concurrent strategy is implemented. |
 | P7.1 — execution-evidence fingerprint migration | Accepted on the phase branch | Forward migration `0002_execution_evidence` rebuilds `runs` with `execution_evidence_fingerprint` plus `execution_evidence_fingerprint_version`, preserving every non-null Phase 6 digest byte-for-byte, backfilling preserved digests as version 2, leaving null digests null, and never recomputing a stored value. Pairing and terminal-state constraints are enforced in storage and in `RunRecord`; compatibility reads of the former storage name are confined to the repository boundary and infer version 2 for preserved digests; unknown or mismatched versions fail closed. Frozen v0001 fixture upgrade, mixed null/non-null, idempotency, new writes, and the documented irreversible downgrade policy are covered in `tests/persistence/test_execution_evidence_migration.py` and the upgraded frozen-fixture preservation test. |
 | P7.0 — carried Phase 6 correctness corrections | Accepted on the phase branch | Lease-event correlation accepts `None` or 1–96 ASCII characters matching `[A-Za-z0-9][A-Za-z0-9._:-]*` and is rejected before clock access, reservation, in-flight mutation, or writer admission on both acquire and renew paths (`MAX_LEASE_EVENT_CORRELATION_ID_LENGTH`). `ResultSinkPreAdmissionError` distinguishes proven pre-writer-admission validation failures, which retain the active lease and permit one corrected bounded resubmission, from generic invalid-result failures, which keep the outcome-unknown disposition; `CheckpointCommitInvalidRequestError` now uses the pre-admission base while the admission classification keeps catch precedence. The pause acknowledgement/abort race is a compare-and-set over the same unacknowledged pause generation (`PauseToken.abort_for_coordinator`): an abort that wins releases the admission gate and the runner continues or reports its own redacted `RunnerProtocolError` without leaking a pause-coordinator exception; an acknowledgement that wins completes pause and requires an explicit resume. Barrier-controlled regressions in `tests/execution/test_p7_0_carried_correctness.py` cover both boundaries and both race winners with exact executor-call counts, stable frontiers, and released gates. |
 
 ### Next package
 
-P7.2 — versioned runner-neutral contract and bounded wire envelopes.
+P7.3 — concurrent scheduler and durable SchedulerFrontierV2.
 
 ### Remaining Phase 7 limitations
 
-- P7.2 through P7.19 are not implemented.
+- P7.3 through P7.19 are not implemented.
 - No threaded, asyncio, process, or interpreter strategy exists yet.
 - Concurrency settings, clock/rate policy, capacity limiters, bounded channels, concurrency telemetry, and the concurrent result coordinator are not implemented.
 
