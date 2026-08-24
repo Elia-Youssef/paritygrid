@@ -116,7 +116,12 @@ P7.10 — concurrent pause, cancellation, lifecycle, and durable recovery.
 
 ### First-half completion
 
-P7.0 through P7.9 are integrated on `phase/07-concurrent-execution`. Phase 7 is incomplete: the second half (P7.10 through P7.19) remains.
+P7.0 through P7.9 are integrated on `phase/07-concurrent-execution` at merge commit [`6ed6cc9`](https://github.com/Elia-Youssef/paritygrid/commit/6ed6cc9aad411eb43d7e358252f5e00424b34182). Phase 7 is incomplete: the second half (P7.10 through P7.19) remains, and the phase branch has not merged into `main`.
+
+Exact-head integration evidence on `6ed6cc9`:
+
+- The complete local matrix passed on 2026-08-24: locked environment check and sync, strict hash-pinned dependency audit with no known vulnerabilities, instruction validation, whitespace check, Ruff formatting and lint, strict Pyright, import boundaries, the focused P7 suites (1,676 tests), the complete test matrix (5,232 passed, 4 Windows filesystem skips), scoped coverage (application execution 99.90%, sequential runner 100%), frozen v0001 fixture verification with the 0002 upgrade and migration suites (103 tests), sequential fixture drift check, isolated wheel install with spawn probe, backend smoke, every frontend gate (install, format, lint, types, coverage, build, audit at high severity with zero vulnerabilities), and the frontend API path smoke.
+- GitHub checks passed on the exact head on both required operating systems in [run 32727274769](https://github.com/Elia-Youssef/paritygrid/actions/runs/32727274769), alongside every package pull request's own exact-head Windows and Ubuntu runs and recorded independent reviews.
 
 ### Remaining Phase 7 limitations
 
