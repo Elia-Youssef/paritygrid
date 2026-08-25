@@ -241,6 +241,10 @@ class SqlAlchemyRunRepository(RunRepository):
                 raise ExecutionInvalidRequestError(
                     "execution-evidence fingerprint version is outside the supported range"
                 )
+            if execution_evidence_fingerprint_version != 2:
+                raise ExecutionInvalidRequestError(
+                    "execution-evidence fingerprint version is unsupported"
+                )
         else:
             if execution_evidence_fingerprint is not None:
                 raise ExecutionInvalidRequestError(

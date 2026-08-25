@@ -784,6 +784,8 @@ class TelemetryCollector:
             raise TelemetryValidationError(
                 "telemetry collector accepts exact TelemetryRecord values"
             )
+        if record.run_id != self._run_id:
+            raise TelemetryValidationError("telemetry record run identity does not match collector")
         with self._lock:
             if len(self._buffer) >= self._capacity:
                 self._buffer.popleft()

@@ -470,6 +470,14 @@ def test_constructor_validation_matrix() -> None:
         _scheduler(edges=(("extract", "ghost"),))
     with pytest.raises(ConcurrentSchedulerInvalidStateError, match="self dependency"):
         _scheduler(edges=(("extract", "extract"),))
+    with pytest.raises(ConcurrentSchedulerInvalidStateError, match="directed cycle"):
+        _scheduler(
+            edges=(
+                ("extract", "normalize"),
+                ("normalize", "export"),
+                ("export", "extract"),
+            )
+        )
     with pytest.raises(ConcurrentSchedulerInvalidStateError, match="unique"):
         _scheduler(edges=(("extract", "normalize"), ("extract", "normalize")))
     with pytest.raises(ConcurrentSchedulerInvalidStateError, match="cover every planned node"):
@@ -1756,28 +1764,134 @@ def test_row_parsers_reject_wrong_container_kinds() -> None:
             SchedulerFrontierV2.from_mapping(mapping)
 
 
-def test_release_scan_skips_non_blocked_successor_items_from_restored_frontier() -> None:
+@pytest.mark.parametrize(
+    "state",
+    [
+        FrontierWorkState.READY,
+        FrontierWorkState.ADMITTED,
+        FrontierWorkState.AWAITING_COMMIT,
+        FrontierWorkState.RETRY_WAIT,
+        FrontierWorkState.SUCCEEDED,
+        FrontierWorkState.QUARANTINED,
+        FrontierWorkState.FAILED,
+        FrontierWorkState.CANCELLED,
+    ],
+)
+def test_frontier_mapping_rejects_successor_that_bypasses_unsatisfied_dependency(
+    state: FrontierWorkState,
+) -> None:
+    scheduler = _scheduler(
+        nodes=("source", "sink"),
+        edges=(("source", "sink"),),
+        partitions={"source": ("p1",), "sink": ("q",)},
+    )
+    mapping = scheduler.frontier.to_mapping()
+    mapping["work_states"] = [
+        [run_id, node_id, partition, state.value]
+        if (node_id, partition) == ("sink", "q")
+        else [run_id, node_id, partition, work_state]
+        for run_id, node_id, partition, work_state in cast(
+            "list[list[object]]", mapping["work_states"]
+        )
+    ]
+    if state in {FrontierWorkState.ADMITTED, FrontierWorkState.AWAITING_COMMIT}:
+        mapping["lease_fences"] = [[RUN_ID, "sink", "q", 9]]
+    if state is FrontierWorkState.RETRY_WAIT:
+        mapping["retry_waits"] = [[RUN_ID, "sink", "q", 100, "retry"]]
+    with pytest.raises(SchedulerFrontierCorruptError, match="unsatisfied dependency"):
+        SchedulerFrontierV2.from_mapping(mapping)
+
+
+def test_restore_revalidates_successor_dependency_barriers() -> None:
+    scheduler = _scheduler(
+        nodes=("source", "sink"),
+        edges=(("source", "sink"),),
+        partitions={"source": ("p1",), "sink": ("q",)},
+    )
+    frontier = scheduler.frontier
+    object.__setattr__(
+        frontier,
+        "work_states",
+        tuple(
+            (work, FrontierWorkState.READY if work == _work("sink", "q") else state)
+            for work, state in frontier.work_states
+        ),
+    )
+    with pytest.raises(SchedulerFrontierCorruptError, match="unsatisfied dependency"):
+        scheduler.restore(frontier)
+
+
+def test_frontier_mapping_rejects_blocked_successor_after_predecessors_succeed() -> None:
+    scheduler = _scheduler(
+        nodes=("source", "sink"),
+        edges=(("source", "sink"),),
+        partitions={"source": ("p1",), "sink": ("q",)},
+    )
+    _commit_success(scheduler, _work("source", "p1"))
+    with pytest.raises(SchedulerFrontierCorruptError, match="all predecessors succeeded"):
+        SchedulerFrontierV2.from_mapping(
+            scheduler.frontier.to_mapping()
+            | {
+                "work_states": [
+                    [RUN_ID, "sink", "q", "blocked"],
+                    [RUN_ID, "source", "p1", "succeeded"],
+                ]
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        [["source", "source"]],
+        [["sink", "source"], ["source", "sink"]],
+    ],
+)
+def test_frontier_mapping_rejects_self_dependencies_and_cycles(
+    edges: list[list[str]],
+) -> None:
+    scheduler = _scheduler(
+        nodes=("source", "sink"),
+        edges=(("source", "sink"),),
+        partitions={"source": ("p1",), "sink": ("q",)},
+    )
+    with pytest.raises(SchedulerFrontierCorruptError, match=r"self dependency|directed cycle"):
+        SchedulerFrontierV2.from_mapping(scheduler.frontier.to_mapping() | {"edges": edges})
+
+
+@pytest.mark.parametrize("outcome", ["quarantined", "failed", "cancelled"])
+def test_restore_preserves_blocked_successors_after_blocking_predecessor(
+    outcome: str,
+) -> None:
+    scheduler = _scheduler(
+        nodes=("source", "sink"),
+        edges=(("source", "sink"),),
+        partitions={"source": ("p1",), "sink": ("q",)},
+    )
+    scheduler.register_admission(_work("source", "p1"), 1)
+    scheduler.commit_result(_work("source", "p1"), outcome)
+    restored = _scheduler(
+        nodes=("source", "sink"),
+        edges=(("source", "sink"),),
+        partitions={"source": ("p1",), "sink": ("q",)},
+    ).restore(scheduler.frontier)
+    assert dict(restored.frontier.work_states)[_work("sink", "q")] is FrontierWorkState.BLOCKED
+
+
+def test_restore_preserves_admitted_successor_after_predecessors_succeed() -> None:
     scheduler = _scheduler(
         nodes=("source", "sink"),
         edges=(("source", "sink"),),
         partitions={"source": ("p1", "p2"), "sink": ("q",)},
     )
-    snapshot = scheduler.frontier
-    admitted = replace(
-        snapshot,
-        work_states=tuple(
-            (work, FrontierWorkState.ADMITTED if work == _work("sink", "q") else state)
-            for work, state in snapshot.work_states
-        ),
-        lease_fences=((_work("sink", "q"), 9),),
-    )
+    _commit_success(scheduler, _work("source", "p1"))
+    _commit_success(scheduler, _work("source", "p2"))
+    scheduler.register_admission(_work("sink", "q"), 9)
     restored = _scheduler(
         nodes=("source", "sink"),
         edges=(("source", "sink"),),
         partitions={"source": ("p1", "p2"), "sink": ("q",)},
-    ).restore(admitted)
-    _commit_success(restored, _work("source", "p1"))
-    _commit_success(restored, _work("source", "p2"))
+    ).restore(scheduler.frontier)
     assert dict(restored.frontier.work_states)[_work("sink", "q")] is (FrontierWorkState.ADMITTED)
 
 

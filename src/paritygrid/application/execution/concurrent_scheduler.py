@@ -14,6 +14,8 @@ from paritygrid.application.execution.runner_contract import (
 
 SCHEDULER_FRONTIER_VERSION = 2
 MAX_FRONTIER_WORK_ITEMS = 65_536
+# Absolute injected-clock microsecond instants stay finite and validated.
+_MAX_FRONTIER_RETRY_ELIGIBILITY_MICROS = 2**53 - 1
 MAX_FRONTIER_REASON_LENGTH = 256
 
 _MAX_FRONTIER_IDENTITY_LENGTH = 128
@@ -189,10 +191,12 @@ class FrontierRetryWait:
 
     def __post_init__(self) -> None:
         _require_exact(self.identity, WorkIdentity, "frontier retry wait identity")
+        # Retry eligibility shares the absolute injected-clock microsecond
+        # frame of ``retry_eligible``, so the bound covers epoch instants.
         _require_bounded_int(
             self.eligible_at_micros,
             0,
-            _MAX_FRONTIER_LEASE_FENCE,
+            _MAX_FRONTIER_RETRY_ELIGIBILITY_MICROS,
             "frontier retry wait eligibility",
         )
         _require_reason_text(self.reason, "frontier retry wait reason")
@@ -239,6 +243,10 @@ class SchedulerFrontierV2:
         for source, target in edges:
             if source not in known_nodes or target not in known_nodes:
                 raise SchedulerFrontierCorruptError("frontier edge must identify a known node")
+            if source == target:
+                raise SchedulerFrontierCorruptError("frontier edge cannot be a self dependency")
+        if _edges_contain_cycle(node_order, edges):
+            raise SchedulerFrontierCorruptError("frontier edges must not contain a directed cycle")
         work_states = _frontier_state_entries(self.work_states)
         if len(work_states) > MAX_FRONTIER_WORK_ITEMS:
             raise SchedulerFrontierCorruptError("frontier exceeds the work item bound")
@@ -303,6 +311,8 @@ class SchedulerFrontierV2:
         }
         if retry_identities != set(waits):
             raise SchedulerFrontierCorruptError("frontier retry waits must match retry-wait work")
+
+        _validate_frontier_dependency_barriers(node_order, edges, states)
 
         _require_exact(
             self.control_state,
@@ -531,6 +541,10 @@ class ConcurrentScheduler:
                 )
         if len(set(edge_pairs)) != len(edge_pairs):
             raise ConcurrentSchedulerInvalidStateError("scheduler edges must be unique")
+        if _edges_contain_cycle(nodes, edge_pairs):
+            raise ConcurrentSchedulerInvalidStateError(
+                "scheduler edges must not contain a directed cycle"
+            )
         _require_exact(partitions_by_node, dict, "scheduler partitions")
         partition_map = cast(dict[object, object], partitions_by_node)
         partition_keys = set(partition_map)
@@ -762,6 +776,21 @@ class ConcurrentScheduler:
         self._require_control(ContractLifecycleState.QUIESCING, "mark paused")
         self._control_state = ContractLifecycleState.PAUSED
 
+    def abort_pause(self) -> ControlGeneration:
+        """Abort an unacknowledged quiesce and return to running admission.
+
+        Only the quiescing control state may abort: an acknowledged pause
+        (``PAUSED``) requires an explicit resume instead. The control
+        generation bumps so results and signals from the aborted quiesce
+        stay fenced.
+        """
+
+        self._require_control(ContractLifecycleState.QUIESCING, "abort a pause")
+        generation = self._next_generation()
+        self._control_state = ContractLifecycleState.RUNNING
+        self._control_generation = generation
+        return generation
+
     def resume(self) -> ControlGeneration:
         """Resume a paused scheduler and return the new control generation."""
         self._require_control(ContractLifecycleState.PAUSED, "resume")
@@ -831,6 +860,7 @@ class ConcurrentScheduler:
             raise SchedulerFrontierCorruptError(
                 "restored frontier work does not match the scheduler partitions"
             )
+        _validate_frontier_dependency_barriers(frontier.node_order, frontier.edges, states)
         self._states = states
         self._fences = dict(frontier.lease_fences)
         self._retry_waits = {wait.identity: wait for wait in frontier.retry_waits}
@@ -1003,6 +1033,73 @@ def _scheduler_edge_pairs(value: object) -> tuple[tuple[str, str], ...]:
         _require_identity_text(pair[1], "scheduler edge target")
         pairs.append((cast(str, pair[0]), cast(str, pair[1])))
     return tuple(pairs)
+
+
+def _edges_contain_cycle(
+    node_order: tuple[str, ...],
+    edges: tuple[tuple[str, str], ...],
+) -> bool:
+    """Return whether a known-node directed graph has a cycle."""
+    successors: dict[str, list[str]] = {node_id: [] for node_id in node_order}
+    in_degree: dict[str, int] = dict.fromkeys(node_order, 0)
+    for source, target in edges:
+        successors[source].append(target)
+        in_degree[target] += 1
+
+    ready = [node_id for node_id in node_order if in_degree[node_id] == 0]
+    visited = 0
+    while ready:
+        node_id = ready.pop()
+        visited += 1
+        for successor in successors[node_id]:
+            in_degree[successor] -= 1
+            if in_degree[successor] == 0:
+                ready.append(successor)
+    return visited != len(node_order)
+
+
+def _validate_frontier_dependency_barriers(
+    node_order: tuple[str, ...],
+    edges: tuple[tuple[str, str], ...],
+    states: dict[WorkIdentity, FrontierWorkState],
+) -> None:
+    """Reject work states that could not result from the dependency barrier protocol."""
+    predecessors: dict[str, list[str]] = {node_id: [] for node_id in node_order}
+    node_states: dict[str, list[FrontierWorkState]] = {node_id: [] for node_id in node_order}
+    for source, target in edges:
+        predecessors[target].append(source)
+    for identity, state in states.items():
+        node_states[identity.node_id].append(state)
+
+    aggregates = {
+        node_id: FrontierNodeAggregate(
+            node_id=node_id,
+            total=len(node_states[node_id]),
+            succeeded=node_states[node_id].count(FrontierWorkState.SUCCEEDED),
+            quarantined=node_states[node_id].count(FrontierWorkState.QUARANTINED),
+            failed=node_states[node_id].count(FrontierWorkState.FAILED),
+            cancelled=node_states[node_id].count(FrontierWorkState.CANCELLED),
+            in_flight=sum(state in _IN_FLIGHT_WORK_STATES for state in node_states[node_id]),
+            retry_wait=node_states[node_id].count(FrontierWorkState.RETRY_WAIT),
+        )
+        for node_id in node_order
+    }
+    for node_id, required_predecessors in predecessors.items():
+        if not required_predecessors:
+            continue
+        continuation_permitted = all(
+            aggregates[predecessor].permits_continuation for predecessor in required_predecessors
+        )
+        for state in node_states[node_id]:
+            if continuation_permitted and state is FrontierWorkState.BLOCKED:
+                raise SchedulerFrontierCorruptError(
+                    "frontier dependency barrier leaves work blocked after all "
+                    "predecessors succeeded"
+                )
+            if not continuation_permitted and state is not FrontierWorkState.BLOCKED:
+                raise SchedulerFrontierCorruptError(
+                    "frontier work bypasses an unsatisfied dependency barrier"
+                )
 
 
 def _frontier_edge_pairs(value: object) -> tuple[tuple[str, str], ...]:

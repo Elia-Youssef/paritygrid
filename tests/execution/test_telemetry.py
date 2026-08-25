@@ -1016,6 +1016,13 @@ class TestCollectorConstruction:
             collector.emit(cast(TelemetryRecord, record))
         assert collector.snapshot() == (0, 0)
 
+    def test_emit_rejects_records_for_a_different_run(self) -> None:
+        collector = TelemetryCollector(run_id=RUN_ID, capacity=2)
+        record = dropped_telemetry_record("run-other", 1, 1)
+        with pytest.raises(TelemetryValidationError, match="does not match"):
+            collector.emit(record)
+        assert collector.snapshot() == (0, 0)
+
 
 class TestCollectorBehavior:
     def test_drain_returns_records_oldest_first(self) -> None:

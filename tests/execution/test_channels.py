@@ -41,6 +41,7 @@ from paritygrid.application.execution import (
 )
 
 DEADLINE = "2026-08-21T12:00:00.000000Z"
+FINGERPRINT = "0123456789abcdef" * 4
 DESCRIPTOR = ContractDocument(items=(("operation", "normalize"), ("rows", 100)))
 JOIN_PROBE_SECONDS = 0.05
 JOIN_TIMEOUT_SECONDS = 10.0
@@ -58,6 +59,7 @@ def _assignment(index: int) -> WorkAssignmentV1:
     return WorkAssignmentV1(
         protocol=WORK_ASSIGNMENT_PROTOCOL,
         contract_version=RUNNER_CONTRACT_VERSION,
+        plan_fingerprint=FINGERPRINT,
         run_id="run-channels",
         node_id="nod-etl",
         partition_key="region-eu",
@@ -77,6 +79,7 @@ def _result(producer: int, index: int) -> WorkResultV1:
     return WorkResultV1(
         protocol=WORK_RESULT_PROTOCOL,
         contract_version=RUNNER_CONTRACT_VERSION,
+        plan_fingerprint=FINGERPRINT,
         run_id="run-channels",
         node_id="nod-etl",
         partition_key="region-eu",

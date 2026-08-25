@@ -23,6 +23,50 @@ def import_in_child(queue: object) -> None:
     queue.put(str(Path(paritygrid.__file__).resolve()))
 
 
+def process_pool_probe() -> None:
+    from datetime import UTC, datetime
+
+    from paritygrid.adapters.runners import SubordinateProcessPool
+    from paritygrid.application.execution.capacity import (
+        ScheduledWorkLimiters,
+        SubordinateCallLimiter,
+    )
+    from paritygrid.application.execution.clock_policy import ManualClock
+    from paritygrid.application.execution.concurrency_settings import CapturedConcurrencySettings
+    from paritygrid.domain.models import UtcTimestamp
+
+    timestamp = UtcTimestamp(datetime(2026, 8, 25, 8, 0, 0, tzinfo=UTC))
+    clock = ManualClock(timestamp)
+    settings = CapturedConcurrencySettings(cpu_pool_operations=1)
+    parent = ScheduledWorkLimiters(
+        settings,
+        strategy_id="threaded",
+        node_ids=("wheel-probe",),
+        clock=clock,
+    )
+    capacity = SubordinateCallLimiter(
+        category="cpu_pool",
+        limit=1,
+        clock=clock,
+        parent_limiter=parent,
+    )
+    owner = "wheel-process-probe"
+    permits = parent.acquire(owner, "wheel-probe")
+    pool = SubordinateProcessPool(capacity=capacity, timeout_seconds=10.0)
+    try:
+        result = pool.submit(
+            owner,
+            "sort_integers",
+            {"values": [3, 1, 2]},
+            parent=permits,
+        )
+        if result.operation_id != "sort_integers" or result.result != {"sorted": [1, 2, 3]}:
+            raise SystemExit("installed process-pool probe returned an invalid result")
+    finally:
+        pool.close()
+        parent.release(owner, "wheel-probe")
+
+
 if __name__ == "__main__":
     checkout = Path(sys.argv[1]).resolve()
     environment = Path(sys.argv[2]).resolve()
@@ -42,6 +86,7 @@ if __name__ == "__main__":
         raise SystemExit(f"spawned process imported outside venv: {module_path}")
     if module_path.is_relative_to(checkout):
         raise SystemExit(f"spawned process imported from checkout: {module_path}")
+    process_pool_probe()
     print(f"Spawned-process import passed: {module_path}")
 """
 

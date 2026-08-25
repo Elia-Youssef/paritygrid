@@ -452,6 +452,7 @@ class WorkAssignmentV1:
 
     protocol: str
     contract_version: int
+    plan_fingerprint: str
     run_id: str
     node_id: str
     partition_key: str
@@ -472,6 +473,7 @@ class WorkAssignmentV1:
         if self.protocol != WORK_ASSIGNMENT_PROTOCOL:
             raise RunnerContractVersionError("work assignment protocol is unknown")
         _validate_contract_version(self.contract_version, "work assignment contract version")
+        _validate_frontier_fingerprint(self.plan_fingerprint, "work assignment plan fingerprint")
         validate_public_contract_text(self.run_id, "work assignment run identity")
         validate_public_contract_text(self.node_id, "work assignment node identity")
         validate_public_contract_text(self.partition_key, "work assignment partition key")
@@ -499,6 +501,7 @@ class WorkAssignmentV1:
     def __repr__(self) -> str:
         return (
             "WorkAssignmentV1("
+            "plan_fingerprint=<redacted>, "
             f"run_id={self.run_id!r}, node_id={self.node_id!r}, "
             f"partition_key={self.partition_key!r}, work_item_id={self.work_item_id!r}, "
             f"attempt_number={self.attempt_number!r}, lease_fence={self.lease_fence!r}, "
@@ -529,6 +532,7 @@ class WorkResultV1:
 
     protocol: str
     contract_version: int
+    plan_fingerprint: str
     run_id: str
     node_id: str
     partition_key: str
@@ -551,6 +555,7 @@ class WorkResultV1:
         if self.protocol != WORK_RESULT_PROTOCOL:
             raise RunnerContractVersionError("work result protocol is unknown")
         _validate_contract_version(self.contract_version, "work result contract version")
+        _validate_frontier_fingerprint(self.plan_fingerprint, "work result plan fingerprint")
         validate_public_contract_text(self.run_id, "work result run identity")
         validate_public_contract_text(self.node_id, "work result node identity")
         validate_public_contract_text(self.partition_key, "work result partition key")
@@ -587,6 +592,7 @@ class WorkResultV1:
     def __repr__(self) -> str:
         return (
             "WorkResultV1("
+            "plan_fingerprint=<redacted>, "
             f"run_id={self.run_id!r}, node_id={self.node_id!r}, "
             f"partition_key={self.partition_key!r}, work_item_id={self.work_item_id!r}, "
             f"attempt_number={self.attempt_number!r}, lease_fence={self.lease_fence!r}, "
@@ -759,6 +765,8 @@ def _read_wire_key(text: str, pos: int) -> tuple[str, int]:
 
 
 def _build_wire_document(items: list[tuple[str, ContractValue]]) -> ContractDocument:
+    if [key for key, _value in items] != sorted(key for key, _value in items):
+        raise RunnerContractEncodingError("contract payload document keys are not canonical")
     try:
         return ContractDocument(items=tuple(items))
     except RunnerContractVersionError:
@@ -963,6 +971,7 @@ def _encode_work_assignment(assignment: WorkAssignmentV1) -> bytes:
         [
             WORK_ASSIGNMENT_PROTOCOL,
             f"contract_version={assignment.contract_version}",
+            f"plan_fingerprint={assignment.plan_fingerprint}",
             f"run_id={assignment.run_id}",
             f"node_id={assignment.node_id}",
             f"partition_key={assignment.partition_key}",
@@ -999,6 +1008,7 @@ def _encode_work_result(result: WorkResultV1) -> bytes:
         [
             WORK_RESULT_PROTOCOL,
             f"contract_version={result.contract_version}",
+            f"plan_fingerprint={result.plan_fingerprint}",
             f"run_id={result.run_id}",
             f"node_id={result.node_id}",
             f"partition_key={result.partition_key}",
@@ -1224,6 +1234,7 @@ def _decode_work_assignment(data: bytes) -> WorkAssignmentV1:
     reader = _WireReader(_decode_wire_text(data))
     _expect_protocol_line(reader, WORK_ASSIGNMENT_PROTOCOL, "work assignment")
     contract_version = _read_contract_version(reader)
+    plan_fingerprint = reader.read_text("plan_fingerprint")
     run_id = reader.read_text("run_id")
     node_id = reader.read_text("node_id")
     partition_key = reader.read_text("partition_key")
@@ -1241,6 +1252,7 @@ def _decode_work_assignment(data: bytes) -> WorkAssignmentV1:
         return WorkAssignmentV1(
             protocol=WORK_ASSIGNMENT_PROTOCOL,
             contract_version=contract_version,
+            plan_fingerprint=plan_fingerprint,
             run_id=run_id,
             node_id=node_id,
             partition_key=partition_key,
@@ -1264,6 +1276,7 @@ def _decode_work_result(data: bytes) -> WorkResultV1:
     reader = _WireReader(_decode_wire_text(data))
     _expect_protocol_line(reader, WORK_RESULT_PROTOCOL, "work result")
     contract_version = _read_contract_version(reader)
+    plan_fingerprint = reader.read_text("plan_fingerprint")
     run_id = reader.read_text("run_id")
     node_id = reader.read_text("node_id")
     partition_key = reader.read_text("partition_key")
@@ -1283,6 +1296,7 @@ def _decode_work_result(data: bytes) -> WorkResultV1:
         return WorkResultV1(
             protocol=WORK_RESULT_PROTOCOL,
             contract_version=contract_version,
+            plan_fingerprint=plan_fingerprint,
             run_id=run_id,
             node_id=node_id,
             partition_key=partition_key,

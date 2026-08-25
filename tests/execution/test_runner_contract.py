@@ -79,6 +79,7 @@ CAPABILITIES = StrategyCapabilitiesV1(
 ASSIGNMENT = WorkAssignmentV1(
     protocol=WORK_ASSIGNMENT_PROTOCOL,
     contract_version=RUNNER_CONTRACT_VERSION,
+    plan_fingerprint=FINGERPRINT,
     run_id="run-alpha",
     node_id="nod-etl",
     partition_key="region-eu",
@@ -96,6 +97,7 @@ ASSIGNMENT = WorkAssignmentV1(
 RESULT = WorkResultV1(
     protocol=WORK_RESULT_PROTOCOL,
     contract_version=RUNNER_CONTRACT_VERSION,
+    plan_fingerprint=FINGERPRINT,
     run_id="run-alpha",
     node_id="nod-etl",
     partition_key="region-eu",
@@ -138,6 +140,7 @@ DOCUMENT = ContractDocument(
 GOLDEN_ASSIGNMENT = (
     b"paritygrid.work-assignment.v1\n"
     b"contract_version=1\n"
+    b"plan_fingerprint=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
     b"run_id=run-alpha\n"
     b"node_id=nod-etl\n"
     b"partition_key=region-eu\n"
@@ -156,6 +159,7 @@ GOLDEN_ASSIGNMENT = (
 GOLDEN_RESULT = (
     b"paritygrid.work-result.v1\n"
     b"contract_version=1\n"
+    b"plan_fingerprint=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n"
     b"run_id=run-alpha\n"
     b"node_id=nod-etl\n"
     b"partition_key=region-eu\n"
@@ -355,6 +359,18 @@ def test_document_round_trip_preserves_reserved_characters() -> None:
     empty = ContractDocument()
     assert encode_contract_document(empty) == b""
     assert decode_contract_document(encode_contract_document(empty)) == empty
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        b"rows=int:100\noperation=str:normalize",
+        b"outer=doc:{rows=int:100\noperation=str:normalize}",
+    ],
+)
+def test_document_decoder_rejects_noncanonical_map_ordering(payload: bytes) -> None:
+    with pytest.raises(RunnerContractEncodingError, match="not canonical"):
+        decode_contract_document(payload)
 
 
 def test_document_to_mapping_and_item_count() -> None:
@@ -729,6 +745,14 @@ def test_document_distinguishes_bool_and_int_scalars() -> None:
         decode_contract_document(b"flag=true\n")
     with pytest.raises(RunnerContractEncodingError):
         decode_work_result(GOLDEN_RESULT.replace(b"value=int:100", b"value=true", 1))
+
+
+@pytest.mark.parametrize("value", ["f" * 63, "F" * 64, "g" * 64, 7])
+def test_assignment_and_result_reject_noncanonical_plan_fingerprint(value: object) -> None:
+    with pytest.raises((RunnerContractBoundError, TypeError)):
+        _assignment(plan_fingerprint=value)
+    with pytest.raises((RunnerContractBoundError, TypeError)):
+        _result(plan_fingerprint=value)
 
 
 @pytest.mark.parametrize(

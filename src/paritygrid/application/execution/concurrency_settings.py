@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from contextlib import suppress
 from dataclasses import dataclass
 from threading import Lock
 from typing import Protocol, cast, runtime_checkable
@@ -421,6 +422,28 @@ def describe_known_strategies(
         platform_requirements=(),
         protocol=STRATEGY_CAPABILITIES_PROTOCOL,
     )
+    threaded_capabilities = StrategyCapabilitiesV1(
+        strategy_id="threaded",
+        contract_version=RUNNER_CONTRACT_VERSION,
+        supports_pause=True,
+        supports_cancel=True,
+        supports_checkpoint=True,
+        max_concurrent_work=min(settings.per_strategy_work, 64),
+        max_in_flight_records=settings.max_in_flight_records,
+        platform_requirements=(),
+        protocol=STRATEGY_CAPABILITIES_PROTOCOL,
+    )
+    asyncio_capabilities = StrategyCapabilitiesV1(
+        strategy_id="asyncio",
+        contract_version=RUNNER_CONTRACT_VERSION,
+        supports_pause=True,
+        supports_cancel=True,
+        supports_checkpoint=True,
+        max_concurrent_work=min(settings.per_strategy_work, 64),
+        max_in_flight_records=settings.max_in_flight_records,
+        platform_requirements=(),
+        protocol=STRATEGY_CAPABILITIES_PROTOCOL,
+    )
     return (
         StrategyAvailability(
             strategy_id="sequential",
@@ -430,15 +453,15 @@ def describe_known_strategies(
         ),
         StrategyAvailability(
             strategy_id="threaded",
-            available=False,
-            unavailability_reason=_THREADED_UNAVAILABILITY_REASON,
-            capabilities=None,
+            available=True,
+            unavailability_reason=None,
+            capabilities=threaded_capabilities,
         ),
         StrategyAvailability(
             strategy_id="asyncio",
-            available=False,
-            unavailability_reason=_ASYNCIO_UNAVAILABILITY_REASON,
-            capabilities=None,
+            available=True,
+            unavailability_reason=None,
+            capabilities=asyncio_capabilities,
         ),
     )
 
@@ -573,11 +596,28 @@ class StrategyLifecycleCoordinator:
                     self._listener.on_strategy_started(availability.strategy_id)
                     owned.append(availability.strategy_id)
                     self._owned = tuple(owned)
-            except BaseException:
-                for strategy_id in reversed(owned):
-                    self._listener.on_strategy_shutdown(strategy_id)
+            except BaseException as startup_error:
+                # Clear ownership before cleanup so a failed startup is
+                # retryable even when one or more cleanup callbacks fail.
                 self._owned = ()
                 self._is_started = False
+                cleanup_failures: list[str] = []
+                for strategy_id in reversed(owned):
+                    try:
+                        self._listener.on_strategy_shutdown(strategy_id)
+                    except BaseException as cleanup_error:
+                        if len(cleanup_failures) < 8:
+                            try:
+                                message = str(cleanup_error)
+                            except BaseException:
+                                message = "<unprintable>"
+                            detail = f"{type(cleanup_error).__name__}: {message}"
+                            cleanup_failures.append(f"{strategy_id} ({detail[:160]})")
+                if cleanup_failures:
+                    with suppress(BaseException):
+                        startup_error.add_note(
+                            "startup rollback cleanup failures: " + "; ".join(cleanup_failures)
+                        )
                 raise
 
     def shutdown(self) -> None:

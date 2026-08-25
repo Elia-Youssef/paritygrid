@@ -284,6 +284,9 @@ from paritygrid.application.execution.recovery import (
     RecoveryWriter,
     StartupRecoveryScanner,
 )
+from paritygrid.application.execution.result_commit_factory import (
+    DurableResultCommitFactory,
+)
 from paritygrid.application.execution.result_coordinator import (
     COORDINATOR_ADMISSION_TIMEOUT_SECONDS,
     COORDINATOR_RESULT_TIMEOUT_SECONDS,
@@ -302,6 +305,11 @@ from paritygrid.application.execution.result_coordinator import (
     ResultStaleRejection,
     ResultValidationRejection,
     ResultWriterRetryableError,
+)
+from paritygrid.application.execution.result_coordinator_writer import (
+    ResultCommitCommandFactory,
+    ResultCoordinatorCommittedReceipt,
+    TransactionalResultCoordinatorWriter,
 )
 from paritygrid.application.execution.result_sink import (
     MAX_RESULT_CHECKPOINT_SCHEMA_VERSION,
@@ -664,6 +672,7 @@ __all__ = [
     "DelayValue",
     "DelayValueError",
     "DependencyTracker",
+    "DurableResultCommitFactory",
     "FinalizationAction",
     "FinalizationAdmissionError",
     "FinalizationAnalytics",
@@ -745,7 +754,9 @@ __all__ = [
     "RegisteredAssignment",
     "RenewWorkLeaseRequest",
     "ResultCheckpoint",
+    "ResultCommitCommandFactory",
     "ResultCoordinatorClosedError",
+    "ResultCoordinatorCommittedReceipt",
     "ResultCoordinatorError",
     "ResultCoordinatorReader",
     "ResultCoordinatorWriter",
@@ -838,6 +849,7 @@ __all__ = [
     "TerminalAttemptEvent",
     "TokenBucket",
     "TransactionalCheckpointResultSink",
+    "TransactionalResultCoordinatorWriter",
     "UnsuccessfulWorkResult",
     "WorkAssignmentV1",
     "WorkIdentity",

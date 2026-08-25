@@ -43,6 +43,7 @@ from paritygrid.adapters.persistence.repositories import (
     SqlAlchemyWorkAttemptRepository,
     SqlAlchemyWorkItemRepository,
 )
+from paritygrid.adapters.persistence.result_coordinator import SQLiteResultCoordinatorReader
 from paritygrid.adapters.persistence.sqlite import (
     SessionFactory,
     SQLiteDatabase,
@@ -98,6 +99,7 @@ __all__ = (
     "SQLitePauseStateReader",
     "SQLitePragmaState",
     "SQLiteRecoveryStateReader",
+    "SQLiteResultCoordinatorReader",
     "SQLiteTransactionalWriter",
     "SecretReferenceName",
     "SessionFactory",

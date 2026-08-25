@@ -157,10 +157,12 @@ def _result(
     outcome: ContractOutcome = ContractOutcome.SUCCEEDED,
     artifacts: tuple[str, ...] = (),
     checkpoint_proposal: bool = True,
+    plan_fingerprint: str = FINGERPRINT,
 ) -> WorkResultV1:
     return WorkResultV1(
         protocol=WORK_RESULT_PROTOCOL,
         contract_version=RUNNER_CONTRACT_VERSION,
+        plan_fingerprint=plan_fingerprint,
         run_id=run_id,
         node_id=node_id,
         partition_key=partition_key,
@@ -188,9 +190,14 @@ def _frontier(
     node_id: str = NODE_A,
     run_row_version: int = 5,
     node_row_version: int = 3,
+    work_item_id: str = WORK_A,
+    attempt_number: int = 1,
+    lease_fence: int = 7,
+    lease_owner: str = OWNER_A,
     next_event_sequence: int = 5,
     event_counter_row_version: int = 2,
     attempt_state: str = "running",
+    observed_at_micros: int = 500_000,
     expires_at_micros: int = 2_000_000,
 ) -> RebasedFrontier:
     return RebasedFrontier(
@@ -198,9 +205,14 @@ def _frontier(
         run_row_version=run_row_version,
         node_id=node_id,
         node_row_version=node_row_version,
+        work_item_id=work_item_id,
+        attempt_number=attempt_number,
+        lease_fence=lease_fence,
+        lease_owner=lease_owner,
         next_event_sequence=next_event_sequence,
         event_counter_row_version=event_counter_row_version,
         attempt_state=attempt_state,
+        observed_at_micros=observed_at_micros,
         expires_at_micros=expires_at_micros,
     )
 
@@ -361,6 +373,7 @@ class _Harness:
         telemetry_sink: object = _DEFAULT_SINK,
         admission_timeout_seconds: float | None = None,
         result_timeout_seconds: float | None = None,
+        control_generation: int = 1,
     ) -> None:
         self.scheduler = ConcurrentScheduler(
             run_id=RUN_ID,
@@ -370,7 +383,7 @@ class _Harness:
             partitions_by_node=dict.fromkeys(node_ids, (PART_0,))
             if partitions is None
             else partitions,
-            control_generation=ControlGeneration(1),
+            control_generation=ControlGeneration(control_generation),
         )
         self.clock = ManualClock(_now())
         self.capacity = ScheduledWorkLimiters(
@@ -397,7 +410,7 @@ class _Harness:
         self.coordinator = ConcurrentResultCoordinator(
             run_id=RUN_ID,
             plan_fingerprint=FINGERPRINT,
-            control_generation=1,
+            control_generation=control_generation,
             reader=self.reader,
             writer=self.writer,
             result_channel=self.channel,
@@ -422,7 +435,15 @@ class _Harness:
         self.reader.plan(
             assignment.identity.node_id,
             assignment.identity.partition_key,
-            _frontier(node_id=assignment.identity.node_id) if frontier is None else frontier,
+            _frontier(
+                node_id=assignment.identity.node_id,
+                work_item_id=assignment.work_item_id,
+                attempt_number=assignment.attempt_number,
+                lease_fence=assignment.lease_fence,
+                lease_owner=assignment.lease_owner,
+            )
+            if frontier is None
+            else frontier,
         )
 
     def work_states(self) -> dict[WorkIdentity, FrontierWorkState]:
@@ -610,7 +631,7 @@ def test_rebased_frontier_accepts_closed_attempt_states(attempt_state: str) -> N
         (7, TypeError),
     ],
 )
-@pytest.mark.parametrize("field", ["run_id", "node_id"])
+@pytest.mark.parametrize("field", ["run_id", "node_id", "work_item_id", "lease_owner"])
 def test_rebased_frontier_rejects_invalid_identity_text(
     field: str,
     value: object,
@@ -632,7 +653,13 @@ def test_rebased_frontier_rejects_invalid_identity_text(
 )
 @pytest.mark.parametrize(
     "field",
-    ["run_row_version", "node_row_version", "event_counter_row_version", "expires_at_micros"],
+    [
+        "run_row_version",
+        "node_row_version",
+        "event_counter_row_version",
+        "observed_at_micros",
+        "expires_at_micros",
+    ],
 )
 def test_rebased_frontier_rejects_invalid_versions(
     field: str,
@@ -660,6 +687,24 @@ def test_rebased_frontier_rejects_invalid_event_sequences(
         _frontier(next_event_sequence=cast(int, value))
 
 
+@pytest.mark.parametrize("field", ["attempt_number", "lease_fence"])
+@pytest.mark.parametrize(
+    ("value", "error"),
+    [
+        (0, ResultValidationRejection),
+        (2**31, ResultValidationRejection),
+        ("1", TypeError),
+    ],
+)
+def test_rebased_frontier_rejects_invalid_durable_lease_numbers(
+    field: str,
+    value: object,
+    error: type[Exception],
+) -> None:
+    with pytest.raises(error):
+        _frontier(**cast(Any, {field: value}))
+
+
 @pytest.mark.parametrize(
     ("value", "error"),
     [
@@ -685,9 +730,15 @@ def test_rebased_frontier_rejects_invalid_attempt_states(
 def test_commit_intent_carries_rebased_facts() -> None:
     intent = CommitIntent(
         run_id=RUN_ID,
+        plan_fingerprint=FINGERPRINT,
         node_id=NODE_A,
         partition_key=PART_0,
         work_item_id=WORK_A,
+        attempt_number=1,
+        lease_fence=7,
+        lease_owner=OWNER_A,
+        observed_at_micros=500_000,
+        lease_expires_at_micros=2_000_000,
         outcome="succeeded",
         expected_run_row_version=9,
         expected_node_row_version=4,
@@ -695,6 +746,7 @@ def test_commit_intent_carries_rebased_facts() -> None:
         event_counter_row_version=3,
         checkpoint_proposed=True,
         artifact_ids=("artifact-1",),
+        result=_result(artifacts=("artifact-1",)),
     )
     assert intent.outcome == "succeeded"
     assert intent.expected_run_row_version == 9
@@ -712,9 +764,15 @@ def test_commit_intent_rejects_invalid_outcomes(value: object, error: type[Excep
     with pytest.raises(error):
         CommitIntent(
             run_id=RUN_ID,
+            plan_fingerprint=FINGERPRINT,
             node_id=NODE_A,
             partition_key=PART_0,
             work_item_id=WORK_A,
+            attempt_number=1,
+            lease_fence=7,
+            lease_owner=OWNER_A,
+            observed_at_micros=500_000,
+            lease_expires_at_micros=2_000_000,
             outcome=cast(str, value),
             expected_run_row_version=1,
             expected_node_row_version=1,
@@ -722,6 +780,7 @@ def test_commit_intent_rejects_invalid_outcomes(value: object, error: type[Excep
             event_counter_row_version=1,
             checkpoint_proposed=False,
             artifact_ids=(),
+            result=_result(checkpoint_proposal=False),
         )
 
 
@@ -738,8 +797,15 @@ def test_commit_intent_rejects_invalid_outcomes(value: object, error: type[Excep
         ({"artifact_ids": ["artifact-1"]}, TypeError),
         ({"artifact_ids": ("x" * 257,)}, ResultValidationRejection),
         ({"run_id": ""}, ResultValidationRejection),
+        ({"plan_fingerprint": "z" * 64}, ResultValidationRejection),
         ({"partition_key": 3}, TypeError),
         ({"work_item_id": None}, TypeError),
+        ({"attempt_number": 0}, ResultValidationRejection),
+        ({"lease_fence": 0}, ResultValidationRejection),
+        ({"lease_owner": ""}, ResultValidationRejection),
+        ({"observed_at_micros": -1}, ResultValidationRejection),
+        ({"lease_expires_at_micros": -1}, ResultValidationRejection),
+        ({"result": object()}, TypeError),
     ],
 )
 def test_commit_intent_rejects_invalid_fields(
@@ -748,9 +814,15 @@ def test_commit_intent_rejects_invalid_fields(
 ) -> None:
     fields: dict[str, object] = {
         "run_id": RUN_ID,
+        "plan_fingerprint": FINGERPRINT,
         "node_id": NODE_A,
         "partition_key": PART_0,
         "work_item_id": WORK_A,
+        "attempt_number": 1,
+        "lease_fence": 7,
+        "lease_owner": OWNER_A,
+        "observed_at_micros": 500_000,
+        "lease_expires_at_micros": 2_000_000,
         "outcome": "succeeded",
         "expected_run_row_version": 1,
         "expected_node_row_version": 1,
@@ -758,6 +830,7 @@ def test_commit_intent_rejects_invalid_fields(
         "event_counter_row_version": 1,
         "checkpoint_proposed": False,
         "artifact_ids": (),
+        "result": _result(checkpoint_proposal=False),
     }
     fields.update(overrides)
     with pytest.raises(error):
@@ -1109,9 +1182,15 @@ def test_writer_command_carries_every_rebased_fact() -> None:
     intent = harness.writer.commands[0]
     assert intent == CommitIntent(
         run_id=RUN_ID,
+        plan_fingerprint=FINGERPRINT,
         node_id=NODE_A,
         partition_key=PART_0,
         work_item_id=WORK_A,
+        attempt_number=1,
+        lease_fence=7,
+        lease_owner=OWNER_A,
+        observed_at_micros=500_000,
+        lease_expires_at_micros=2_000_000,
         outcome="quarantined",
         expected_run_row_version=9,
         expected_node_row_version=4,
@@ -1119,6 +1198,10 @@ def test_writer_command_carries_every_rebased_fact() -> None:
         event_counter_row_version=3,
         checkpoint_proposed=False,
         artifact_ids=(),
+        result=_result(
+            outcome=ContractOutcome.QUARANTINED,
+            checkpoint_proposal=False,
+        ),
     )
 
 
@@ -1201,7 +1284,9 @@ def test_retry_wait_default_eligibility_is_zero() -> None:
     ("value", "error"),
     [
         (-1, ResultValidationRejection),
-        (2**31, ResultValidationRejection),
+        # Retry eligibility uses the absolute injected-clock microsecond
+        # frame, so its validated upper bound covers epoch instants.
+        (2**53, ResultValidationRejection),
         ("500", TypeError),
     ],
 )
@@ -1364,6 +1449,7 @@ def test_non_exact_envelope_type_is_rejected() -> None:
     envelope = _EnvelopeSubclass(
         protocol=WORK_RESULT_PROTOCOL,
         contract_version=RUNNER_CONTRACT_VERSION,
+        plan_fingerprint=FINGERPRINT,
         run_id=RUN_ID,
         node_id=NODE_A,
         partition_key=PART_0,
@@ -1408,7 +1494,7 @@ def test_tampered_envelope_fails_contract_revalidation(
 
 
 def test_corrected_resubmission_after_pre_admission_rejection() -> None:
-    harness = _Harness()
+    harness = _Harness(control_generation=3)
     assignment = _assignment(control_generation=3)
     harness.admit(assignment)
     harness.expect(assignment)
@@ -1419,6 +1505,25 @@ def test_corrected_resubmission_after_pre_admission_rejection() -> None:
     harness.coordinator.submit_result(_result(generation=3))
     assert harness.coordinator.committed_count == 1
     assert len(harness.writer.commands) == 1
+    assert harness.coordinator.registered_identities == ()
+
+
+def test_result_from_another_plan_is_stale_before_rebase() -> None:
+    harness = _Harness()
+    assignment = _assignment()
+    harness.admit(assignment)
+    _rejected_without_writer(
+        harness,
+        assignment,
+        _result(plan_fingerprint="a" * 64),
+        ResultStaleRejection,
+    )
+
+
+def test_registration_from_another_control_generation_is_stale() -> None:
+    harness = _Harness()
+    with pytest.raises(ResultStaleRejection, match="control generation"):
+        harness.coordinator.register_assignment(_assignment(control_generation=2))
     assert harness.coordinator.registered_identities == ()
 
 
@@ -1470,6 +1575,61 @@ def test_rebased_expired_attempt_is_stale() -> None:
     assert harness.writer.commands == []
 
 
+@pytest.mark.parametrize(
+    "frontier",
+    [
+        _frontier(work_item_id=WORK_B),
+        _frontier(attempt_number=2),
+        _frontier(lease_fence=8),
+        _frontier(lease_owner=OWNER_B),
+    ],
+)
+def test_rebased_durable_lease_mismatch_is_stale(frontier: RebasedFrontier) -> None:
+    harness = _Harness()
+    assignment = _assignment()
+    harness.admit(assignment)
+    harness.expect(assignment, frontier=frontier)
+    with pytest.raises(ResultStaleRejection):
+        harness.coordinator.submit_result(_result())
+    assert harness.writer.commands == []
+    assert harness.coordinator.registered_identities == (assignment.identity,)
+
+
+def test_rebased_observation_after_durable_expiry_is_stale() -> None:
+    harness = _Harness()
+    assignment = _assignment()
+    harness.admit(assignment)
+    harness.expect(
+        assignment,
+        frontier=_frontier(observed_at_micros=900_001, expires_at_micros=900_000),
+    )
+    with pytest.raises(ResultStaleRejection, match="durable lease expired"):
+        harness.coordinator.submit_result(_result())
+    assert harness.writer.commands == []
+
+
+def test_rebased_observation_after_assignment_deadline_is_stale() -> None:
+    harness = _Harness()
+    assignment = _assignment()
+    harness.admit(assignment)
+    harness.expect(assignment, frontier=_frontier(observed_at_micros=1_000_001))
+    with pytest.raises(ResultStaleRejection, match="assignment deadline"):
+        harness.coordinator.submit_result(_result())
+    assert harness.writer.commands == []
+
+
+def test_rebased_observation_at_expiry_and_deadline_still_commits() -> None:
+    harness = _Harness()
+    assignment = _assignment()
+    harness.admit(assignment)
+    harness.expect(
+        assignment,
+        frontier=_frontier(observed_at_micros=1_000_000, expires_at_micros=1_000_000),
+    )
+    harness.coordinator.submit_result(_result())
+    assert harness.coordinator.committed_count == 1
+
+
 def test_rebased_awaiting_result_state_still_commits() -> None:
     harness = _Harness()
     assignment = _assignment()
@@ -1504,6 +1664,9 @@ def test_writer_command_uses_rebased_versions_not_capture_time_values() -> None:
         assignment_b,
         frontier=_frontier(
             node_id=NODE_B,
+            work_item_id=WORK_B,
+            lease_fence=8,
+            lease_owner=OWNER_B,
             run_row_version=2,
             node_row_version=1,
             next_event_sequence=2,
@@ -1542,7 +1705,14 @@ def test_reversed_completion_commits_contiguous_events_and_releases_successors()
     # SECOND against the frontier B's commit already advanced.
     harness.expect(
         assignment_b,
-        frontier=_frontier(node_id=NODE_B, run_row_version=5, next_event_sequence=5),
+        frontier=_frontier(
+            node_id=NODE_B,
+            work_item_id=WORK_B,
+            lease_fence=8,
+            lease_owner=OWNER_B,
+            run_row_version=5,
+            next_event_sequence=5,
+        ),
     )
     harness.expect(
         assignment_a,
@@ -1581,7 +1751,16 @@ def test_same_node_out_of_order_partitions_advance_the_node_aggregate() -> None:
     harness.admit(assignment_second)
     # The p1 partition completes FIRST against the current node frontier;
     # p0 completes SECOND against the frontier p1's commit advanced.
-    harness.expect(assignment_second, frontier=_frontier(run_row_version=4, next_event_sequence=5))
+    harness.expect(
+        assignment_second,
+        frontier=_frontier(
+            work_item_id=WORK_B,
+            lease_fence=8,
+            lease_owner=OWNER_B,
+            run_row_version=4,
+            next_event_sequence=5,
+        ),
+    )
     harness.expect(assignment_first, frontier=_frontier(run_row_version=5, next_event_sequence=6))
     harness.coordinator.submit_result(
         _result(partition_key=PART_1, work_item_id=WORK_B, lease_fence=8, lease_owner=OWNER_B)
@@ -1649,6 +1828,23 @@ def test_generic_writer_admission_error_is_retryable() -> None:
     harness.expect(assignment)
     harness.writer.admission_errors.append(WriterError("writer rejected"))
     _retryable_failure_then_success(harness, assignment)
+
+
+def test_writer_adapter_pre_admission_validation_retains_lease() -> None:
+    harness = _Harness()
+    assignment = _assignment()
+    harness.admit(assignment)
+    harness.expect(assignment)
+    harness.writer.admission_errors.append(ResultValidationRejection("bad command factory"))
+
+    with pytest.raises(ResultValidationRejection, match="bad command factory"):
+        harness.coordinator.submit_result(_result())
+
+    assert harness.writer.commands == []
+    assert harness.coordinator.registered_identities == (assignment.identity,)
+    assert harness.capacity.in_use(CAPACITY_CATEGORY_GLOBAL) == 1
+    assert harness.coordinator.rejected_count == 1
+    assert harness.coordinator.is_admission_stopped is False
 
 
 def test_definitely_not_executed_result_is_retryable() -> None:

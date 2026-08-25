@@ -1612,12 +1612,13 @@ def test_try_acquire_requires_parent_and_respects_capacity() -> None:
     connector = _connector(limiter, clock, limit=1)
     with pytest.raises(CapacityOwnershipError):
         connector.try_acquire("z")
-    assert connector.try_acquire("a") is True
+    permit = connector.try_acquire("a")
+    assert isinstance(permit, CapacityPermit)
     assert connector.snapshot().in_use == 1
-    assert connector.try_acquire("b") is False
+    assert connector.try_acquire("b") is None
     with pytest.raises(CapacityOwnershipError):
         connector.try_acquire("a")
-    connector.release(CapacityPermit(CAPACITY_CATEGORY_CONNECTOR, 1, "a", 1))
+    connector.release(permit)
     assert connector.snapshot().in_use == 0
 
 
@@ -1627,10 +1628,14 @@ def test_try_acquire_respects_rate_availability() -> None:
     _hold(limiter, "a")
     _hold(limiter, "b")
     connector = _connector(limiter, clock, limit=2, rate=_rate())
-    assert connector.try_acquire("a") is True
-    assert connector.try_acquire("b") is False
+    permit_a = connector.try_acquire("a")
+    assert isinstance(permit_a, CapacityPermit)
+    assert connector.try_acquire("b") is None
     clock.advance(_RATE_INTERVAL_MICROSECONDS)
-    assert connector.try_acquire("b") is True
+    permit_b = connector.try_acquire("b")
+    assert isinstance(permit_b, CapacityPermit)
+    connector.release(permit_a)
+    connector.release(permit_b)
 
 
 def test_try_acquire_rejects_invalid_owner_and_close() -> None:

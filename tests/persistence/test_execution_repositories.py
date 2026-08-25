@@ -345,6 +345,32 @@ def test_run_lifecycle_recovery_and_success_fingerprint(database: SQLiteDatabase
             )
 
 
+def test_unsupported_execution_evidence_version_is_rejected_before_update(
+    database: SQLiteDatabase,
+) -> None:
+    seed_pipeline(database)
+    create_run(database)
+    start_run(database)
+    with database.transaction() as session:
+        repository = SqlAlchemyRunRepository(session)
+        with pytest.raises(ExecutionInvalidRequestError, match="unsupported"):
+            repository.transition(
+                RUN_ID,
+                expected_row_version=2,
+                target_state=RunState.SUCCEEDED,
+                transitioned_at=timestamp(2),
+                execution_evidence_fingerprint=StateFingerprint("5" * 64),
+                execution_evidence_fingerprint_version=1,
+            )
+        session.commit()
+    with database.transaction() as session:
+        record = SqlAlchemyRunRepository(session).get(RUN_ID)
+        assert record is not None
+        assert record.state is RunState.RUNNING
+        assert record.row_version == 2
+        assert record.execution_evidence_fingerprint is None
+
+
 def test_run_cancel_timestamp_rules_and_cas(database: SQLiteDatabase) -> None:
     seed_pipeline(database)
     create_run(database)

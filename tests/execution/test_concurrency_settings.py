@@ -506,16 +506,25 @@ def test_describe_sequential_reflects_captured_in_flight_bound() -> None:
 @pytest.mark.parametrize(
     ("strategy_id", "reason"),
     [
-        ("threaded", "threaded strategy awaits P7.12"),
-        ("asyncio", "asyncio strategy awaits P7.13"),
+        ("threaded", ""),
+        ("asyncio", ""),
     ],
 )
-def test_describe_unavailable_strategies_are_structured(strategy_id: str, reason: str) -> None:
+def test_describe_registered_strategies_carry_exact_capabilities(
+    strategy_id: str,
+    reason: str,
+) -> None:
+    del reason
     availabilities = describe_known_strategies(SETTINGS)
     entry = next(item for item in availabilities if item.strategy_id == strategy_id)
-    assert not entry.available
-    assert entry.unavailability_reason == reason
-    assert entry.capabilities is None
+    assert entry.available
+    assert entry.unavailability_reason is None
+    capabilities = entry.capabilities
+    assert capabilities is not None
+    assert capabilities.strategy_id == strategy_id
+    assert capabilities.max_concurrent_work >= 1
+    if strategy_id == "sequential":
+        assert capabilities.max_concurrent_work == 1
 
 
 def test_describe_rejects_wrong_settings_type() -> None:
@@ -543,17 +552,17 @@ def test_resolve_sequential_returns_real_capabilities() -> None:
     assert availability.capabilities.max_in_flight_records == SETTINGS.max_in_flight_records
 
 
-def test_resolve_unavailable_strategies_never_substitute() -> None:
+def test_resolve_registered_strategies_expose_exact_capabilities() -> None:
     threaded = resolve_strategy("threaded", SETTINGS)
     assert threaded.strategy_id == "threaded"
-    assert not threaded.available
-    assert threaded.unavailability_reason == "threaded strategy awaits P7.12"
-    assert threaded.capabilities is None
+    assert threaded.available
+    assert threaded.unavailability_reason is None
+    assert threaded.capabilities is not None
     asyncio_availability = resolve_strategy("asyncio", SETTINGS)
     assert asyncio_availability.strategy_id == "asyncio"
-    assert not asyncio_availability.available
-    assert asyncio_availability.unavailability_reason == "asyncio strategy awaits P7.13"
-    assert asyncio_availability.capabilities is None
+    assert asyncio_availability.available
+    assert asyncio_availability.capabilities is not None
+    assert asyncio_availability.capabilities is not threaded.capabilities
 
 
 @pytest.mark.parametrize("identifier", [None, 7])
@@ -691,6 +700,26 @@ def test_startup_listener_failure_on_first_entry_owns_nothing() -> None:
     assert listener.shutdown_attempts == []
     assert coordinator.owned_strategies == ()
     assert not coordinator.is_started
+
+
+def test_startup_failure_attempts_all_cleanup_and_preserves_startup_error() -> None:
+    listener = _RecordingListener()
+    listener.fail_start = frozenset({"gamma"})
+    listener.fail_shutdown = frozenset({"alpha", "beta"})
+    coordinator = StrategyLifecycleCoordinator(SETTINGS, listener=listener)
+    with pytest.raises(RuntimeError, match="startup failure for gamma") as error:
+        coordinator.startup((_availability("alpha"), _availability("beta"), _availability("gamma")))
+    assert listener.shutdown_attempts == ["beta", "alpha"]
+    assert len(error.value.__notes__) == 1
+    assert "beta" in error.value.__notes__[0]
+    assert "alpha" in error.value.__notes__[0]
+    assert coordinator.owned_strategies == ()
+    assert not coordinator.is_started
+    assert not coordinator.is_shutdown
+    listener.fail_start = frozenset()
+    listener.fail_shutdown = frozenset()
+    coordinator.startup((_availability("alpha"),))
+    assert coordinator.is_started
 
 
 def test_shutdown_releases_ownership_in_reverse_order() -> None:

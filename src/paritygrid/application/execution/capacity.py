@@ -765,8 +765,13 @@ class SubordinateCallLimiter:
             finally:
                 self._ledger.dequeue(owner_key)
 
-    def try_acquire(self, owner: str) -> bool:
-        """Try once, without waiting, to acquire one subordinate permit."""
+    def try_acquire(self, owner: str) -> CapacityPermit | None:
+        """Try once, without waiting, to acquire one subordinate permit.
+
+        The permit is returned to the caller so every successful acquisition
+        has the evidence required for an exact release. Saturation returns
+        ``None`` and never leaves a ledger or parent registration behind.
+        """
         owner_key = _validate_owner_key(owner, "acquisition owner")
         with self._condition:
             if self._closed:
@@ -780,13 +785,13 @@ class SubordinateCallLimiter:
                     "owner key already holds or awaits subordinate capacity"
                 )
             if not self._ledger.may_grant(owner_key):
-                return False
+                return None
             bucket = self._bucket
             if bucket is not None and not bucket.try_acquire(self._clock.now()):
-                return False
+                return None
             permit = self._grant(owner_key)
             self._register_with_parent(owner_key, permit)
-            return True
+            return permit
 
     def release(self, permit: CapacityPermit) -> None:
         """Release one subordinate permit exactly once."""

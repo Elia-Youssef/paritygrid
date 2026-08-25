@@ -70,6 +70,7 @@ from paritygrid.application.ports.writer import (
     WriterDefinitelyNotExecutedError,
     WriterError,
 )
+from paritygrid.domain.execution import FailureClassification
 
 RESULT_COORDINATOR_VERSION = 1
 MAX_IN_FLIGHT_RESULTS = 256
@@ -79,7 +80,9 @@ COORDINATOR_RESULT_TIMEOUT_SECONDS = 60.0
 _MAX_COORDINATOR_TIMEOUT_SECONDS = 86_400.0
 _MAX_COORDINATOR_TEXT_LENGTH = 128
 _MAX_COORDINATOR_INT = 2**63 - 1
-_MAX_RETRY_ELIGIBILITY_MICROS = 2**31 - 1
+# Retry eligibility uses the absolute injected-clock microsecond frame, so the
+# bound must cover epoch instants while staying finite and validated.
+_MAX_RETRY_ELIGIBILITY_MICROS = 2**53 - 1
 _UNKNOWN_OUTCOME_REASON = "result_writer_outcome_unknown"
 _TELEMETRY_OPERATION = "result_commit"
 
@@ -93,6 +96,9 @@ _TERMINAL_WORK_STATES: dict[ContractOutcome, FrontierWorkState] = {
     ContractOutcome.FAILED: FrontierWorkState.FAILED,
     ContractOutcome.CANCELLED: FrontierWorkState.CANCELLED,
 }
+_COMMITTABLE_CLASSIFICATIONS: frozenset[str] = frozenset(
+    classification.value for classification in FailureClassification
+)
 
 
 class ResultCoordinatorError(RuntimeError):
@@ -284,10 +290,18 @@ class RebasedFrontier:
     run_row_version: int
     node_id: str
     node_row_version: int
+    work_item_id: str
+    attempt_number: int
+    lease_fence: int
+    lease_owner: str
     next_event_sequence: int
     event_counter_row_version: int
     attempt_state: str
+    observed_at_micros: int
     expires_at_micros: int
+    runner_kind: str = "sequential"
+    worker_identity: str = "engine-default"
+    started_at_micros: int = 0
 
     def __post_init__(self) -> None:
         _require_text(self.run_id, "rebased frontier run identity")
@@ -304,6 +318,20 @@ class RebasedFrontier:
             _MAX_COORDINATOR_INT,
             "rebased frontier node row version",
         )
+        _require_text(self.work_item_id, "rebased frontier work item identity")
+        _require_int(
+            self.attempt_number,
+            1,
+            MAX_METRIC_VALUE,
+            "rebased frontier attempt",
+        )
+        _require_int(
+            self.lease_fence,
+            1,
+            MAX_METRIC_VALUE,
+            "rebased frontier lease fence",
+        )
+        _require_text(self.lease_owner, "rebased frontier lease owner")
         _require_int(
             self.next_event_sequence,
             1,
@@ -321,14 +349,28 @@ class RebasedFrontier:
         if self.attempt_state not in _REBASE_ATTEMPT_STATES:
             raise ResultValidationRejection("rebased frontier attempt state is unknown")
         _require_int(
+            self.observed_at_micros,
+            0,
+            _MAX_COORDINATOR_INT,
+            "rebased frontier observation time",
+        )
+        _require_int(
             self.expires_at_micros,
             0,
             _MAX_COORDINATOR_INT,
             "rebased frontier lease expiry",
         )
+        _require_text(self.runner_kind, "rebased frontier runner kind", 32)
+        _require_text(self.worker_identity, "rebased frontier worker identity")
+        _require_int(
+            self.started_at_micros,
+            0,
+            _MAX_COORDINATOR_INT,
+            "rebased frontier attempt start time",
+        )
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True, slots=True, repr=False)
 class CommitIntent:
     """One durable commit intent carrying only rebased versions.
 
@@ -339,9 +381,15 @@ class CommitIntent:
     """
 
     run_id: str
+    plan_fingerprint: str
     node_id: str
     partition_key: str
     work_item_id: str
+    attempt_number: int
+    lease_fence: int
+    lease_owner: str
+    observed_at_micros: int
+    lease_expires_at_micros: int
     outcome: str
     expected_run_row_version: int
     expected_node_row_version: int
@@ -349,12 +397,34 @@ class CommitIntent:
     event_counter_row_version: int
     checkpoint_proposed: bool
     artifact_ids: tuple[str, ...]
+    result: WorkResultV1
+    runner_kind: str = "sequential"
+    worker_identity: str = "engine-default"
+    started_at_micros: int = 0
+    retry_eligible_at_micros: int = 0
+    failure_classification: str | None = None
 
     def __post_init__(self) -> None:
         _require_text(self.run_id, "commit intent run identity")
+        _require_fingerprint(self.plan_fingerprint)
         _require_text(self.node_id, "commit intent node identity")
         _require_text(self.partition_key, "commit intent partition key")
         _require_text(self.work_item_id, "commit intent work item identity")
+        _require_int(self.attempt_number, 1, MAX_METRIC_VALUE, "commit intent attempt")
+        _require_int(self.lease_fence, 1, MAX_METRIC_VALUE, "commit intent lease fence")
+        _require_text(self.lease_owner, "commit intent lease owner")
+        _require_int(
+            self.observed_at_micros,
+            0,
+            _MAX_COORDINATOR_INT,
+            "commit intent observation time",
+        )
+        _require_int(
+            self.lease_expires_at_micros,
+            0,
+            _MAX_COORDINATOR_INT,
+            "commit intent lease expiry",
+        )
         if type(self.outcome) is not str:
             raise TypeError("commit intent outcome must be text")
         if self.outcome not in _COMMITTABLE_OUTCOMES:
@@ -386,6 +456,70 @@ class CommitIntent:
         if type(self.checkpoint_proposed) is not bool:
             raise TypeError("commit intent checkpoint proposal must be a boolean")
         _require_reference_tuple(self.artifact_ids, "commit intent artifact identifiers")
+        if type(self.result) is not WorkResultV1:
+            raise TypeError("commit intent result must use WorkResultV1")
+        _revalidate_envelope(self.result)
+        result_facts = (
+            self.result.run_id,
+            self.result.plan_fingerprint,
+            self.result.node_id,
+            self.result.partition_key,
+            self.result.work_item_id,
+            self.result.attempt_number,
+            self.result.lease_fence,
+            self.result.lease_owner,
+            self.result.outcome.value,
+            self.result.checkpoint_proposal,
+            self.result.artifact_references,
+        )
+        intent_facts = (
+            self.run_id,
+            self.plan_fingerprint,
+            self.node_id,
+            self.partition_key,
+            self.work_item_id,
+            self.attempt_number,
+            self.lease_fence,
+            self.lease_owner,
+            self.outcome,
+            self.checkpoint_proposed,
+            self.artifact_ids,
+        )
+        if result_facts != intent_facts:
+            raise ResultValidationRejection(
+                "commit intent result does not match its validated commit facts"
+            )
+        _require_text(self.runner_kind, "commit intent runner kind", 32)
+        _require_text(self.worker_identity, "commit intent worker identity")
+        _require_int(
+            self.started_at_micros,
+            0,
+            _MAX_COORDINATOR_INT,
+            "commit intent attempt start time",
+        )
+        _require_int(
+            self.retry_eligible_at_micros,
+            0,
+            _MAX_RETRY_ELIGIBILITY_MICROS,
+            "commit intent retry eligibility",
+        )
+        classification = self.failure_classification
+        if classification is not None:
+            if type(classification) is not str:
+                raise TypeError("commit intent failure classification must be text or None")
+            if classification not in _COMMITTABLE_CLASSIFICATIONS:
+                raise ResultValidationRejection("commit intent failure classification is unknown")
+
+    def __repr__(self) -> str:
+        return (
+            "CommitIntent("
+            f"run_id={self.run_id!r}, plan_fingerprint=<redacted>, "
+            f"node_id={self.node_id!r}, partition_key={self.partition_key!r}, "
+            f"work_item_id={self.work_item_id!r}, attempt_number={self.attempt_number!r}, "
+            f"lease_fence={self.lease_fence!r}, lease_owner=<redacted>, "
+            f"outcome={self.outcome!r}, checkpoint_proposed={self.checkpoint_proposed!r}, "
+            f"artifact_ids={len(self.artifact_ids)}, result=<redacted>)"
+        )
 
 
 @runtime_checkable
@@ -447,6 +581,7 @@ def _revalidate_envelope(result: WorkResultV1) -> None:
         WorkResultV1(
             protocol=result.protocol,
             contract_version=result.contract_version,
+            plan_fingerprint=result.plan_fingerprint,
             run_id=result.run_id,
             node_id=result.node_id,
             partition_key=result.partition_key,
@@ -617,6 +752,11 @@ class ConcurrentResultCoordinator:
                 raise ResultStaleRejection(
                     "registered assignment must reference the coordinator run"
                 )
+            current_generation = self._scheduler.frontier.control_generation.value
+            if assignment.control_generation != current_generation:
+                raise ResultStaleRejection(
+                    "registered assignment control generation is not current"
+                )
             if identity in self._assignments:
                 raise ResultStaleRejection("work identity is already registered")
             if len(self._assignments) >= MAX_IN_FLIGHT_RESULTS:
@@ -625,7 +765,13 @@ class ConcurrentResultCoordinator:
                 )
             self._assignments[identity] = assignment
 
-    def submit_result(self, result: WorkResultV1, *, retry_eligible_at_micros: int = 0) -> None:
+    def submit_result(
+        self,
+        result: WorkResultV1,
+        *,
+        retry_eligible_at_micros: int = 0,
+        failure_classification: str | None = None,
+    ) -> None:
         """Validate, rebase, and durably commit one received result envelope.
 
         Raises a pre-admission rejection (zero writer commands, lease
@@ -640,13 +786,24 @@ class ConcurrentResultCoordinator:
             _MAX_RETRY_ELIGIBILITY_MICROS,
             "retry eligibility",
         )
+        if failure_classification is not None:
+            if type(failure_classification) is not str:
+                raise TypeError("failure classification must be text or None")
+            if failure_classification not in _COMMITTABLE_CLASSIFICATIONS:
+                raise ResultValidationRejection("failure classification is unknown")
         with self._lock:
             if self._closed or self._admission_stopped:
                 raise ResultCoordinatorClosedError("result coordinator no longer admits results")
             try:
                 identity, assignment = self._pre_admission_checks(result)
                 self._mark_result_received(identity)
-                intent = self._rebase_intent(identity, assignment, result)
+                intent = self._rebase_intent(
+                    identity,
+                    assignment,
+                    result,
+                    retry_eligible_at_micros,
+                    failure_classification,
+                )
                 ticket = self._admit_intent(identity, intent)
                 self._await_commit(identity, ticket, intent)
             except (
@@ -698,6 +855,10 @@ class ConcurrentResultCoordinator:
         _revalidate_envelope(result)
         if result.run_id != self._run_id:
             raise ResultStaleRejection("work result run does not match the coordinator run")
+        if result.plan_fingerprint != self._plan_fingerprint:
+            raise ResultStaleRejection(
+                "work result plan fingerprint does not match the coordinator plan"
+            )
         identity = WorkIdentity(
             run_id=result.run_id,
             node_id=result.node_id,
@@ -749,6 +910,8 @@ class ConcurrentResultCoordinator:
         identity: WorkIdentity,
         assignment: RegisteredAssignment,
         result: WorkResultV1,
+        retry_eligible_at_micros: int,
+        failure_classification: str | None,
     ) -> CommitIntent:
         frontier_value = self._reader.rebase(
             self._run_id,
@@ -761,13 +924,31 @@ class ConcurrentResultCoordinator:
         frontier = frontier_value
         if frontier.run_id != self._run_id or frontier.node_id != identity.node_id:
             raise ResultStaleRejection("rebased evidence does not match the work identity")
+        if frontier.work_item_id != assignment.work_item_id:
+            raise ResultStaleRejection("rebased evidence does not match the registered work item")
+        if frontier.attempt_number != assignment.attempt_number:
+            raise ResultStaleRejection("rebased evidence does not match the registered attempt")
+        if frontier.lease_fence != assignment.lease_fence:
+            raise ResultStaleRejection("rebased evidence does not match the registered lease fence")
+        if frontier.lease_owner != assignment.lease_owner:
+            raise ResultStaleRejection("rebased evidence does not match the registered lease owner")
         if frontier.attempt_state not in _OWNING_ATTEMPT_STATES:
             raise ResultStaleRejection("rebased evidence shows the attempt no longer owns the work")
+        if frontier.observed_at_micros > frontier.expires_at_micros:
+            raise ResultStaleRejection("rebased evidence shows the durable lease expired")
+        if frontier.observed_at_micros > assignment.deadline_micros:
+            raise ResultStaleRejection("work result arrived after the assignment deadline")
         return CommitIntent(
             run_id=self._run_id,
+            plan_fingerprint=self._plan_fingerprint,
             node_id=identity.node_id,
             partition_key=identity.partition_key,
             work_item_id=assignment.work_item_id,
+            attempt_number=frontier.attempt_number,
+            lease_fence=frontier.lease_fence,
+            lease_owner=frontier.lease_owner,
+            observed_at_micros=frontier.observed_at_micros,
+            lease_expires_at_micros=frontier.expires_at_micros,
             outcome=result.outcome.value,
             expected_run_row_version=frontier.run_row_version,
             expected_node_row_version=frontier.node_row_version,
@@ -775,6 +956,12 @@ class ConcurrentResultCoordinator:
             event_counter_row_version=frontier.event_counter_row_version,
             checkpoint_proposed=result.checkpoint_proposal,
             artifact_ids=result.artifact_references,
+            result=result,
+            runner_kind=frontier.runner_kind,
+            worker_identity=frontier.worker_identity,
+            started_at_micros=frontier.started_at_micros,
+            retry_eligible_at_micros=retry_eligible_at_micros,
+            failure_classification=failure_classification,
         )
 
     def _admit_intent(self, identity: WorkIdentity, intent: CommitIntent) -> object:
@@ -786,6 +973,8 @@ class ConcurrentResultCoordinator:
                 intent,
                 timeout_seconds=self._admission_timeout_seconds,
             )
+        except ResultValidationRejection:
+            raise
         except WriterAdmissionTimeoutError:
             admission_rollback = True
         except WriterError:
