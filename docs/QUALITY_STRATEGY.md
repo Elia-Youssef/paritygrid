@@ -336,5 +336,5 @@ Hard-gate failures include data loss, required-strategy execution-evidence misma
   asyncio.
 - Import isolation for `src/paritygrid/adapters/runners/process_workers/` is
   enforced by the existing `paritygrid-check-boundaries` transitive scan.
-- Cross-platform Windows/Linux CI execution of these gates is pending external
-  validation until the work is committed and pushed.
+- Cross-platform Windows/Linux CI execution of these gates passed on the Phase 7
+  exact head in [run 32827063567](https://github.com/Elia-Youssef/paritygrid/actions/runs/32827063567).

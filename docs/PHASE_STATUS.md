@@ -21,7 +21,7 @@ Phase 7 is active at the complete P7.0–P7.19 candidate on the integration bran
 
 - Accepted `main`: [`28d3540`](https://github.com/Elia-Youssef/paritygrid/commit/28d35406636f8b7b556ef813d31736b037624340).
 - Phase 6 acceptance evidence: [pull request #62](https://github.com/Elia-Youssef/paritygrid/pull/62) and its exact-head Windows and Ubuntu checks, plus the successful [post-merge run 32458747051](https://github.com/Elia-Youssef/paritygrid/actions/runs/32458747051) on that merge commit.
-- P7.0–P7.9 are already integrated on the branch. P7.10–P7.19 and the independent audit corrections are present in the working tree; exact-head Windows/Linux CI evidence remains pending until the audited candidate is committed and pushed.
+- P7.0–P7.19 and the independent audit corrections are committed on the phase branch at [`3473e2f`](https://github.com/Elia-Youssef/paritygrid/commit/3473e2f0c5623a902517125262d0f74382787de9). The complete candidate passed exact-head Windows/Linux CI in [run 32827063567](https://github.com/Elia-Youssef/paritygrid/actions/runs/32827063567); phase acceptance and merge remain pending.
 
 ## Phase 6 acceptance record
 
@@ -100,7 +100,7 @@ Phase 7 implements bounded concurrent execution behind application-owned schedul
 
 | Package | Status | Evidence |
 |---|---|---|
-| P7.19 — stress, packaging, and cross-platform proof | Candidate passes local audit; GitHub validation pending | Fifty seeded shuffled executions in `tests/execution/test_stress_shuffled.py` reproduce by seed, vary ready order, retry placement, completion order, and result arrival, and compare equal normalized durable execution evidence across sequential, threaded, and asyncio; every run asserts bounds, contiguous event sequences, and zero owned worker leaks. Installed-wheel and Phase 7 spawn verification are locked local gates; Windows/Linux GitHub execution begins only after the candidate push. |
+| P7.19 — stress, packaging, and cross-platform proof | Candidate passes local and cross-platform audit; phase acceptance pending | Fifty seeded shuffled executions in `tests/execution/test_stress_shuffled.py` reproduce by seed, vary ready order, retry placement, completion order, and result arrival, and compare equal normalized durable execution evidence across sequential, threaded, and asyncio; every run asserts bounds, contiguous event sequences, and zero owned worker leaks. Installed-wheel and Phase 7 spawn verification passed on Windows and Ubuntu in [run 32827063567](https://github.com/Elia-Youssef/paritygrid/actions/runs/32827063567). |
 | P7.18 — full lifecycle, recovery, backpressure, and cleanup matrix | Candidate passes local audit | `tests/execution/test_lifecycle_matrix.py` runs every full-plan strategy through normal completion, retry, pause/resume, cancellation, worker failure, unknown-writer-outcome (forged fence), structural blocked-writer backpressure, repeated cleanup, and restart with expired and non-expired leases under pooled strategies. Every cell asserts contiguous per-run event sequences, durable aggregates, bounded channels, and zero owned worker leaks. |
 | P7.17 — cross-strategy execution-evidence comparison harness | Candidate passes local audit | `evidence_comparison` freezes versioned `ExecutionEvidenceSnapshot` projections (kind/version, sorted work states, attempt outcomes, node aggregates, artifact identities, normalized causal events, fingerprint) and `compare_execution_evidence` returns exactly the execution-evidence verdict — its closed field set structurally cannot claim reconciliation, repair, or target-state equivalence, and negative fixtures lock that distinction. The same seeded run compares equal across sequential, threaded, and asyncio. |
 | P7.16 — optional subordinate interpreter CPU pool | Candidate passes local audit | `adapters/runners/interpreter_pool.py` provides the interpreter-backed subordinate pool over the same versioned codec, registered CPU operations, and P7.6 CPU permits; capability detection probes the actual `InterpreterPoolExecutor` runtime and reports a structured reason when absent without falling back to the process pool. |
@@ -123,10 +123,10 @@ Phase 7 implements bounded concurrent execution behind application-owned schedul
 
 ### Current candidate
 
-P7.0 through P7.19 are implemented. The complete candidate is now at the final
-integration boundary. The full local audit passed on 2026-08-25; the
-candidate remains uncommitted, so exact-head package acceptance and
-cross-platform GitHub validation remain pending.
+P7.0 through P7.19 are implemented. The complete candidate is committed and
+pushed at [`3473e2f`](https://github.com/Elia-Youssef/paritygrid/commit/3473e2f0c5623a902517125262d0f74382787de9).
+The full local audit and exact-head cross-platform CI passed on 2026-08-25;
+phase acceptance and merge remain pending.
 
 Complete-candidate local evidence on 2026-08-25:
 
@@ -142,6 +142,9 @@ Complete-candidate local evidence on 2026-08-25:
   telemetry, scheduler and runner integrity, and the real coordinator-to-SQLite
   commit and recovery path. All reported correctness findings were corrected
   and revalidated before this candidate boundary.
+- [GitHub Actions run 32827063567](https://github.com/Elia-Youssef/paritygrid/actions/runs/32827063567)
+  passed the repository policy, complete frontend, Ubuntu Python, Windows
+  Python, and frontend API smoke jobs on exact head `3473e2f`.
 
 ### First-half integration history
 
@@ -154,8 +157,7 @@ Exact-head integration evidence on `6ed6cc9`:
 
 ### Remaining Phase 7 limitations
 
-- The complete P7.0–P7.19 candidate has not yet been committed, pushed, or accepted, and the phase branch has not merged.
-- GitHub checks have not run on the exact complete candidate; Windows/Linux CI validation is pending external evidence.
+- The complete P7.0–P7.19 candidate is committed and pushed with exact-head CI evidence, but it has not yet been accepted or merged into `main`.
 - The P6 sequential runner remains the Phase 6 reference; the P7 sequential
   full-plan strategy is the concurrent engine's inline mode, and the
   cross-strategy equivalence proof compares the three P7 strategies.
