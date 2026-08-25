@@ -53,6 +53,32 @@ Every work package must provide:
 
 A phase is complete only when all of its packages are complete and its rubric scores at least 90 out of 100 with no hard-gate failure.
 
+## Standalone implementation goals
+
+The remaining roadmap is split into one independently executable prompt per phase. These prompts restate the governing scope for handoff convenience; the precedence list above remains authoritative. Every prompt forbids staging, commits, pushes, tags, pull requests, releases, and other Git mutations because integration is reviewed and performed separately.
+
+- [Phase 8 — Deterministic synthetic systems](goals/phase-08-deterministic-synthetic-systems.md)
+- [Phase 9 — Connector contract and adapters](goals/phase-09-connector-contract-and-adapters.md)
+- [Phase 10 — Reconciliation analysis](goals/phase-10-reconciliation-analysis.md)
+- [Phase 11 — Repair and target verification](goals/phase-11-repair-and-target-verification.md)
+- [Phase 12 — Core HTTP API](goals/phase-12-core-http-api.md)
+- [Phase 13 — Live and generated API boundary](goals/phase-13-live-and-generated-api-boundary.md)
+- [Phase 14 — UI design system and shell](goals/phase-14-ui-design-system-and-shell.md)
+- [Phase 15 — Typed frontend data and live state](goals/phase-15-typed-frontend-data-and-live-state.md)
+- [Phase 16 — Pipeline and overview interface](goals/phase-16-pipeline-and-overview-interface.md)
+- [Phase 17 — Live execution observability](goals/phase-17-live-execution-observability.md)
+- [Phase 18 — Reconciliation and repair interface](goals/phase-18-reconciliation-and-repair-interface.md)
+- [Phase 19 — Canonical scenario and datasets](goals/phase-19-canonical-scenario-and-datasets.md)
+- [Phase 20 — Demo orchestration and smoke proof](goals/phase-20-demo-orchestration-and-smoke-proof.md)
+- [Phase 21 — Cross-platform performance and stress](goals/phase-21-cross-platform-performance-and-stress.md)
+- [Phase 22 — Security, dependencies, and licensing](goals/phase-22-security-dependencies-and-licensing.md)
+- [Phase 23 — Packaging and release verification](goals/phase-23-packaging-and-release-verification.md)
+- [Phase 24 — Public narrative and architecture documentation](goals/phase-24-public-narrative-and-architecture-documentation.md)
+- [Phase 25 — Reproducible evidence and content audit](goals/phase-25-reproducible-evidence-and-content-audit.md)
+- [Phase 26 — Release-candidate handoff](goals/phase-26-release-candidate-handoff.md)
+- [Optional Phase 27 — Go protocol and simulator](goals/phase-27-optional-go-protocol-and-simulator.md)
+- [Optional Phase 28 — Go load and comparison](goals/phase-28-optional-go-load-and-comparison.md)
+
 ## Documentation maintenance
 
 - Update these files in the same change as any deliberate architecture or contract change.

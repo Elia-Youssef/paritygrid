@@ -238,7 +238,7 @@ Fingerprint fields name the fact they identify and store an explicit kind-specif
 fingerprint belongs to immutable planning metadata. `runs.execution_evidence_fingerprint` and
 `runs.execution_evidence_fingerprint_version` identify execution finalization evidence. Reconciliation
 summaries retain the independently computed reconciliation fingerprint and analytical query version.
-Target-state verification stores its own canonical fingerprint and input identity when Phase 9 adds
+Target-state verification stores its own canonical fingerprint and input identity when Phase 11 adds
 that fact. These values are not aliases and must not be copied between kinds.
 
 The current Phase 6 finalization document is execution-evidence version 2. The first Phase 7 migration
@@ -344,3 +344,13 @@ Required tests include:
 - Golden analytical comparisons.
 - Path traversal and unsafe filename rejection.
 - Empty, malformed, Unicode, large-value, and schema-evolution fixtures.
+
+## Concurrent execution readers (Phase 7)
+
+`SQLiteAdmissionStateReader` and `SQLiteConcurrentRecoveryReader`
+(`adapters/persistence/concurrent_execution.py`) extend the read-only
+boundary for the concurrent engine: admission reads current work-item,
+node, run, and event-frontier row versions in one short transaction,
+and recovery assembles one coherent run/node/work evidence snapshot.
+All durable mutations still flow exclusively through the single
+transactional writer; no reader ever mutates or holds a session.

@@ -224,7 +224,7 @@ A phase cannot receive an A when a hard gate fails. Rubric points are earned fro
 - Out-of-order results commit through the parent coordinator with correct rebased aggregates, contiguous per-run durable events, and no direct worker SQLite access.
 - The process pool executes only registered connector-free CPU operations through bounded versioned envelopes. `src/paritygrid/adapters/runners/process_workers/` passes transitive import isolation, spawn, crash, cancellation, shutdown, and orphan-process tests.
 - An interpreter pool is either unavailable with a structured reason or passes the subordinate-pool suite; it is not required for core acceptance.
-- At least fifty seeded shuffled runs preserve the versioned execution-evidence fingerprint and normalized causal evidence across required strategies. The comparison makes no Phase 9 reconciliation, repair, or target-state equivalence claim.
+- At least fifty seeded shuffled runs preserve the versioned execution-evidence fingerprint and normalized causal evidence across required strategies. The comparison makes no Phase 10 reconciliation or Phase 11 repair and target-state equivalence claim.
 - Windows and Linux install the built wheel in isolation, exercise process spawn semantics, and close all owned threads, tasks, processes, queues, clients, files, and database owners within configured bounds.
 
 **Rubric:**
@@ -240,247 +240,314 @@ A phase cannot receive an A when a hard gate fails. Rubric points are earned fro
 
 **Hard gates:** Required-strategy execution-evidence mismatch, exceeded configured bound, premature dependency release, non-contiguous durable events, accepted stale result, unresolved writer ambiguity, deadlock, unreleased owned resource, failed process isolation, direct worker SQLite access, or missing Windows/Linux installed-wheel spawn evidence.
 
-## Phase 8 — Synthetic systems and connectors
+## Remaining-phase split map
 
-**Objective:** Build deterministic source and target simulators and production-shaped connectors.
+The former long Phase 8–16 sprints are replaced by the smaller goals below. Every former phase is split into at least two independently accepted phases.
 
-**Outputs:** Dataset generator, async paginated API, blocking legacy API, file fixtures, warehouse target, fault scripts, connectors, and shared conformance tests.
+| Former phase | Replacement phases |
+|---|---|
+| 8 — Synthetic systems and connectors | 8 — Deterministic synthetic systems; 9 — Connector contract and adapters |
+| 9 — Reconciliation and repair | 10 — Reconciliation analysis; 11 — Repair and target verification |
+| 10 — FastAPI and live transport | 12 — Core HTTP API; 13 — Live and generated API boundary |
+| 11 — UI foundation | 14 — UI design system and shell; 15 — Typed frontend data and live state |
+| 12 — Product interface | 16 — Pipeline and overview interface; 17 — Live execution observability; 18 — Reconciliation and repair interface |
+| 13 — Canonical demonstration | 19 — Canonical scenario and datasets; 20 — Demo orchestration and smoke proof |
+| 14 — Hardening and release engineering | 21 — Cross-platform performance and stress; 22 — Security, dependencies, and licensing; 23 — Packaging and release verification |
+| 15 — Public documentation and release | 24 — Public narrative and architecture documentation; 25 — Reproducible evidence and content audit; 26 — Release-candidate handoff |
+| Optional 16 — Go load generator | Optional 27 — Go protocol and simulator; Optional 28 — Go load and comparison |
 
-**Dependencies:** Phases 5 through 7.
+Implementation phases stop at a verified handoff. Staging, commits, pushes, tags, pull requests, and release publication are separate integration actions outside these goals.
 
-**Acceptance evidence:**
+## Phase 8 — Deterministic synthetic systems
 
-- Same seed creates identical fixture manifests.
-- Fault scripts are reproducible.
-- Pagination, rate limiting, duplication, malformed records, timeouts, and cancellation pass.
-- Secret redaction is verified.
-- Resources close after failure and cancellation.
+**Objective:** Build reproducible source and target simulators before connector code depends on them.
 
-**Rubric:**
+**Outputs:** Seeded inventory data, scripted failures, async and blocking source simulators, CSV and JSON Lines fixtures, a warehouse target, and lifecycle composition.
 
-| Criterion | Points |
-|---|---:|
-| Connector contract | 25 |
-| Deterministic simulation | 20 |
-| Fault coverage | 25 |
-| Integration evidence | 20 |
-| Connector documentation | 10 |
+**Dependencies:** Phases 2, 5, 6, and 7.
 
-**Hard gates:** Non-deterministic canonical fixture, leaked secret, duplicate logical effect, or unbounded input.
+**Acceptance evidence:** Identical seeds reproduce byte-stable manifests; pagination, malformed data, rate limits, timeouts, duplication, cancellation, target versions, and dynamic-port cleanup pass deterministic tests.
 
-## Phase 9 — Reconciliation and repair
+**Rubric:** Determinism 25; simulator behavior 25; fault coverage 20; lifecycle cleanup 20; documentation 10.
 
-**Objective:** Produce accurate conflict classifications, safe repair plans, idempotent application, and final verification.
+**Hard gates:** Non-deterministic canonical fixture, unbounded input, duplicate logical effect, fixed-port collision, or leaked owned resource.
 
-**Outputs:** Normalization, matching, duplicate detection, conflict materialization, summaries, repair planning, approval, application, and target verification.
+## Phase 9 — Connector contract and adapters
 
-**Dependencies:** Phases 4 and 8.
+**Objective:** Define one production-shaped connector contract and implement conforming source and target adapters over Phase 8 systems.
 
-**Acceptance evidence:**
+**Outputs:** Connector base contract, async and blocking HTTP sources, CSV and JSON Lines sources, warehouse target connector, shared conformance suite, and redaction behavior.
 
-- Every record receives one primary classification.
-- Golden and generated datasets are correct.
-- Python reference and DuckDB analytical results agree.
-- Stale plans are blocked.
-- Repeated application is idempotent.
-- Failed application does not expose a partial accepted state.
+**Dependencies:** Phases 5 and 8.
 
-**Rubric:**
+**Acceptance evidence:** Every adapter passes the same lifecycle, bounds, cancellation, error, and redaction suite; repeated target effects remain idempotent.
 
-| Criterion | Points |
-|---|---:|
-| Reconciliation accuracy | 30 |
-| Repair safety | 25 |
-| Canonical verification | 15 |
-| Golden and property evidence | 20 |
-| Dataset-scale behavior | 10 |
+**Rubric:** Contract clarity 25; adapter conformance 25; failure behavior 20; redaction 20; documentation 10.
 
-**Hard gates:** Misclassified golden record, stale plan applied, destructive deletion supported, or duplicate repair effect.
+**Hard gates:** Secret exposure, contract-specific scheduler branching, unbounded reads, duplicate target effect, or resource leak.
 
-## Phase 10 — FastAPI and live transport
+## Phase 10 — Reconciliation analysis
 
-**Objective:** Expose versioned HTTP contracts, durable event streaming, telemetry, and packaged frontend delivery.
+**Objective:** Produce complete, deterministic reconciliation classifications and analytical artifacts without mutating the target.
 
-**Outputs:** API composition, route groups, Problem Details, idempotency, SSE, WebSocket, artifact streaming, OpenAPI export, generated TypeScript types, and static delivery.
+**Outputs:** Normalization, canonical matching, duplicate detection, classification, field differences, conflict artifacts, DuckDB queries, summaries, and reconciliation fingerprint.
 
-**Dependencies:** Phases 3 through 9.
+**Dependencies:** Phases 4 and 9.
 
-**Acceptance evidence:**
+**Acceptance evidence:** Every record has exactly one primary classification; golden and generated cases pass; Python reference and DuckDB results agree; summaries and fingerprints reproduce.
 
-- Contract and failure tests pass.
-- OpenAPI and generated types reproduce exactly.
-- SSE resumes from the last durable event.
-- Slow clients do not block execution.
-- WebSocket disconnect does not affect run state.
-- Artifact paths remain confined.
+**Rubric:** Classification accuracy 30; analytical agreement 20; artifact integrity 20; deterministic fingerprinting 20; scale behavior 10.
 
-**Rubric:**
+**Hard gates:** Misclassified golden record, incomplete classification, authoritative DuckDB state, non-deterministic fingerprint, or target mutation.
 
-| Criterion | Points |
-|---|---:|
-| API contract | 25 |
-| Validation and errors | 20 |
-| Live transport | 20 |
-| Security boundaries | 15 |
-| API verification | 20 |
+## Phase 11 — Repair and target verification
 
-**Hard gates:** Secret exposure, unbounded body, lost durable event replay, API contract drift, or unsafe artifact access.
+**Objective:** Convert reconciliation differences into safe approved repairs, apply them idempotently, and independently verify target parity.
 
-## Phase 11 — UI foundation
+**Outputs:** Repair plans, approval service, stale-plan fencing, idempotent target application, target-state fingerprint, and showcase-scale integration proof.
 
-**Objective:** Establish the custom design system, application shell, typed API access, coherent event handling, and accessible shared states.
+**Dependencies:** Phases 3, 9, and 10.
 
-**Outputs:** Tailwind tokens, owned components, routing, API client, query configuration, event clients, state coherence reducers, application shell, and component tests.
+**Acceptance evidence:** Unsafe actions are absent; stale plans are rejected; replay does not duplicate effects; ambiguous failures recover safely; final target observation matches the expected fingerprint.
 
-**Dependencies:** Phases 1 and 10.
+**Rubric:** Repair safety 30; approval and fencing 20; idempotency 20; target verification 20; integration evidence 10.
 
-**Acceptance evidence:**
+**Hard gates:** Destructive deletion, stale plan applied, duplicate effect, partial accepted state, or self-certified target parity.
 
-- Shared loading, empty, error, stale, and disconnected states are tested.
-- Keyboard navigation and automated accessibility checks pass.
-- Event sequence gaps trigger recovery.
-- No hardcoded feature-state colors bypass tokens.
-- API Problem Details are displayed safely.
+## Phase 12 — Core HTTP API
 
-**Rubric:**
+**Objective:** Expose stable operational HTTP contracts and cross-cutting request protections before adding live transports.
 
-| Criterion | Points |
-|---|---:|
-| Design-system consistency | 25 |
-| API and event reliability | 20 |
-| Accessibility | 20 |
-| Component verification | 20 |
-| Responsive quality | 15 |
+**Outputs:** Application composition, lifespan ownership, Problem Details, correlation, command idempotency, pipeline, connector, run, and artifact routes, plus headers and request limits.
 
-**Hard gates:** Inaccessible primary workflow, mixed incompatible state, unsafe HTML, or broken production build.
+**Dependencies:** Phases 3 through 11.
 
-## Phase 12 — Product interface
+**Acceptance evidence:** Startup and shutdown, route contracts, transition failures, replay conflicts, range requests, path confinement, headers, and oversized bodies pass.
 
-**Objective:** Complete the operations overview, pipeline studio, live execution, reconciliation, repair, and comparison experiences.
+**Rubric:** API composition 20; route contracts 25; error semantics 20; idempotency 20; security boundaries 15.
 
-**Outputs:** All product routes and their browser workflows.
+**Hard gates:** Secret exposure, unsafe artifact access, unbounded body, stranded ownership, or undocumented contract drift.
 
-**Dependencies:** Phase 11 and the corresponding backend capability.
+## Phase 13 — Live and generated API boundary
 
-**Acceptance evidence:**
+**Objective:** Add reconciliation and repair endpoints, durable and ephemeral live channels, reproducible API generation, and packaged frontend serving.
 
-- Each feature arrives with component and browser tests.
-- Refresh during active execution restores coherent state.
-- Large conflict sets remain usable.
-- Stale plans are visibly blocked.
-- Visual baselines are captured from fixed scenario states.
+**Outputs:** Reconciliation and repair routes, resumable SSE, WebSocket telemetry, OpenAPI export, TypeScript generation, and SPA delivery.
 
-**Rubric:**
+**Dependencies:** Phases 7, 10, 11, and 12.
 
-| Criterion | Points |
-|---|---:|
-| Complete workflows | 30 |
-| Real-time state coherence | 20 |
-| Error and stale-state handling | 15 |
-| End-to-end evidence | 20 |
-| Visual polish | 15 |
+**Acceptance evidence:** SSE replay resumes without gaps, slow clients cannot block execution, WebSocket loss cannot alter run state, endpoint versions remain coherent, and generated files reproduce exactly.
 
-**Hard gates:** Incomplete canonical workflow, incoherent version display, unconfirmed repair, or failing primary browser scenario.
+**Rubric:** Domain routes 20; durable streaming 20; telemetry isolation 15; generated contracts 25; packaged serving 20.
 
-## Phase 13 — Canonical demonstration
+**Hard gates:** Lost durable event, telemetry treated as authoritative, API/type drift, slow-client execution blockage, or broken production serving.
 
-**Objective:** Deliver the deterministic showcase, controlled failures, recovery story, headless smoke commands, and runner proof.
+## Phase 14 — UI design system and shell
 
-**Outputs:** Versioned scenario, fast and showcase datasets, demo CLI, failure controls, verification manifest, smoke suite, and canonical browser scenario.
+**Objective:** Establish an accessible owned design system and responsive application shell independent of product workflow complexity.
 
-**Dependencies:** Phases 6 through 12.
+**Outputs:** Semantic tokens, primitive components, routing, navigation shell, async-state components, responsive rules, and error boundary.
 
-**Acceptance evidence:**
+**Dependencies:** Phases 1 and 13.
 
-- Exact accepted, rejected, quarantined, conflict, repair, and final counts are locked.
-- Required runners share one fingerprint.
-- Forced termination resumes correctly.
-- Demo changes only its isolated data directory.
-- Packaged demo requires neither Node.js nor a database service.
+**Acceptance evidence:** Token and contrast checks, component interactions, keyboard navigation, route rendering, viewport behavior, safe failure detail, and recovery tests pass.
 
-**Rubric:**
+**Rubric:** Design consistency 25; accessibility 25; shell behavior 20; shared states 15; responsive quality 15.
 
-| Criterion | Points |
-|---|---:|
-| Canonical story | 25 |
-| Crash and recovery proof | 25 |
-| Smoke and browser reliability | 25 |
-| Deterministic evidence | 15 |
-| Demo usability | 10 |
+**Hard gates:** Inaccessible navigation, unsafe HTML, hardcoded feature-state colors, unrecoverable shell failure, or broken production build.
 
-**Hard gates:** Runner mismatch, non-isolated cleanup, external-service requirement, or unreproducible scenario.
+## Phase 15 — Typed frontend data and live state
 
-## Phase 14 — Hardening and release engineering
+**Objective:** Create the typed query and event layer that keeps durable API state and ephemeral telemetry coherent.
 
-**Objective:** Prove cross-platform reproducibility, bounded performance, security posture, packaging, and release automation.
+**Outputs:** Generated API client integration, query configuration, SSE and WebSocket clients, and a sequence-aware run-state reducer.
 
-**Outputs:** Windows/Linux matrix, runtime capability matrix, performance harness, threat review, audits, packaged build, nightly stress, and release verification command.
+**Dependencies:** Phases 13 and 14.
 
-**Dependencies:** Phase 13.
+**Acceptance evidence:** Typed queries compile; cache/error behavior is tested; reconnect, disconnect, stale telemetry, older events, and sequence gaps trigger the specified recovery behavior.
 
-**Acceptance evidence:**
+**Rubric:** Type safety 20; query reliability 20; stream recovery 25; state coherence 25; diagnostics 10.
 
-- Clean Windows and Linux verification passes.
-- No unbounded queue, thread, task, process, or memory growth is observed.
-- No unresolved critical dependency finding remains.
-- Frontend rebuild has no unexplained difference.
-- Installed package contains and serves production assets.
+**Hard gates:** Mixed incompatible versions, silent sequence gap, telemetry overriding durable state, unsafe Problem Details rendering, or unrecoverable reconnect loop.
 
-**Rubric:**
+## Phase 16 — Pipeline and overview interface
 
-| Criterion | Points |
-|---|---:|
-| Cross-platform reproducibility | 20 |
-| Performance evidence | 20 |
-| Security posture | 20 |
-| Stress reliability | 20 |
-| Release automation | 20 |
+**Objective:** Deliver the public overview, operations overview, pipeline library, and complete pipeline-authoring workflow.
 
-**Hard gates:** Critical vulnerability, packaging failure, broad unsafe bind, unbounded resource growth, or clean-clone failure.
+**Outputs:** Overview routes, typed graph nodes, studio canvas, node inspector, plan preview, and publication flow.
 
-## Phase 15 — Public documentation and release
+**Dependencies:** Phases 5, 12, 14, and 15.
 
-**Objective:** Publish a compelling, accurate, evidence-backed repository presentation.
+**Acceptance evidence:** Search, empty states, graph editing, validation, keyboard control, preview, publication, accessibility, and primary browser workflows pass.
 
-**Outputs:** Final README, diagrams, code tour, verification report, screenshots, animated demonstration, third-party notices, and release tag.
+**Rubric:** Workflow completeness 30; graph correctness 20; accessibility 20; error states 15; browser evidence 15.
 
-**Dependencies:** Phase 14.
+**Hard gates:** Invalid graph publication, inaccessible primary workflow, incoherent plan version, unsafe rendered data, or failing publication scenario.
 
-**Acceptance evidence:**
+## Phase 17 — Live execution observability
 
-- Every major README claim links to implementation or test evidence.
-- Commands run from a clean clone.
-- Diagrams use real implementation names.
-- Images come from canonical synthetic data.
-- Links and alt text pass review.
-- Final repository-content and confidentiality audits pass.
+**Objective:** Make active and historical execution understandable without confusing telemetry with durable truth.
 
-**Rubric:**
+**Outputs:** Run list, live graph overlay, worker swimlanes, saturation panels, durable timeline, runner comparison, and capability page.
 
-| Criterion | Points |
-|---|---:|
-| README impact and accuracy | 25 |
-| Architecture diagrams | 20 |
-| UI imagery and demonstration | 20 |
-| Code tour and verification evidence | 20 |
-| Clean release quality | 15 |
+**Dependencies:** Phases 7, 12, 13, 15, and 16.
 
-**Hard gates:** Unsupported claim, broken command, confidential content, missing attribution, or repository-content violation.
+**Acceptance evidence:** Refresh and reconnect restore coherent state; gaps recover; stale telemetry is visible; tables provide accessible chart alternatives; unavailable capabilities are explicit.
 
-## Optional Phase 16 — Go load generator
+**Rubric:** State coherence 25; observability usefulness 20; accessibility 20; recovery behavior 20; comparison accuracy 15.
 
-**Objective:** Add a deterministic high-concurrency source and load generator without moving domain ownership out of Python.
+**Hard gates:** Telemetry presented as durable fact, hidden sequence gap, inaccessible chart-only evidence, misleading runner claim, or refresh corruption.
 
-**Dependencies:** Phase 15 or an explicit post-core decision.
+## Phase 18 — Reconciliation and repair interface
 
-**Rubric:**
+**Objective:** Deliver scalable conflict inspection and an explicit, stale-safe repair workflow, then lock visual baselines.
 
-| Criterion | Points |
-|---|---:|
-| Protocol compliance | 25 |
-| Useful comparison evidence | 20 |
-| Isolation from Python domain decisions | 20 |
-| Automated verification | 20 |
-| Public documentation | 15 |
+**Outputs:** Reconciliation summary, virtualized conflict table, conflict inspector, repair review, application progress, and deterministic visual regression baseline.
 
-**Hard gates:** Required for normal demo, inconsistent protocol behavior, or domain logic duplicated in Go.
+**Dependencies:** Phases 10, 11, 13 through 17.
+
+**Acceptance evidence:** Large conflict sets remain usable; fingerprints stay coherent; destructive or stale actions are visibly blocked; confirmation and replay-safe progress pass browser tests; fixed states reproduce screenshots.
+
+**Rubric:** Conflict usability 25; repair safety 25; version coherence 20; browser evidence 15; visual quality 15.
+
+**Hard gates:** Unconfirmed repair, stale plan enabled, incoherent fingerprint display, unusable canonical dataset, or unstable visual baseline.
+
+## Phase 19 — Canonical scenario and datasets
+
+**Objective:** Lock the deterministic product story and its expected evidence before building orchestration around it.
+
+**Outputs:** Versioned scenario, fast and showcase datasets, exact expected counts, and cross-runner verification manifest.
+
+**Dependencies:** Phases 7 through 11.
+
+**Acceptance evidence:** Repeated generation is identical; accepted, rejected, quarantined, conflict, repair, and final counts are exact; required runners share execution evidence without overclaiming target equivalence.
+
+**Rubric:** Scenario coverage 25; determinism 25; expected evidence 25; runner proof 15; scale suitability 10.
+
+**Hard gates:** Unreproducible scenario, runner mismatch, unlocked expected count, real or confidential data, or conflated fingerprint semantics.
+
+## Phase 20 — Demo orchestration and smoke proof
+
+**Objective:** Turn the canonical scenario into an isolated, recoverable, packaged demonstration with headless and browser proof.
+
+**Outputs:** Demo CLI, controlled faults and process interruption, headless and runner smoke profiles, canonical browser scenario, safe reset, and no-Node runtime check.
+
+**Dependencies:** Phases 6, 8, 13, and 16 through 19.
+
+**Acceptance evidence:** Startup, URL reporting, controlled failure, forced termination and resume, all required runner profiles, browser flow, absolute-path reset safety, and isolated installed-package execution pass.
+
+**Rubric:** Orchestration 20; recovery proof 25; smoke reliability 20; browser proof 20; isolation and packaging 15.
+
+**Hard gates:** Non-isolated cleanup, external service required, Node.js required at runtime, runner mismatch, unsafe reset, or unreproducible fault.
+
+## Phase 21 — Cross-platform performance and stress
+
+**Objective:** Prove supported runtime profiles, bounded resources, and repeatable performance on Windows and Linux.
+
+**Outputs:** Platform matrices, capability matrix, performance harness, memory and queue profiling, and nightly stress workflow.
+
+**Dependencies:** Phases 7, 19, and 20.
+
+**Acceptance evidence:** Clean installed-wheel runs pass on Windows and Linux; profiles disclose capabilities; results are reproducible JSON; memory, queues, tasks, threads, and processes remain bounded under repeated stress.
+
+**Rubric:** Platform reproducibility 25; capability accuracy 15; performance method 20; resource bounds 25; stress reliability 15.
+
+**Hard gates:** Unsupported profile advertised, unbounded growth, orphaned resource, undisclosed environment, or clean-platform failure.
+
+## Phase 22 — Security, dependencies, and licensing
+
+**Objective:** Close the threat model, dependency, browser-policy, license, and attribution gates independently of packaging mechanics.
+
+**Outputs:** Threat verification, dependency and license audits, Content Security Policy, and third-party notices.
+
+**Dependencies:** Phases 1, 13, 16 through 18, and 20.
+
+**Acceptance evidence:** Threat tests pass; no unresolved critical finding remains; CSP blocks prohibited behavior without breaking the canonical UI; notices match the dependency inventory.
+
+**Rubric:** Threat coverage 30; dependency posture 25; browser policy 20; license accuracy 15; remediation evidence 10.
+
+**Hard gates:** Critical vulnerability, missing attribution, unsafe broad bind, CSP bypass, credential exposure, or unresolved prohibited license.
+
+## Phase 23 — Packaging and release verification
+
+**Objective:** Produce reproducible Python and frontend distributions and one complete release-readiness command.
+
+**Outputs:** Built Python package, verified frontend distribution, installed-package checks, and aggregate release verification command.
+
+**Dependencies:** Phases 13, 16 through 18, 20, 21, and 22.
+
+**Acceptance evidence:** Clean builds reproduce; the installed package contains and serves production assets; the aggregate command runs every required platform-independent gate and reports failures precisely.
+
+**Rubric:** Python packaging 25; frontend reproducibility 25; installed behavior 20; verification automation 20; diagnostics 10.
+
+**Hard gates:** Packaging failure, unexplained rebuild diff, missing production asset, clean-clone failure, or incomplete verification command.
+
+## Phase 24 — Public narrative and architecture documentation
+
+**Objective:** Write an accurate public repository narrative tied directly to implementation and evidence.
+
+**Outputs:** Final README, system architecture, data commit and recovery diagrams, runner comparison diagram, guided code tour, and threat-model summary.
+
+**Dependencies:** Phases 19 through 23.
+
+**Acceptance evidence:** Every major claim links to evidence; diagrams use actual implementation names and correct sequencing; code-tour links resolve; security claims match verified scope.
+
+**Rubric:** Narrative accuracy 25; architecture clarity 20; diagram correctness 20; code tour 20; security communication 15.
+
+**Hard gates:** Unsupported claim, broken implementation link, inaccurate diagram, confidential content, or misleading security statement.
+
+## Phase 25 — Reproducible evidence and content audit
+
+**Objective:** Generate the public verification report and canonical media, then audit all documentation and repository content.
+
+**Outputs:** Verification report, reproducible screenshots, animated demonstration, link and command checks, confidentiality review, and repository-content audit.
+
+**Dependencies:** Phases 18, 20, 23, and 24.
+
+**Acceptance evidence:** Evidence is regenerated from canonical data; links, commands, alt text, and media inventory pass; clean-clone documentation checks and final confidentiality/content audits pass.
+
+**Rubric:** Evidence traceability 25; reproducible media 20; documentation verification 20; accessibility 15; content safety 20.
+
+**Hard gates:** Broken command, unstable canonical media, missing alt text, confidential content, untracked media provenance, or repository-content violation.
+
+## Phase 26 — Release-candidate handoff
+
+**Objective:** Produce a reviewable, immutable release-candidate evidence bundle without performing any Git or hosting mutation.
+
+**Outputs:** Reproducible artifact hash manifest and completed release-candidate handoff checklist.
+
+**Dependencies:** Phases 23 and 25.
+
+**Acceptance evidence:** A second build reproduces every recorded hash; the checklist records exact verification commands, versions, supported platforms, limitations, and proposed next integration action.
+
+**Rubric:** Hash reproducibility 30; checklist completeness 25; evidence traceability 25; limitation accuracy 10; handoff clarity 10.
+
+**Hard gates:** Non-reproducible artifact, missing verification evidence, concealed limitation, staged file, commit, push, tag, pull request, or release publication.
+
+## Optional Phase 27 — Go protocol and simulator
+
+**Objective:** Define the optional Go boundary and implement a deterministic source simulator without moving domain ownership out of Python.
+
+**Outputs:** Accepted scope decision, cross-language protocol contract, deterministic Go source simulator, and trace-context propagation.
+
+**Dependencies:** Phase 26 or an explicit post-core decision.
+
+**Acceptance evidence:** Protocol fixtures agree across languages; the simulator reproduces seeded behavior; traces propagate; normal Python demonstration remains independent of Go.
+
+**Rubric:** Scope discipline 25; protocol compliance 25; determinism 20; trace behavior 15; automated verification 15.
+
+**Hard gates:** Required for normal demo, domain logic duplicated in Go, inconsistent protocol behavior, or unreproducible fixture.
+
+## Optional Phase 28 — Go load and comparison
+
+**Objective:** Add a repeatable Go load generator and disclose a fair cross-language comparison with cross-platform binaries.
+
+**Outputs:** Load generator, repeatable profiles, Python and Go comparison report, and Windows/Linux binary builds.
+
+**Dependencies:** Phase 27.
+
+**Acceptance evidence:** Profiles reproduce within documented tolerances; environment and metric definitions are disclosed; comparison never substitutes throughput for correctness; binaries pass supported-platform tests.
+
+**Rubric:** Load reproducibility 25; comparison validity 25; correctness safeguards 20; cross-platform builds 20; documentation 10.
+
+**Hard gates:** Misleading comparison, undisclosed environment, correctness regression, platform build failure, or Go becoming required for the normal product.

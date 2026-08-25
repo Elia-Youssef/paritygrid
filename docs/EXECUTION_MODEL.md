@@ -2,7 +2,10 @@
 
 ## Objective
 
-The current implementation contains only the sequential semantic reference. This document defines the accepted Phase 7 target for bounded concurrency without changing durable execution meaning. Threaded and asyncio strategies are required full-plan strategies. A process pool is a subordinate CPU executor, and an interpreter pool is optional. All strategies preserve application-owned scheduling, persistence, lifecycle, and recovery policy.
+The implementation now carries the sequential reference plus the Phase 7
+concurrent engine with sequential (inline), threaded, and asyncio full-plan
+strategies and the subordinate process and interpreter CPU pools, all in the
+uncommitted Phase 7 Part 2 working tree. This document defines the accepted Phase 7 target for bounded concurrency without changing durable execution meaning. Threaded and asyncio strategies are required full-plan strategies. A process pool is a subordinate CPU executor, and an interpreter pool is optional. All strategies preserve application-owned scheduling, persistence, lifecycle, and recovery policy.
 
 ## Pipeline node registry
 
@@ -44,7 +47,7 @@ The application owns an independently versioned contract. Contract version 1 def
 
 - `StrategyCapabilitiesV1`: strategy identifier, supported operation classes, lifecycle features, platform requirements, and hard limits.
 - `WorkAssignmentV1`: contract version, plan and work identity, attempt, lease fencing identity, operation descriptor, bounded input references, captured settings, control generation, and deadline.
-- `WorkResultV1`: contract version, matching identities, outcome, bounded metrics, artifact-manifest references, checkpoint proposal, redacted failure, and cleanup status.
+- `WorkResultV1`: contract version, plan fingerprint, matching identities, outcome, bounded metrics, artifact-manifest references, checkpoint proposal, redacted failure, and cleanup status.
 - `RecoveryFrontierV1`: durable ownership, completed and unresolved work identities, control generation, and recovery-required reason.
 
 Assignments and results are immutable. Envelopes use a bounded closed set of primitive values, normalized strings, lists, and maps with stable protocol names and explicit size limits. They never contain ORM sessions, database writers, connector clients, callbacks, resolved secrets, unrestricted filesystem paths, in-memory queues or futures, or bearer-style lease credentials.
@@ -153,8 +156,8 @@ The fingerprint kinds are independent:
 
 - A plan fingerprint identifies logical scheduling intent.
 - An execution-evidence fingerprint identifies versioned durable execution evidence.
-- A reconciliation fingerprint identifies a Phase 9 analytical snapshot.
-- A target-state fingerprint identifies a Phase 9 observed target state.
+- A reconciliation fingerprint identifies a Phase 10 analytical snapshot.
+- A target-state fingerprint identifies a Phase 11 observed target state.
 
 The Phase 6 finalization digest is execution-evidence version 2. Phase 7 comparisons use the same fingerprint kind and version plus sorted durable work states, checkpoints, counts, artifact-manifest identities, and normalized causal events. Exact global event order may differ under concurrency and is not compared. Equal Phase 7 execution evidence does not claim equal reconciliation classifications, repair contents, effects, or target state.
 

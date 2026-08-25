@@ -21,6 +21,8 @@ Each package handoff must state:
 
 Parallel work may proceed only when packages do not edit the same contracts or files. Contract-defining packages land before their implementations.
 
+Implementation packages end with a verified working tree and a handoff. Staging, commits, pushes, tags, pull requests, and release publication are separate integration actions and are never part of a numbered package or its implementation prompt.
+
 ## Phase 0 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
@@ -181,6 +183,7 @@ Parallel work may proceed only when packages do not edit the same contracts or f
 - **P7.7:** Assignment, result, telemetry, and writer-facing flow are bounded and closeable. With the writer deliberately blocked, producer progress stops at the configured bound, memory does not grow with offered work, cancellation unblocks every waiter, and close order neither loses an accepted result nor deadlocks.
 - **P7.8:** Telemetry uses versioned bounded names and values for queue depth, capacity, wait, service, and cleanup state. It may be sampled or dropped and cannot release dependencies, advance a checkpoint, reconstruct recovery, or publish authoritative progress.
 - **P7.9:** The parent coordinator validates the work-local lease fence and rebases run/node aggregates and the event frontier at serialized writer admission. Deliberately reversed completions commit correct aggregates and contiguous per-run event sequences without stale global row-version failures. No thread, task, process, or interpreter worker can access the SQLite writer. A pre-admission rejection retains the lease; a known rollback is retryable within policy; an unknown outcome stops admission and requires recovery.
+- **P7.10–P7.19 (Part 2, uncommitted working tree):** Implemented with local evidence only. P7.10 delivers the concurrent engine, lifecycle compare-and-set pause, bounded idempotent cleanup with unresolved evidence, durable frontier recovery, and the production result-commit factory. P7.11 delivers the shared full-plan conformance suite (sequential/threaded/asyncio), the subordinate-pool suite, and defective-double proofs. P7.12/P7.13 deliver the threaded and asyncio strategies with join/loop-safety guarantees. P7.14 delivers the spawn-context process pool, versioned codec, runtime worker guard, import gate, and database canary. P7.15/P7.16 deliver runtime capability registration and the optional interpreter pool. P7.17 delivers the versioned evidence-comparison harness with locked non-equivalence fixtures. P7.18/P7.19 deliver the lifecycle matrix and fifty seeded shuffled executions. Acceptance and cross-platform GitHub evidence remain pending; nothing was committed.
 - **P7.10:** Pause quiesces admission at a stable durable boundary, cancellation closes producers and owned resources within a bound, and late results from an earlier control generation or coordinator owner are fenced. Exclusive startup recovery rebuilds only from durable evidence, handles non-expired leases explicitly, and never serializes futures, tasks, queues, or worker state. Cleanup is idempotent and returns structured unresolved-resource evidence.
 - **P7.11:** Sequential, threaded, and asyncio full-plan strategies share scheduling, retry, result, pause, cancellation, recovery, bounds, and cleanup assertions. Process and optional interpreter pools use a separate subordinate-operation suite that forbids plan scheduling, connectors, artifact ownership, and persistence. Controlled doubles prove every required assertion fails for the intended defect.
 - **P7.12:** The threaded strategy passes the full-plan suite, shares no session or connection across threads, prevents nested-pool starvation, respects every bound, and joins all owned threads after success, failure, pause, cancellation, and shutdown.
@@ -202,155 +205,216 @@ Parallel work may proceed only when packages do not edit the same contracts or f
 | P8.4 | Blocking legacy source simulator | P8.1, P8.2 | Blocking client behavior tests |
 | P8.5 | CSV and JSON Lines fixtures | P8.1 | Encoding and malformed-row tests |
 | P8.6 | Simulated warehouse target | P8.1, P8.2 | Version and idempotency tests |
-| P8.7 | Connector base contract | P5.6 | Conformance skeleton |
-| P8.8 | Async HTTP source connector | P8.3, P8.7 | Full connector suite |
-| P8.9 | Blocking HTTP source connector | P8.4, P8.7 | Full connector suite |
-| P8.10 | CSV connector | P8.5, P8.7 | Full connector suite |
-| P8.11 | JSON Lines connector | P8.5, P8.7 | Full connector suite |
-| P8.12 | Warehouse target connector | P8.6, P8.7 | Idempotent effect suite |
-| P8.13 | Secret and error redaction | P8.7 | Adversarial redaction fixtures |
-| P8.14 | Simulator lifecycle composition | P8.3, P8.4, P8.6 | Dynamic-port start and stop tests |
+| P8.7 | Simulator lifecycle composition | P8.3, P8.4, P8.6 | Dynamic-port start and stop tests |
 
 ## Phase 9 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P9.1 | Source schema normalization | P2.4, P8 | Golden and property tests |
-| P9.2 | Canonical-key matching | P9.1 | Unicode and collision tests |
-| P9.3 | Duplicate-source detection | P9.2 | Duplicate group tests |
-| P9.4 | Classification engine | P9.2, P9.3 | Completeness and exclusivity |
-| P9.5 | Field-difference builder | P9.4 | Nested and missing field tests |
-| P9.6 | Conflict artifact writer | P9.5, P4.6 | Golden Parquet test |
-| P9.7 | DuckDB reconciliation queries | P9.4, P4.9 | Python reference agreement |
-| P9.8 | Summary and fingerprint | P9.4, P2.12 | Golden count and hash test |
-| P9.9 | Repair-plan generator | P9.5, P2.10 | Safe action matrix |
-| P9.10 | Approval service | P9.9, P3.12 | Stale and concurrent tests |
-| P9.11 | Idempotent repair application | P9.10, P8.12 | Replay and partial-failure tests |
-| P9.12 | Target parity verifier | P9.11, P2.12 | Expected fingerprint test |
-| P9.13 | Showcase-scale reconciliation test | P9.1–P9.12 | Bounded resource integration run |
+| P9.1 | Connector base contract | P5.6, P8 | Conformance skeleton |
+| P9.2 | Async HTTP source connector | P8.3, P9.1 | Full connector suite |
+| P9.3 | Blocking HTTP source connector | P8.4, P9.1 | Full connector suite |
+| P9.4 | CSV connector | P8.5, P9.1 | Full connector suite |
+| P9.5 | JSON Lines connector | P8.5, P9.1 | Full connector suite |
+| P9.6 | Warehouse target connector | P8.6, P9.1 | Idempotent effect suite |
+| P9.7 | Secret and error redaction | P9.1 | Adversarial redaction fixtures |
 
 ## Phase 10 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P10.1 | API composition and lifespan | P3–P9 | Startup and shutdown tests |
-| P10.2 | Problem Details mapping | P2.13, P10.1 | Error matrix tests |
-| P10.3 | Correlation middleware | P10.1 | Validation and propagation tests |
-| P10.4 | Command idempotency boundary | P3.11, P10.1 | Replay and conflict tests |
-| P10.5 | Pipeline routes | P5.9, P10.2 | Contract tests |
-| P10.6 | Connector routes | P8, P10.2 | Contract and limit tests |
-| P10.7 | Run lifecycle routes | P6, P10.2, P10.4 | Transition contract tests |
-| P10.8 | Reconciliation routes | P9, P10.2 | Pagination and version tests |
-| P10.9 | Repair routes | P9.9–P9.12, P10.4 | Approval and application tests |
-| P10.10 | Artifact routes | P4.12 | Range and path-safety tests |
-| P10.11 | Durable SSE stream | P3.10 | Replay, gap, and slow-client tests |
-| P10.12 | Live WebSocket telemetry | P7.8 | Connect and disconnect tests |
-| P10.13 | OpenAPI export | P10.1–P10.12 | Deterministic snapshot |
-| P10.14 | TypeScript type generation | P10.13 | Clean regeneration diff |
-| P10.15 | Production frontend serving | P1.7, P10.1 | SPA and API 404 tests |
-| P10.16 | Security headers and limits | P10.1 | Header and oversized-body tests |
+| P10.1 | Source schema normalization | P2.4, P9 | Golden and property tests |
+| P10.2 | Canonical-key matching | P10.1 | Unicode and collision tests |
+| P10.3 | Duplicate-source detection | P10.2 | Duplicate group tests |
+| P10.4 | Classification engine | P10.2, P10.3 | Completeness and exclusivity |
+| P10.5 | Field-difference builder | P10.4 | Nested and missing field tests |
+| P10.6 | Conflict artifact writer | P10.5, P4.6 | Golden Parquet test |
+| P10.7 | DuckDB reconciliation queries | P10.4, P4.9 | Python reference agreement |
+| P10.8 | Summary and reconciliation fingerprint | P10.4, P2.12 | Golden count and hash test |
 
 ## Phase 11 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P11.1 | Semantic design tokens | P1.8 | Token snapshot and contrast check |
-| P11.2 | Owned primitive components | P11.1 | Browser component tests |
-| P11.3 | Application routing | P1.9 | Route render tests |
-| P11.4 | Accessible navigation shell | P11.2, P11.3 | Keyboard and accessibility tests |
-| P11.5 | Generated API client integration | P10.14 | Typed sample queries |
-| P11.6 | TanStack Query configuration | P11.5 | Cache and error tests |
-| P11.7 | Durable SSE client | P10.11, P11.6 | Reconnect and sequence tests |
-| P11.8 | Telemetry WebSocket client | P10.12, P11.6 | Disconnect and stale tests |
-| P11.9 | Coherent run-state reducer | P11.7, P11.8 | Gap and older-event tests |
-| P11.10 | Shared async state components | P11.2, P11.6 | Loading through stale tests |
-| P11.11 | Responsive layout rules | P11.4 | Viewport component tests |
-| P11.12 | Frontend error boundary | P11.10 | Recovery and safe-detail tests |
+| P11.1 | Repair-plan generator | P10.5, P2.10 | Safe action matrix |
+| P11.2 | Approval service | P11.1, P3.12 | Stale and concurrent tests |
+| P11.3 | Idempotent repair application | P11.2, P9.6 | Replay and partial-failure tests |
+| P11.4 | Target parity verifier | P11.3, P2.12 | Expected fingerprint test |
+| P11.5 | Showcase-scale reconciliation and repair test | P10, P11.1–P11.4 | Bounded resource integration run |
 
 ## Phase 12 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P12.1 | Public project overview | P11 | Browser smoke and accessibility |
-| P12.2 | Operations overview | P11, P10.7 | Component and browser tests |
-| P12.3 | Pipeline library | P11, P10.5 | Search and empty-state tests |
-| P12.4 | Typed React Flow node set | P5.2, P11 | Component interaction tests |
-| P12.5 | Pipeline studio canvas | P12.4, P10.5 | Graph editing browser tests |
-| P12.6 | Node configuration inspector | P12.4 | Validation and keyboard tests |
-| P12.7 | Plan preview and publication | P12.5, P12.6 | Publication browser test |
-| P12.8 | Run list and filters | P11, P10.7 | Pagination and state tests |
-| P12.9 | Live run graph overlay | P11.9, P12.4 | Version-coherence tests |
-| P12.10 | Worker swimlane timeline | P11.8 | Chart and table alternative tests |
-| P12.11 | Queue and saturation panels | P11.8 | Stale and reduced-motion tests |
-| P12.12 | Durable event timeline | P11.7 | Gap recovery browser test |
-| P12.13 | Reconciliation summary | P10.8, P11 | Fingerprint-coherence tests |
-| P12.14 | Virtualized conflict table | P10.8 | Large dataset interaction tests |
-| P12.15 | Conflict inspector | P12.14 | Field-difference tests |
-| P12.16 | Repair-plan review | P10.9, P12.15 | Stale and confirmation tests |
-| P12.17 | Repair application progress | P12.16, P11.7 | Replay-safe browser test |
-| P12.18 | Runner comparison dashboard | P7.17, P10.8 | Correctness-first display tests |
-| P12.19 | System capabilities page | P7.15, P10.1 | Available/unavailable tests |
-| P12.20 | Visual regression baseline | P12.1–P12.19 | Canonical screenshots |
+| P12.1 | API composition and lifespan | P3–P11 | Startup and shutdown tests |
+| P12.2 | Problem Details mapping | P2.13, P12.1 | Error matrix tests |
+| P12.3 | Correlation middleware | P12.1 | Validation and propagation tests |
+| P12.4 | Command idempotency boundary | P3.11, P12.1 | Replay and conflict tests |
+| P12.5 | Pipeline routes | P5.9, P12.2 | Contract tests |
+| P12.6 | Connector routes | P9, P12.2 | Contract and limit tests |
+| P12.7 | Run lifecycle routes | P6, P12.2, P12.4 | Transition contract tests |
+| P12.8 | Artifact routes | P4.12, P12.2 | Range and path-safety tests |
+| P12.9 | Security headers and limits | P12.1 | Header and oversized-body tests |
 
 ## Phase 13 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P13.1 | Versioned canonical scenario | P8, P9 | Locked scenario manifest |
-| P13.2 | Fast demonstration dataset | P13.1 | Exact expected counts |
-| P13.3 | Showcase-scale dataset | P13.1 | Determinism and size checks |
-| P13.4 | Demo CLI orchestration | P10.15, P13.2 | Start, URL, and shutdown test |
-| P13.5 | Controlled fault controls | P8.2, P13.4 | Reproducible fault test |
-| P13.6 | Controlled process interruption | P6.11, P13.4 | Resume test |
-| P13.7 | Cross-runner verification manifest | P7.17, P13.2 | Required execution-evidence match |
-| P13.8 | Headless smoke command | P13.4 | Sequential clean run |
-| P13.9 | Required runner smoke profiles | P13.8 | Threaded and async clean runs |
-| P13.10 | Canonical browser scenario | P12, P13.4 | Chromium end-to-end test |
-| P13.11 | Demo data isolation and reset | P13.4 | Absolute target safety tests |
-| P13.12 | Packaged no-Node runtime check | P13.4 | Isolated environment run |
+| P13.1 | Reconciliation routes | P10, P12.2 | Pagination and version tests |
+| P13.2 | Repair routes | P11, P12.4 | Approval and application tests |
+| P13.3 | Durable SSE stream | P3.10, P12.1 | Replay, gap, and slow-client tests |
+| P13.4 | Live WebSocket telemetry | P7.8, P12.1 | Connect and disconnect tests |
+| P13.5 | OpenAPI export | P12, P13.1–P13.4 | Deterministic snapshot |
+| P13.6 | TypeScript type generation | P13.5 | Clean regeneration diff |
+| P13.7 | Production frontend serving | P1.7, P12.1 | SPA and API 404 tests |
 
 ## Phase 14 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P14.1 | Windows verification matrix | P13 | Clean Windows run |
-| P14.2 | Linux verification matrix | P13 | Clean Linux run |
-| P14.3 | Runtime capability matrix | P7.15, P13 | Supported profile tests |
-| P14.4 | Performance harness | P13.3 | Reproducible JSON result |
-| P14.5 | Memory and queue profiling | P14.4 | Bounded growth assertions |
-| P14.6 | Threat-model verification | Security packages | Threat test suite |
-| P14.7 | Dependency and license audits | P1 | No unresolved critical finding |
-| P14.8 | Content Security Policy | P10.15, P12 | Browser policy test |
-| P14.9 | Python package build | P13.4 | Install and run built package |
-| P14.10 | Frontend distribution verification | P12, P10.15 | Rebuild produces no diff |
-| P14.11 | Nightly stress workflow | P7.19, P13 | Successful repeated run |
-| P14.12 | Release verification command | P14.1–P14.11 | One-command complete gate |
-| P14.13 | Third-party notices | P14.7 | License inventory review |
+| P14.1 | Semantic design tokens | P1.8 | Token snapshot and contrast check |
+| P14.2 | Owned primitive components | P14.1 | Browser component tests |
+| P14.3 | Application routing | P1.9 | Route render tests |
+| P14.4 | Accessible navigation shell | P14.2, P14.3 | Keyboard and accessibility tests |
+| P14.5 | Shared async state components | P14.2 | Loading through stale tests |
+| P14.6 | Responsive layout rules | P14.4 | Viewport component tests |
+| P14.7 | Frontend error boundary | P14.5 | Recovery and safe-detail tests |
 
 ## Phase 15 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P15.1 | Final README structure and narrative | P13, P14 | Claim-to-evidence review |
-| P15.2 | System architecture diagram | P14 | Implementation-name audit |
-| P15.3 | Data commit and recovery diagrams | P14 | Sequence audit |
-| P15.4 | Execution-runner comparison diagram | P14.4 | Metric-definition audit |
-| P15.5 | Guided code tour | P14 | Every link resolves |
-| P15.6 | Verification report | P14.12 | Report generated from evidence |
-| P15.7 | Threat-model summary | P14.6 | Security review |
-| P15.8 | Reproducible UI screenshots | P12.20, P13 | Playwright capture passes |
-| P15.9 | Animated canonical demonstration | P13.10 | Scenario and alt text review |
-| P15.10 | Documentation link and command checks | P15.1–P15.9 | Clean-clone documentation test |
-| P15.11 | Final confidentiality and content audit | P15.1–P15.10 | Repository audit passes |
-| P15.12 | Release tag and artifact hashes | P14.12, P15.11 | Release checklist passes |
+| P15.1 | Generated API client integration | P13.6 | Typed sample queries |
+| P15.2 | TanStack Query configuration | P15.1 | Cache and error tests |
+| P15.3 | Durable SSE client | P13.3, P15.2 | Reconnect and sequence tests |
+| P15.4 | Telemetry WebSocket client | P13.4, P15.2 | Disconnect and stale tests |
+| P15.5 | Coherent run-state reducer | P15.3, P15.4 | Gap and older-event tests |
 
-## Optional Phase 16 packages
+## Phase 16 packages
 
 | ID | Deliverable | Dependencies | Minimum verification |
 |---|---|---|---|
-| P16.1 | Go protocol and scope decision | P15 | Accepted decision record |
-| P16.2 | Deterministic Go source simulator | P16.1 | Cross-language contract tests |
-| P16.3 | Go load generator | P16.2 | Repeatable load profile |
-| P16.4 | Trace-context propagation | P16.2 | End-to-end trace test |
-| P16.5 | Python and Go comparison report | P16.3 | Disclosed environment and metrics |
-| P16.6 | Cross-platform binary build | P16.2 | Windows and Linux runs |
+| P16.1 | Public project overview | P14, P15 | Browser smoke and accessibility |
+| P16.2 | Operations overview | P12.7, P14, P15 | Component and browser tests |
+| P16.3 | Pipeline library | P12.5, P14, P15 | Search and empty-state tests |
+| P16.4 | Typed React Flow node set | P5.2, P14 | Component interaction tests |
+| P16.5 | Pipeline studio canvas | P16.4, P12.5 | Graph editing browser tests |
+| P16.6 | Node configuration inspector | P16.4 | Validation and keyboard tests |
+| P16.7 | Plan preview and publication | P16.5, P16.6 | Publication browser test |
+
+## Phase 17 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P17.1 | Run list and filters | P12.7, P14, P15 | Pagination and state tests |
+| P17.2 | Live run graph overlay | P15.5, P16.4 | Version-coherence tests |
+| P17.3 | Worker swimlane timeline | P15.4 | Chart and table alternative tests |
+| P17.4 | Queue and saturation panels | P15.4 | Stale and reduced-motion tests |
+| P17.5 | Durable event timeline | P15.3 | Gap recovery browser test |
+| P17.6 | Runner comparison dashboard | P7.17, P13.1 | Correctness-first display tests |
+| P17.7 | System capabilities page | P7.15, P12.1 | Available/unavailable tests |
+
+## Phase 18 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P18.1 | Reconciliation summary | P13.1, P14, P15 | Fingerprint-coherence tests |
+| P18.2 | Virtualized conflict table | P13.1 | Large dataset interaction tests |
+| P18.3 | Conflict inspector | P18.2 | Field-difference tests |
+| P18.4 | Repair-plan review | P13.2, P18.3 | Stale and confirmation tests |
+| P18.5 | Repair application progress | P18.4, P15.3 | Replay-safe browser test |
+| P18.6 | Visual regression baseline | P16, P17, P18.1–P18.5 | Canonical screenshots |
+
+## Phase 19 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P19.1 | Versioned canonical scenario | P8–P11 | Locked scenario manifest |
+| P19.2 | Fast demonstration dataset | P19.1 | Exact expected counts |
+| P19.3 | Showcase-scale dataset | P19.1 | Determinism and size checks |
+| P19.4 | Cross-runner verification manifest | P7.17, P19.2 | Required execution-evidence match |
+
+## Phase 20 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P20.1 | Demo CLI orchestration | P13.7, P19.2 | Start, URL, and shutdown test |
+| P20.2 | Controlled fault controls | P8.2, P20.1 | Reproducible fault test |
+| P20.3 | Controlled process interruption | P6.11, P20.1 | Resume test |
+| P20.4 | Headless smoke command | P20.1 | Sequential clean run |
+| P20.5 | Required runner smoke profiles | P20.4 | Threaded and async clean runs |
+| P20.6 | Canonical browser scenario | P16–P18, P20.1 | Chromium end-to-end test |
+| P20.7 | Demo data isolation and reset | P20.1 | Absolute target safety tests |
+| P20.8 | Packaged no-Node runtime check | P20.1 | Isolated environment run |
+
+## Phase 21 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P21.1 | Windows verification matrix | P20 | Clean Windows run |
+| P21.2 | Linux verification matrix | P20 | Clean Linux run |
+| P21.3 | Runtime capability matrix | P7.15, P20 | Supported profile tests |
+| P21.4 | Performance harness | P19.3, P20 | Reproducible JSON result |
+| P21.5 | Memory and queue profiling | P21.4 | Bounded growth assertions |
+| P21.6 | Nightly stress workflow | P7.19, P20 | Successful repeated run |
+
+## Phase 22 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P22.1 | Threat-model verification | Security packages, P20 | Threat test suite |
+| P22.2 | Dependency and license audits | P1 | No unresolved critical finding |
+| P22.3 | Content Security Policy | P13.7, P16–P18 | Browser policy test |
+| P22.4 | Third-party notices | P22.2 | License inventory review |
+
+## Phase 23 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P23.1 | Python package build | P20.1 | Install and run built package |
+| P23.2 | Frontend distribution verification | P13.7, P16–P18 | Rebuild produces no diff |
+| P23.3 | Release verification command | P21, P22, P23.1, P23.2 | One-command complete gate |
+
+## Phase 24 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P24.1 | Final README structure and narrative | P19–P23 | Claim-to-evidence review |
+| P24.2 | System architecture diagram | P23 | Implementation-name audit |
+| P24.3 | Data commit and recovery diagrams | P23 | Sequence audit |
+| P24.4 | Execution-runner comparison diagram | P21.4 | Metric-definition audit |
+| P24.5 | Guided code tour | P23 | Every link resolves |
+| P24.6 | Threat-model summary | P22.1 | Security review |
+
+## Phase 25 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P25.1 | Verification report | P23.3 | Report generated from evidence |
+| P25.2 | Reproducible UI screenshots | P18.6, P20 | Playwright capture passes |
+| P25.3 | Animated canonical demonstration | P20.6 | Scenario and alt text review |
+| P25.4 | Documentation link and command checks | P24, P25.1–P25.3 | Clean-clone documentation test |
+| P25.5 | Final confidentiality and content audit | P24, P25.1–P25.4 | Repository audit passes |
+
+## Phase 26 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P26.1 | Release-candidate artifact hash manifest | P23.3, P25.5 | Reproducible hash comparison |
+| P26.2 | Release-candidate handoff checklist | P26.1 | Checklist review with no Git mutation |
+
+## Optional Phase 27 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P27.1 | Go protocol and scope decision | P26 | Accepted decision record |
+| P27.2 | Deterministic Go source simulator | P27.1 | Cross-language contract tests |
+| P27.3 | Trace-context propagation | P27.2 | End-to-end trace test |
+
+## Optional Phase 28 packages
+
+| ID | Deliverable | Dependencies | Minimum verification |
+|---|---|---|---|
+| P28.1 | Go load generator | P27.2 | Repeatable load profile |
+| P28.2 | Python and Go comparison report | P28.1 | Disclosed environment and metrics |
+| P28.3 | Cross-platform binary build | P27.2 | Windows and Linux runs |
