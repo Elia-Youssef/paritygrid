@@ -912,7 +912,21 @@ def test_runner_producer_phase_uses_the_finite_total_budget(
 ) -> None:
     database = tmp_path / "producer phase budget.db"
     observed: list[tuple[float, str]] = []
+    turn_waits: list[float] = []
     original_join = stress_runtime._join_threads
+    original_condition = stress_runtime.Condition
+
+    def record_condition() -> stress_runtime.Condition:
+        condition = original_condition()
+        original_wait = condition.wait
+
+        def record_wait(timeout: float | None = None) -> bool:
+            if timeout is not None:
+                turn_waits.append(timeout)
+            return original_wait(timeout)
+
+        monkeypatch.setattr(condition, "wait", record_wait)
+        return condition
 
     def record_join(
         threads: list[stress_runtime.Thread], timeout_seconds: float, subject: str
@@ -920,11 +934,13 @@ def test_runner_producer_phase_uses_the_finite_total_budget(
         observed.append((timeout_seconds, subject))
         original_join(threads, timeout_seconds, subject)
 
+    monkeypatch.setattr(stress_runtime, "Condition", record_condition)
     monkeypatch.setattr(stress_runtime, "_join_threads", record_join)
     report = run_wal_stress(WalStressConfig(database, seed=96))
 
     workload = workload_for(WalStressProfile.CI)
     assert (workload.total_budget_seconds, "producer") in observed
+    assert max(turn_waits) > workload.timeout_seconds
     assert report.committed == 98
 
 

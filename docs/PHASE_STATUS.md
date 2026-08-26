@@ -165,6 +165,42 @@ Exact-head integration evidence on `6ed6cc9`:
   exercised through forged-envelope and recovery seams rather than subprocess
   kill points; a dedicated kill-point harness remains future hardening.
 
+## Phase 8 progress
+
+Phase 8 provides deterministic, production-shaped synthetic source and target
+systems for later connector and reconciliation work. The audited integration
+candidate completes all seven Phase 8 packages without production connector or
+product-route behavior.
+
+### Phase 8 package status
+
+| Package | Status | Evidence |
+|---|---|---|
+| P8.1 — seeded inventory dataset generator | Audited integration candidate | Versioned seeds produce canonical synthetic datasets, byte-stable manifests, Unicode and boundary values, duplicates, missing fields, and malformed members. |
+| P8.2 — scripted failure model | Audited integration candidate | Ordered failure scripts cover rate limiting, transient errors, timeouts, malformed responses, bounded duplicate pages, connection loss, and cancellation with inspectable applied-failure evidence. |
+| P8.3 — async paginated source simulator | Audited integration candidate | Dynamic-port HTTP pagination, cursor bounds, failure injection, active-handler tracking, and prompt shutdown are covered in `tests/demo/test_async_source.py`. |
+| P8.4 — blocking legacy source simulator | Audited integration candidate | The genuinely blocking page service preserves the shared logical dataset and interrupts delayed or held connections during bounded shutdown. |
+| P8.5 — CSV and JSON Lines fixtures | Audited integration candidate | Canonical UTF-8/LF fixtures preserve malformed and duplicate variants under explicit file and row bounds. |
+| P8.6 — simulated warehouse target | Audited integration candidate | Observable versions and strict idempotency record one logical effect before timeout or connection-loss responses become ambiguous; same-key replay returns the recorded outcome. |
+| P8.7 — simulator lifecycle composition | Audited integration candidate | Dynamic ports, readiness after startup, partial-start rollback, repeated close, and active-resource cleanup are exercised across composed services. |
+
+### Phase 8 local evidence
+
+The complete simulator matrix passed after independent audit and repair on
+2026-08-26: 184 tests passed with no skips or failures. Ruff, strict Pyright,
+import-boundary validation, instruction validation, and `git diff --check` also
+passed.
+
+### Phase 8 known limitations
+
+- The systems intentionally expose loopback-only synthetic HTTP and bounded
+  fixture contracts; production transport, authentication, and persistence
+  belong to later phases.
+- Simulator hold and delay behavior is capped and interruptible so teardown is
+  deterministic even when a failure script models a hung peer.
+
 ## Advancement rule
 
-Phase 7 began from the accepted Phase 6 merge commit with all required checks passing, no hard-gate failure, an independent acceptance review recorded for that head, a current pull-request record, and a clean worktree. The Phase 7 integration branch `phase/07-concurrent-execution` carries Phase 7 work and may merge into `main` only after the complete phase gate passes.
+Phase 8 is stacked on the Phase 7 integration head. Its branch may merge only
+after the complete phase gate and remote CI pass; acceptance of later stacked
+phases does not bypass acceptance of their prerequisites.
