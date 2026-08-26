@@ -199,8 +199,43 @@ passed.
 - Simulator hold and delay behavior is capped and interruptible so teardown is
   deterministic even when a failure script models a hung peer.
 
+## Phase 9 progress
+
+Phase 9 defines the application-owned, runner-neutral connector contract and
+five adapters over the accepted Phase 8 simulators. The audited integration
+candidate completes all seven packages without reconciliation or repair logic.
+
+### Phase 9 package status
+
+| Package | Status | Evidence |
+|---|---|---|
+| P9.1 — connector base contract and conformance skeleton | Audited integration candidate | `application/ports/connectors.py` freezes contract version 1 with capabilities, lifecycle, cancellation, deadlines, pagination, bounds, errors, observability, and adapter protocols. Adapter-layer compatibility modules contain re-exports only. |
+| P9.2 — async HTTP source connector | Audited integration candidate | The asyncio adapter pages the cursor simulator without blocking the event loop and propagates native cancellation. |
+| P9.3 — blocking HTTP source connector | Audited integration candidate | The blocking adapter refuses active event loops and uses cooperative cancellation to interrupt in-flight socket I/O promptly. |
+| P9.4 — CSV connector | Audited integration candidate | The CSV adapter streams allowlisted files with header validation, bounded row cursors, per-chunk deadline and cancellation checks, and exact-final-page exhaustion. |
+| P9.5 — JSON Lines connector | Audited integration candidate | The JSON Lines adapter streams byte-offset pages with bounded malformed-line evidence, per-chunk checkpoints, and exact-final-page exhaustion. |
+| P9.6 — warehouse target connector | Audited integration candidate | Idempotent writes replay ambiguous post-commit timeout and connection-loss outcomes without a second effect; reads and state snapshots share the closed error mapping. |
+| P9.7 — secret and error redaction | Audited integration candidate | `application/ports/connector_redaction.py` combines connector and per-call secret material and applies bounded fail-closed redaction to response fragments, errors, and events. |
+
+### Phase 9 local evidence
+
+The complete connector matrix passed after independent audit and repair on
+2026-08-26: 357 tests passed, with one environment-only symbolic-link skip and
+no failures. The shared conformance suite covers all five adapters. Ruff,
+strict Pyright, import-boundary validation, instruction validation, and
+`git diff --check` also passed.
+
+### Phase 9 known limitations
+
+- The HTTP engines implement the accepted loopback simulator wire contract:
+  plain HTTP/1.1 with `Content-Length`, no redirects, chunking, or TLS.
+- File cancellation is cooperative at bounded line/chunk boundaries; it cannot
+  interrupt an operating-system file read that is already executing.
+- HTTP routes remain the accepted Phase 8 synthetic routes; product API routes
+  belong to Phase 12 and later.
+
 ## Advancement rule
 
-Phase 8 is stacked on the Phase 7 integration head. Its branch may merge only
-after the complete phase gate and remote CI pass; acceptance of later stacked
-phases does not bypass acceptance of their prerequisites.
+Phase 9 is stacked on the audited Phase 8 integration commit. Each phase branch
+may merge only after its complete gate and remote CI pass; acceptance of a
+later stacked phase does not bypass acceptance of its prerequisites.

@@ -31,9 +31,8 @@ RUNNER_COVERAGE_SCOPES = (
         "sequential-runner", "src/paritygrid/application/execution/runner.py", 95.0, True
     ),
     CoverageScope("runner-adapters", "src/paritygrid/adapters/runners/", 90.0),
+    CoverageScope("connector-adapters", "src/paritygrid/adapters/connectors/", 90.0),
 )
-
-
 def _mapping(value: object, subject: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"coverage JSON {subject} is not an object")
