@@ -1,6 +1,7 @@
 """Adapter edge-case tests: config validation, open failures, read classes."""
 
 import contextlib
+import socket
 import threading
 from pathlib import Path
 
@@ -40,14 +41,15 @@ class _OneShotHttpServer:
     """A one-shot raw HTTP server for adversarial target responses."""
 
     def __init__(self, payload: bytes) -> None:
-        import socket
-
         self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self._socket.bind(("127.0.0.1", 0))
         self._socket.listen(1)
         self.port = self._socket.getsockname()[1]
         self._payload = payload
-        threading.Thread(target=self._serve, name="paritygrid-test-edge", daemon=True).start()
+        self._thread = threading.Thread(
+            target=self._serve, name="paritygrid-test-edge", daemon=True
+        )
+        self._thread.start()
 
     def _serve(self) -> None:
 
@@ -61,6 +63,15 @@ class _OneShotHttpServer:
         finally:
             with contextlib.suppress(OSError):
                 self._socket.close()
+
+    def close(self) -> None:
+        with contextlib.suppress(OSError):
+            wake = socket.create_connection(("127.0.0.1", self.port), timeout=0.25)
+            wake.close()
+        with contextlib.suppress(OSError):
+            self._socket.close()
+        self._thread.join(timeout=5)
+        assert not self._thread.is_alive()
 
 
 class TestConfigurationValidation:
@@ -159,6 +170,7 @@ class TestTargetReadClassification:
             await connector.read_record_async("GRID-1", ConnectorCallContext())
         finally:
             await connector.aclose()
+            server.close()
 
     async def test_read_5xx_is_a_server_failure(self) -> None:
         with pytest.raises(ConnectorServerFailureError):
@@ -186,6 +198,7 @@ class TestTargetReadClassification:
             await connector.state_snapshot_async(ConnectorCallContext())
         finally:
             await connector.aclose()
+            server.close()
 
     async def test_state_malformed_document_is_unknown(self) -> None:
         with pytest.raises(ConnectorUnknownError):
@@ -215,6 +228,7 @@ class TestTargetReadClassification:
                 )
         finally:
             await connector.aclose()
+            server.close()
 
     async def test_write_malformed_success_document_is_unknown(self) -> None:
         from paritygrid.adapters.connectors import TargetWriteRequest
@@ -236,6 +250,7 @@ class TestTargetReadClassification:
                 )
         finally:
             await connector.aclose()
+            server.close()
 
 
 class TestCapabilitiesValidation:

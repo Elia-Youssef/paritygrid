@@ -53,9 +53,16 @@ class _SyncWireServer:
                 self._listener.close()
 
     def close(self) -> None:
+        # Closing a listener from another thread does not reliably wake a
+        # blocking accept() on every platform. A loopback connection gives
+        # the one-shot server a deterministic exit path before teardown.
+        with contextlib.suppress(OSError):
+            wake = socket.create_connection(("127.0.0.1", self.port), timeout=0.25)
+            wake.close()
         with contextlib.suppress(OSError):
             self._listener.close()
         self._thread.join(timeout=5)
+        assert not self._thread.is_alive()
 
 
 async def test_async_client_round_trip_and_close() -> None:
