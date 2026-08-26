@@ -37,6 +37,8 @@ RUNNER_COVERAGE_SCOPES = (
 RECONCILIATION_COVERAGE_SCOPES = (
     CoverageScope("reconciliation", "src/paritygrid/domain/reconciliation/", 95.0),
 )
+
+
 def _mapping(value: object, subject: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"coverage JSON {subject} is not an object")
