@@ -9,9 +9,17 @@ from paritygrid.application.ports.artifacts import ArtifactWriteReceipt
 from paritygrid.application.ports.consistency import RedactedDocument
 from paritygrid.domain.models import ConnectorId, InventoryRecord, NodeId, RunId, UtcTimestamp
 from paritygrid.domain.pipeline import PartitionKey
+from paritygrid.domain.reconciliation import (
+    FieldDifference,
+    ReconciliationClassification,
+    SecondaryEvidence,
+    SuggestedResolution,
+    suggested_resolution_for,
+)
 
 RAW_PARQUET_SCHEMA_VERSION = 1
 NORMALIZED_PARQUET_SCHEMA_VERSION = 1
+CONFLICT_PARQUET_SCHEMA_VERSION = 1
 MAX_RAW_BATCH_RECORDS = 100_000
 MAX_RAW_BATCH_PAYLOAD_BYTES = 67_108_864
 MAX_RAW_RECORD_INDEX = 9_223_372_036_854_775_807
@@ -21,6 +29,13 @@ MAX_RAW_PAYLOAD_BYTES = 1_048_576
 MAX_NORMALIZED_BATCH_RECORDS = 100_000
 MAX_NORMALIZED_BATCH_VARIABLE_BYTES = 67_108_864
 MAX_NORMALIZED_RECORD_INDEX = 9_223_372_036_854_775_807
+MAX_CONFLICT_BATCH_RECORDS = 100_000
+MAX_CONFLICT_CONFLICT_INDEX = 9_223_372_036_854_775_807
+# Mirrors ReconciliationOutcome.MAX_RECORDS_PER_SIDE so a bounded duplicate
+# group never loses member provenance in the conflict artifact.
+MAX_CONFLICT_MEMBER_KEYS = 1_024
+MAX_CONFLICT_DIFFERENCES = 64
+MAX_CONFLICT_SECONDARY = 8
 MAX_PARQUET_PARTITION_NUMBER = 2_147_483_647
 PARQUET_MEDIA_TYPE = "application/vnd.apache.parquet"
 
@@ -46,6 +61,7 @@ class ParquetDatasetKind(StrEnum):
 
     RAW = "raw"
     NORMALIZED = "normalized"
+    RECONCILIATION = "reconciliation"
 
 
 @dataclass(frozen=True, slots=True, repr=False)
@@ -159,6 +175,94 @@ class NormalizedInventoryBatch:
 
 
 @dataclass(frozen=True, slots=True)
+class ReconciliationConflictRow:
+    """One artifact-ready conflict for a canonical key that is not a match."""
+
+    conflict_index: int
+    sku: str
+    classification: ReconciliationClassification
+    suggested_resolution: SuggestedResolution
+    source_positions: tuple[int, ...]
+    target_positions: tuple[int, ...]
+    source_record_keys: tuple[str, ...]
+    target_record_keys: tuple[str, ...]
+    differences: tuple[FieldDifference, ...]
+    secondary: tuple[SecondaryEvidence, ...]
+
+    def __post_init__(self) -> None:
+        if type(self.conflict_index) is not int or not 0 <= self.conflict_index <= (
+            MAX_CONFLICT_CONFLICT_INDEX
+        ):
+            raise ValueError("conflict index is outside the supported range")
+        if type(self.sku) is not str or not self.sku:
+            raise TypeError("conflict SKU must be nonempty text")
+        if type(self.classification) is not ReconciliationClassification:
+            raise TypeError("conflict classification must use ReconciliationClassification")
+        if self.classification is ReconciliationClassification.MATCH:
+            raise ValueError("conflict rows cannot carry the match classification")
+        if type(self.suggested_resolution) is not SuggestedResolution:
+            raise TypeError("conflict resolution must use SuggestedResolution")
+        if self.suggested_resolution is not suggested_resolution_for(self.classification):
+            raise ValueError("conflict resolution does not match its classification")
+        for side_positions, side_keys in (
+            (self.source_positions, self.source_record_keys),
+            (self.target_positions, self.target_record_keys),
+        ):
+            if type(side_positions) is not tuple or type(side_keys) is not tuple:
+                raise TypeError("conflict member provenance must be tuples")
+            if len(side_positions) != len(side_keys):
+                raise ValueError("conflict provenance must be parallel tuples")
+            if len(side_keys) > MAX_CONFLICT_MEMBER_KEYS:
+                raise ValueError("conflict provenance exceeds the member limit")
+            if any(type(item) is not int or item < 0 for item in side_positions):
+                raise ValueError("conflict positions must be nonnegative integers")
+            if any(type(item) is not str or not item for item in side_keys):
+                raise ValueError("conflict record keys must be nonempty text")
+            if list(side_positions) != sorted(side_positions) or len(set(side_positions)) != len(
+                side_positions
+            ):
+                raise ValueError("conflict positions must be sorted and unique")
+        if not self.source_record_keys and not self.target_record_keys:
+            raise ValueError("conflict rows must reference at least one member record")
+        if type(self.differences) is not tuple or len(self.differences) > MAX_CONFLICT_DIFFERENCES:
+            raise ValueError("conflict differences exceed the limit")
+        if any(type(item) is not FieldDifference for item in self.differences):
+            raise TypeError("conflict differences must be FieldDifference values")
+        if type(self.secondary) is not tuple or len(self.secondary) > MAX_CONFLICT_SECONDARY:
+            raise ValueError("conflict secondary evidence exceeds the limit")
+        if any(type(item) is not SecondaryEvidence for item in self.secondary):
+            raise TypeError("conflict secondary evidence must be SecondaryEvidence values")
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationConflictBatch:
+    """One immutable conflict partition in canonical conflict order."""
+
+    rows: tuple[ReconciliationConflictRow, ...]
+    schema_version: int = CONFLICT_PARQUET_SCHEMA_VERSION
+
+    def __post_init__(self) -> None:
+        rows = cast(object, self.rows)
+        version = cast(object, self.schema_version)
+        if not isinstance(rows, tuple):
+            raise TypeError("reconciliation conflict rows must be a tuple")
+        trusted = cast(tuple[object, ...], rows)
+        if len(trusted) > MAX_CONFLICT_BATCH_RECORDS:
+            raise ValueError("reconciliation conflict batch exceeds the row limit")
+        if any(type(row) is not ReconciliationConflictRow for row in trusted):
+            raise TypeError("reconciliation conflict batch contains an invalid row")
+        if type(version) is not int:
+            raise TypeError("reconciliation conflict schema version must be an integer")
+        if version != CONFLICT_PARQUET_SCHEMA_VERSION:
+            raise UnsupportedParquetSchemaVersionError(
+                "reconciliation conflict schema version is unsupported"
+            )
+        for expected_index, row in enumerate(cast(tuple[ReconciliationConflictRow, ...], trusted)):
+            if row.conflict_index != expected_index:
+                raise ValueError("reconciliation conflict indexes must be contiguous from zero")
+
+
+@dataclass(frozen=True, slots=True)
 class ParquetPartitionReceipt:
     """Manifest-ready identity and content metadata for one partition."""
 
@@ -226,6 +330,18 @@ class ParquetPartitionWriter(Protocol):
         batch: NormalizedInventoryBatch,
     ) -> ParquetPartitionReceipt:
         """Encode and publish one normalized inventory partition."""
+        ...
+
+    def write_conflicts(
+        self,
+        *,
+        run_id: RunId,
+        node_id: NodeId,
+        partition_key: PartitionKey,
+        partition_number: int,
+        batch: ReconciliationConflictBatch,
+    ) -> ParquetPartitionReceipt:
+        """Encode and publish one reconciliation conflict partition."""
         ...
 
 

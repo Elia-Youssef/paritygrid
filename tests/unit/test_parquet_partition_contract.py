@@ -42,6 +42,7 @@ def test_partition_contract_constants_and_closed_datasets_are_frozen() -> None:
     assert tuple(ParquetDatasetKind) == (
         ParquetDatasetKind.RAW,
         ParquetDatasetKind.NORMALIZED,
+        ParquetDatasetKind.RECONCILIATION,
     )
 
 

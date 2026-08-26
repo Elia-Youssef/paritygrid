@@ -14,14 +14,17 @@ This document is the durable index of accepted phases, their integration commits
 | 4 — Artifact, Parquet, and DuckDB foundation | Accepted | [`4338409`](https://github.com/Elia-Youssef/paritygrid/commit/4338409d882bf3af52caad69a4572f80092d0e9a) | [Phase pull request #35](https://github.com/Elia-Youssef/paritygrid/pull/35) | Safe artifact paths, atomic manifests, versioned Parquet schemas, DuckDB views, analytical queries, and integrity scanning | Product reconciliation workflows and final-state verification were deferred. |
 | 5 — Pipeline specification and planner | Accepted | [`dfd89ed`](https://github.com/Elia-Youssef/paritygrid/commit/dfd89ed6714300d831273df6bbd43e175fc4e693) | [Phase pull request #48](https://github.com/Elia-Youssef/paritygrid/pull/48) | Versioned pipeline documents, closed node registry, graph and resource validation, repair-path safety, immutable publication, deterministic plan compilation, partitioning, and plan fingerprints | The planner validates approval-before-effect graph structure; it does not apply repairs. |
 | 6 — Sequential execution and recovery | Accepted | [`28d3540`](https://github.com/Elia-Youssef/paritygrid/commit/28d35406636f8b7b556ef813d31736b037624340) | [Phase pull request #62](https://github.com/Elia-Youssef/paritygrid/pull/62) with [post-merge verification run 32458747051](https://github.com/Elia-Youssef/paritygrid/actions/runs/32458747051) | Reference sequential scheduler and runner, work leasing, normalized attempt events, retry classification, result submission, checkpoint commit coordination, pause and resume, cancellation, run finalization, startup recovery, and the synthetic Phase 2–6 integration fixture | Three carried findings moved to Phase 7 P7.0: lease-event correlation bounds, pre-admission invalid-result handling, and the pause acknowledgement/abort race. Threaded, asynchronous, process, and interpreter runners are not implemented. |
+| 7 — Concurrent execution | Accepted | [`6ad5fce`](https://github.com/Elia-Youssef/paritygrid/commit/6ad5fce2627642cdb1f8ff43517a4dde5a318d9d) | [Phase pull request #96](https://github.com/Elia-Youssef/paritygrid/pull/96) | Bounded concurrent scheduler and lifecycle, threaded and asyncio full-plan strategies, subordinate process and interpreter pools, capacity and channel controls, durable recovery, telemetry, and cross-strategy execution-evidence proof | Reconciliation, repair, and target-state equivalence remain outside the execution-evidence proof. |
+| 8 — Deterministic synthetic systems | Accepted | [`07c997b`](https://github.com/Elia-Youssef/paritygrid/commit/07c997b24c48460c6efade8ea55e1c0e872ecbf6) | [Phase pull request #97](https://github.com/Elia-Youssef/paritygrid/pull/97) | Seeded inventory datasets, scripted failure models, async and blocking source simulators, bounded files, idempotent warehouse simulation, and composed lifecycle control | The systems are loopback-only synthetic fixtures; production transport and authentication remain deferred. |
+| 9 — Connector contract and adapters | Accepted | [`38dac4e`](https://github.com/Elia-Youssef/paritygrid/commit/38dac4e134f8d90a97a428baf93c360ee99987e1) | [Phase pull request #98](https://github.com/Elia-Youssef/paritygrid/pull/98) | Application-owned connector contracts, async and blocking HTTP sources, CSV and JSON Lines sources, warehouse target integration, cooperative cancellation, deadlines, and bounded redaction | HTTP support intentionally targets the accepted loopback simulator protocol; product routes and broader transport features remain deferred. |
 
 ## Active boundary
 
-Phase 7 is active at the complete P7.0–P7.19 candidate on the integration branch `phase/07-concurrent-execution`.
+Phase 10 is active at the complete audited P10.1–P10.8 candidate on the integration branch `phase/10-reconciliation-analysis`.
 
-- Accepted `main`: [`28d3540`](https://github.com/Elia-Youssef/paritygrid/commit/28d35406636f8b7b556ef813d31736b037624340).
-- Phase 6 acceptance evidence: [pull request #62](https://github.com/Elia-Youssef/paritygrid/pull/62) and its exact-head Windows and Ubuntu checks, plus the successful [post-merge run 32458747051](https://github.com/Elia-Youssef/paritygrid/actions/runs/32458747051) on that merge commit.
-- P7.0–P7.19 and the independent audit corrections are committed on the phase branch at [`3473e2f`](https://github.com/Elia-Youssef/paritygrid/commit/3473e2f0c5623a902517125262d0f74382787de9). The complete candidate passed exact-head Windows/Linux CI in [run 32827063567](https://github.com/Elia-Youssef/paritygrid/actions/runs/32827063567); phase acceptance and merge remain pending.
+- Accepted `main`: [`38dac4e`](https://github.com/Elia-Youssef/paritygrid/commit/38dac4e134f8d90a97a428baf93c360ee99987e1).
+- Phase 9 acceptance evidence: [pull request #98](https://github.com/Elia-Youssef/paritygrid/pull/98) and its exact-head Windows and Ubuntu checks.
+- P10.1–P10.8 and the independent audit corrections passed exact-head Windows/Linux CI in [run 32955459935](https://github.com/Elia-Youssef/paritygrid/actions/runs/32955459935). The branch has been updated to accepted `main`; final phase-pull-request checks remain required before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -94,22 +97,22 @@ Independent governance and acceptance reviews identified and drove the documenta
 
 ## Phase 7 progress
 
-Phase 7 implements bounded concurrent execution behind application-owned scheduling. Work lands package by package on `phase/07-concurrent-execution` and is recorded here as each package is accepted.
+Phase 7 implements bounded concurrent execution behind application-owned scheduling. It was accepted through [pull request #96](https://github.com/Elia-Youssef/paritygrid/pull/96).
 
 ### Phase 7 package status
 
 | Package | Status | Evidence |
 |---|---|---|
-| P7.19 — stress, packaging, and cross-platform proof | Candidate passes local and cross-platform audit; phase acceptance pending | Fifty seeded shuffled executions in `tests/execution/test_stress_shuffled.py` reproduce by seed, vary ready order, retry placement, completion order, and result arrival, and compare equal normalized durable execution evidence across sequential, threaded, and asyncio; every run asserts bounds, contiguous event sequences, and zero owned worker leaks. Installed-wheel and Phase 7 spawn verification passed on Windows and Ubuntu in [run 32827063567](https://github.com/Elia-Youssef/paritygrid/actions/runs/32827063567). |
-| P7.18 — full lifecycle, recovery, backpressure, and cleanup matrix | Candidate passes local audit | `tests/execution/test_lifecycle_matrix.py` runs every full-plan strategy through normal completion, retry, pause/resume, cancellation, worker failure, unknown-writer-outcome (forged fence), structural blocked-writer backpressure, repeated cleanup, and restart with expired and non-expired leases under pooled strategies. Every cell asserts contiguous per-run event sequences, durable aggregates, bounded channels, and zero owned worker leaks. |
-| P7.17 — cross-strategy execution-evidence comparison harness | Candidate passes local audit | `evidence_comparison` freezes versioned `ExecutionEvidenceSnapshot` projections (kind/version, sorted work states, attempt outcomes, node aggregates, artifact identities, normalized causal events, fingerprint) and `compare_execution_evidence` returns exactly the execution-evidence verdict — its closed field set structurally cannot claim reconciliation, repair, or target-state equivalence, and negative fixtures lock that distinction. The same seeded run compares equal across sequential, threaded, and asyncio. |
-| P7.16 — optional subordinate interpreter CPU pool | Candidate passes local audit | `adapters/runners/interpreter_pool.py` provides the interpreter-backed subordinate pool over the same versioned codec, registered CPU operations, and P7.6 CPU permits; capability detection probes the actual `InterpreterPoolExecutor` runtime and reports a structured reason when absent without falling back to the process pool. |
-| P7.15 — runtime capability detection and strategy registration | Candidate passes local audit | `runtime_capabilities` detects threaded, asyncio, spawn-process, and interpreter capabilities in the actual runtime and registers sequential/threaded/asyncio as full-plan strategies plus the process and interpreter pools as subordinate capabilities through the lifecycle coordinator. No subordinate pool is exposed as a full-plan runner and no unavailable capability is silently substituted. |
-| P7.14 — subordinate process CPU pool, versioned codec, and import isolation | Candidate passes local audit | `adapters/runners/` provides the spawn-context subordinate process pool, versioned bounded primitive codec over registered connector-free operations, and isolated worker entry. Transitive import and spawned-canary gates prohibit persistence, database, connector, filesystem, network, and dynamic-import access from the worker boundary. |
-| P7.13 — structured asyncio full-plan strategy and safe sync adaptation | Candidate passes local audit | `asyncio_strategy` runs structured async workers through bounded cooperative channels and an owned blocking-adaptation pool. The async entry works in an active loop; the sync facade refuses a running loop; bounded shutdown cancels and joins every owned resource. It passes the shared full-plan conformance suite. |
-| P7.12 — bounded threaded full-plan strategy | Candidate passes local audit | `threaded_strategy` owns a bounded named worker pool over the shared assignment/result discipline, preserves structural backpressure, converts worker failures into bounded result evidence, and joins every worker within the captured bound. It passes shared conformance, overlap, saturation, deadlock, bound, and cleanup tests. |
-| P7.11 — shared full-plan and subordinate-pool conformance suites | Candidate passes local audit | `tests/execution/full_plan_conformance.py` applies the same durable-evidence, barrier, retry, pause, cancellation, bounds, and cleanup assertions to sequential, threaded, and asyncio over real SQLite evidence. Deliberately defective fixtures prove the suite rejects each targeted contract violation. |
-| P7.10 — concurrent pause, cancellation, lifecycle, and durable recovery | Candidate passes local audit | The concurrent lifecycle, cleanup, recovery, and engine components own pause/cancel coordination, rebuild `SchedulerFrontierV2` only from durable SQLite evidence, resolve expired claims through fenced commands, fail closed on ambiguity, and compose the parent-owned execution loop. The result commit factory translates only validated rebased intents into the closed Phase 6 writer command set. |
+| P7.19 — stress, packaging, and cross-platform proof | Accepted | Fifty seeded shuffled executions in `tests/execution/test_stress_shuffled.py` reproduce by seed, vary ready order, retry placement, completion order, and result arrival, and compare equal normalized durable execution evidence across sequential, threaded, and asyncio; every run asserts bounds, contiguous event sequences, and zero owned worker leaks. Installed-wheel and Phase 7 spawn verification passed on Windows and Ubuntu in [run 32827063567](https://github.com/Elia-Youssef/paritygrid/actions/runs/32827063567). |
+| P7.18 — full lifecycle, recovery, backpressure, and cleanup matrix | Accepted | `tests/execution/test_lifecycle_matrix.py` runs every full-plan strategy through normal completion, retry, pause/resume, cancellation, worker failure, unknown-writer-outcome (forged fence), structural blocked-writer backpressure, repeated cleanup, and restart with expired and non-expired leases under pooled strategies. Every cell asserts contiguous per-run event sequences, durable aggregates, bounded channels, and zero owned worker leaks. |
+| P7.17 — cross-strategy execution-evidence comparison harness | Accepted | `evidence_comparison` freezes versioned `ExecutionEvidenceSnapshot` projections (kind/version, sorted work states, attempt outcomes, node aggregates, artifact identities, normalized causal events, fingerprint) and `compare_execution_evidence` returns exactly the execution-evidence verdict — its closed field set structurally cannot claim reconciliation, repair, or target-state equivalence, and negative fixtures lock that distinction. The same seeded run compares equal across sequential, threaded, and asyncio. |
+| P7.16 — optional subordinate interpreter CPU pool | Accepted | `adapters/runners/interpreter_pool.py` provides the interpreter-backed subordinate pool over the same versioned codec, registered CPU operations, and P7.6 CPU permits; capability detection probes the actual `InterpreterPoolExecutor` runtime and reports a structured reason when absent without falling back to the process pool. |
+| P7.15 — runtime capability detection and strategy registration | Accepted | `runtime_capabilities` detects threaded, asyncio, spawn-process, and interpreter capabilities in the actual runtime and registers sequential/threaded/asyncio as full-plan strategies plus the process and interpreter pools as subordinate capabilities through the lifecycle coordinator. No subordinate pool is exposed as a full-plan runner and no unavailable capability is silently substituted. |
+| P7.14 — subordinate process CPU pool, versioned codec, and import isolation | Accepted | `adapters/runners/` provides the spawn-context subordinate process pool, versioned bounded primitive codec over registered connector-free operations, and isolated worker entry. Transitive import and spawned-canary gates prohibit persistence, database, connector, filesystem, network, and dynamic-import access from the worker boundary. |
+| P7.13 — structured asyncio full-plan strategy and safe sync adaptation | Accepted | `asyncio_strategy` runs structured async workers through bounded cooperative channels and an owned blocking-adaptation pool. The async entry works in an active loop; the sync facade refuses a running loop; bounded shutdown cancels and joins every owned resource. It passes the shared full-plan conformance suite. |
+| P7.12 — bounded threaded full-plan strategy | Accepted | `threaded_strategy` owns a bounded named worker pool over the shared assignment/result discipline, preserves structural backpressure, converts worker failures into bounded result evidence, and joins every worker within the captured bound. It passes shared conformance, overlap, saturation, deadlock, bound, and cleanup tests. |
+| P7.11 — shared full-plan and subordinate-pool conformance suites | Accepted | `tests/execution/full_plan_conformance.py` applies the same durable-evidence, barrier, retry, pause, cancellation, bounds, and cleanup assertions to sequential, threaded, and asyncio over real SQLite evidence. Deliberately defective fixtures prove the suite rejects each targeted contract violation. |
+| P7.10 — concurrent pause, cancellation, lifecycle, and durable recovery | Accepted | The concurrent lifecycle, cleanup, recovery, and engine components own pause/cancel coordination, rebuild `SchedulerFrontierV2` only from durable SQLite evidence, resolve expired claims through fenced commands, fail closed on ambiguity, and compose the parent-owned execution loop. The result commit factory translates only validated rebased intents into the closed Phase 6 writer command set. |
 | P7.9 — concurrent result coordinator and serialized SQLite boundary | Accepted on the phase branch | `result_coordinator` implements the parent-side `ConcurrentResultCoordinator`: results arrive through the bounded result channel; pre-admission validation checks the contract and plan fingerprint, run/node/partition/work identity, attempt, lease fence and owner, control generation, artifact references against registered admission facts, metrics, failure detail, and cleanup evidence — a rejected request submits zero writer commands and retains the lease for one corrected bounded resubmission. Writer admission is serialized under one lock and rebases the CURRENT run, node-aggregate, work-claim, lease-expiry, and event-frontier evidence through `SQLiteResultCoordinatorReader`, never trusting assignment-time row versions. `TransactionalResultCoordinatorWriter` compiles the validated intent through a parent-owned command factory, proves the resulting `CommitWorkAttempt` or `CommitWorkWithCheckpoint` matches every fence and rebased version, submits only that closed Phase 6 command to the SQLite writer, and translates a validated real `WriterReceipt` into the coordinator acknowledgement. A real SQLite integration covers coordinator → durable reader → command adapter → transactional writer → receipt and verifies work, attempt, checkpoint, aggregate, event, and run updates. Only durable acknowledgement unregisters the assignment, releases dependencies and capacity, and emits telemetry. Known rollbacks are retryable; unknown outcomes stop admission and require recovery. Stale, duplicate, expired, forged, plan-mismatched, and lease-mismatched results fail closed. |
 | P7.8 — versioned concurrency telemetry schemas | Accepted on the phase branch | `telemetry` defines schema version 1 records for the eight observation kinds — queue depth, active capacity, capacity wait, service duration, blocked writer, dropped telemetry, cleanup state, and unresolved resources — with bounded metric names, labels, values, series counts, and a 4,096-byte wire bound, strict redaction of secret markers, credentials, and path shapes, canonical deterministic wire encodings whose strict inverse fails closed on unknown schemas, and helper constructors over P7.6 capacity and P7.7 channel facts. `TelemetryCollector` is a bounded run-isolated drop-oldest sink: it rejects foreign-run records, never blocks or grows, and reports counted drops. Non-authority is proven structurally and behaviorally: the module imports no scheduler, persistence, lease, or checkpoint authority, records expose no mutating surface, and a regression holds a real `ConcurrentScheduler` frontier byte-identical across telemetry bursts, drops, and drains. |
 | P7.7 — bounded closeable assignment, result, telemetry, and writer-facing channels | Accepted on the phase branch | `channels` provides the four bounded closeable channel kinds with explicit finite capacity, FIFO delivery, idempotent close releasing every blocked peer with typed errors, accepted-message preservation through drain before or after close, an unknown-writer-outcome recovery close that fails producers closed while keeping accepted items drainable, and cooperative async wrappers that never nest or block a loop while the sync surface refuses to run inside one. `ChannelSet` closes in the deadlock-free writer-first dependency order with bounded observability snapshots. Deterministic backpressure regressions prove a deliberately blocked consumer stops upstream progress at the configured bound with memory bounded by capacity, cancellation and close release every waiter, and message conservation holds under concurrent producers. 161 deterministic regressions hold the module at 100% branch coverage with zero flakiness across repeated runs. |
@@ -121,12 +124,9 @@ Phase 7 implements bounded concurrent execution behind application-owned schedul
 | P7.1 — execution-evidence fingerprint migration | Accepted on the phase branch | Forward migration `0002_execution_evidence` rebuilds `runs` with `execution_evidence_fingerprint` plus `execution_evidence_fingerprint_version`, preserving every non-null Phase 6 digest byte-for-byte, backfilling preserved digests as version 2, leaving null digests null, and never recomputing a stored value. Pairing and terminal-state constraints are enforced in storage and in `RunRecord`; compatibility reads of the former storage name are confined to the repository boundary and infer version 2 for preserved digests; unknown or mismatched versions fail closed. Frozen v0001 fixture upgrade, mixed null/non-null, idempotency, new writes, and the documented irreversible downgrade policy are covered in `tests/persistence/test_execution_evidence_migration.py` and the upgraded frozen-fixture preservation test. |
 | P7.0 — carried Phase 6 correctness corrections | Accepted on the phase branch | Lease-event correlation accepts `None` or 1–96 ASCII characters matching `[A-Za-z0-9][A-Za-z0-9._:-]*` and is rejected before clock access, reservation, in-flight mutation, or writer admission on both acquire and renew paths (`MAX_LEASE_EVENT_CORRELATION_ID_LENGTH`). `ResultSinkPreAdmissionError` distinguishes proven pre-writer-admission validation failures, which retain the active lease and permit one corrected bounded resubmission, from generic invalid-result failures, which keep the outcome-unknown disposition; `CheckpointCommitInvalidRequestError` now uses the pre-admission base while the admission classification keeps catch precedence. The pause acknowledgement/abort race is a compare-and-set over the same unacknowledged pause generation (`PauseToken.abort_for_coordinator`): an abort that wins releases the admission gate and the runner continues or reports its own redacted `RunnerProtocolError` without leaking a pause-coordinator exception; an acknowledgement that wins completes pause and requires an explicit resume. Barrier-controlled regressions in `tests/execution/test_p7_0_carried_correctness.py` cover both boundaries and both race winners with exact executor-call counts, stable frontiers, and released gates. |
 
-### Current candidate
+### Acceptance
 
-P7.0 through P7.19 are implemented. The complete candidate is committed and
-pushed at [`3473e2f`](https://github.com/Elia-Youssef/paritygrid/commit/3473e2f0c5623a902517125262d0f74382787de9).
-The full local audit and exact-head cross-platform CI passed on 2026-08-25;
-phase acceptance and merge remain pending.
+P7.0 through P7.19 were accepted at merge commit [`6ad5fce`](https://github.com/Elia-Youssef/paritygrid/commit/6ad5fce2627642cdb1f8ff43517a4dde5a318d9d) through [pull request #96](https://github.com/Elia-Youssef/paritygrid/pull/96). The full local audit and exact-head cross-platform checks passed before the merge.
 
 Complete-candidate local evidence on 2026-08-25:
 
@@ -157,7 +157,6 @@ Exact-head integration evidence on `6ed6cc9`:
 
 ### Remaining Phase 7 limitations
 
-- The complete P7.0–P7.19 candidate is committed and pushed with exact-head CI evidence, but it has not yet been accepted or merged into `main`.
 - The P6 sequential runner remains the Phase 6 reference; the P7 sequential
   full-plan strategy is the concurrent engine's inline mode, and the
   cross-strategy equivalence proof compares the three P7 strategies.
@@ -168,21 +167,22 @@ Exact-head integration evidence on `6ed6cc9`:
 ## Phase 8 progress
 
 Phase 8 provides deterministic, production-shaped synthetic source and target
-systems for later connector and reconciliation work. The audited integration
-candidate completes all seven Phase 8 packages without production connector or
-product-route behavior.
+systems for later connector and reconciliation work. The phase was accepted
+through [pull request #97](https://github.com/Elia-Youssef/paritygrid/pull/97)
+and completes all seven packages without production connector or product-route
+behavior.
 
 ### Phase 8 package status
 
 | Package | Status | Evidence |
 |---|---|---|
-| P8.1 — seeded inventory dataset generator | Audited integration candidate | Versioned seeds produce canonical synthetic datasets, byte-stable manifests, Unicode and boundary values, duplicates, missing fields, and malformed members. |
-| P8.2 — scripted failure model | Audited integration candidate | Ordered failure scripts cover rate limiting, transient errors, timeouts, malformed responses, bounded duplicate pages, connection loss, and cancellation with inspectable applied-failure evidence. |
-| P8.3 — async paginated source simulator | Audited integration candidate | Dynamic-port HTTP pagination, cursor bounds, failure injection, active-handler tracking, and prompt shutdown are covered in `tests/demo/test_async_source.py`. |
-| P8.4 — blocking legacy source simulator | Audited integration candidate | The genuinely blocking page service preserves the shared logical dataset and interrupts delayed or held connections during bounded shutdown. |
-| P8.5 — CSV and JSON Lines fixtures | Audited integration candidate | Canonical UTF-8/LF fixtures preserve malformed and duplicate variants under explicit file and row bounds. |
-| P8.6 — simulated warehouse target | Audited integration candidate | Observable versions and strict idempotency record one logical effect before timeout or connection-loss responses become ambiguous; same-key replay returns the recorded outcome. |
-| P8.7 — simulator lifecycle composition | Audited integration candidate | Dynamic ports, readiness after startup, partial-start rollback, repeated close, and active-resource cleanup are exercised across composed services. |
+| P8.1 — seeded inventory dataset generator | Accepted | Versioned seeds produce canonical synthetic datasets, byte-stable manifests, Unicode and boundary values, duplicates, missing fields, and malformed members. |
+| P8.2 — scripted failure model | Accepted | Ordered failure scripts cover rate limiting, transient errors, timeouts, malformed responses, bounded duplicate pages, connection loss, and cancellation with inspectable applied-failure evidence. |
+| P8.3 — async paginated source simulator | Accepted | Dynamic-port HTTP pagination, cursor bounds, failure injection, active-handler tracking, and prompt shutdown are covered in `tests/demo/test_async_source.py`. |
+| P8.4 — blocking legacy source simulator | Accepted | The genuinely blocking page service preserves the shared logical dataset and interrupts delayed or held connections during bounded shutdown. |
+| P8.5 — CSV and JSON Lines fixtures | Accepted | Canonical UTF-8/LF fixtures preserve malformed and duplicate variants under explicit file and row bounds. |
+| P8.6 — simulated warehouse target | Accepted | Observable versions and strict idempotency record one logical effect before timeout or connection-loss responses become ambiguous; same-key replay returns the recorded outcome. |
+| P8.7 — simulator lifecycle composition | Accepted | Dynamic ports, readiness after startup, partial-start rollback, repeated close, and active-resource cleanup are exercised across composed services. |
 
 ### Phase 8 local evidence
 
@@ -202,20 +202,21 @@ passed.
 ## Phase 9 progress
 
 Phase 9 defines the application-owned, runner-neutral connector contract and
-five adapters over the accepted Phase 8 simulators. The audited integration
-candidate completes all seven packages without reconciliation or repair logic.
+five adapters over the accepted Phase 8 simulators. It was accepted through
+[pull request #98](https://github.com/Elia-Youssef/paritygrid/pull/98) and
+completes all seven packages without reconciliation or repair logic.
 
 ### Phase 9 package status
 
 | Package | Status | Evidence |
 |---|---|---|
-| P9.1 — connector base contract and conformance skeleton | Audited integration candidate | `application/ports/connectors.py` freezes contract version 1 with capabilities, lifecycle, cancellation, deadlines, pagination, bounds, errors, observability, and adapter protocols. Adapter-layer compatibility modules contain re-exports only. |
-| P9.2 — async HTTP source connector | Audited integration candidate | The asyncio adapter pages the cursor simulator without blocking the event loop and propagates native cancellation. |
-| P9.3 — blocking HTTP source connector | Audited integration candidate | The blocking adapter refuses active event loops and uses cooperative cancellation to interrupt in-flight socket I/O promptly. |
-| P9.4 — CSV connector | Audited integration candidate | The CSV adapter streams allowlisted files with header validation, bounded row cursors, per-chunk deadline and cancellation checks, and exact-final-page exhaustion. |
-| P9.5 — JSON Lines connector | Audited integration candidate | The JSON Lines adapter streams byte-offset pages with bounded malformed-line evidence, per-chunk checkpoints, and exact-final-page exhaustion. |
-| P9.6 — warehouse target connector | Audited integration candidate | Idempotent writes replay ambiguous post-commit timeout and connection-loss outcomes without a second effect; reads and state snapshots share the closed error mapping. |
-| P9.7 — secret and error redaction | Audited integration candidate | `application/ports/connector_redaction.py` combines connector and per-call secret material and applies bounded fail-closed redaction to response fragments, errors, and events. |
+| P9.1 — connector base contract and conformance skeleton | Accepted | `application/ports/connectors.py` freezes contract version 1 with capabilities, lifecycle, cancellation, deadlines, pagination, bounds, errors, observability, and adapter protocols. Adapter-layer compatibility modules contain re-exports only. |
+| P9.2 — async HTTP source connector | Accepted | The asyncio adapter pages the cursor simulator without blocking the event loop and propagates native cancellation. |
+| P9.3 — blocking HTTP source connector | Accepted | The blocking adapter refuses active event loops and uses cooperative cancellation to interrupt in-flight socket I/O promptly. |
+| P9.4 — CSV connector | Accepted | The CSV adapter streams allowlisted files with header validation, bounded row cursors, per-chunk deadline and cancellation checks, and exact-final-page exhaustion. |
+| P9.5 — JSON Lines connector | Accepted | The JSON Lines adapter streams byte-offset pages with bounded malformed-line evidence, per-chunk checkpoints, and exact-final-page exhaustion. |
+| P9.6 — warehouse target connector | Accepted | Idempotent writes replay ambiguous post-commit timeout and connection-loss outcomes without a second effect; reads and state snapshots share the closed error mapping. |
+| P9.7 — secret and error redaction | Accepted | `application/ports/connector_redaction.py` combines connector and per-call secret material and applies bounded fail-closed redaction to response fragments, errors, and events. |
 
 ### Phase 9 local evidence
 
@@ -234,8 +235,45 @@ strict Pyright, import-boundary validation, instruction validation, and
 - HTTP routes remain the accepted Phase 8 synthetic routes; product API routes
   belong to Phase 12 and later.
 
+## Phase 10 progress
+
+Phase 10 implements deterministic, non-mutating reconciliation analysis over
+the accepted Phase 8 and 9 boundaries. The audited integration candidate
+completes all eight packages and keeps target mutation, approval, and repair
+outside the phase.
+
+### Phase 10 package status
+
+| Package | Status | Evidence |
+|---|---|---|
+| P10.1 — source schema normalization | Audited integration candidate | Versioned rules cover closed wire types, missing and null values, NFC Unicode, canonical attribute keys, deterministic order, and bounded quarantine evidence. |
+| P10.2 — canonical-key matching | Audited integration candidate | Explicit per-key member lists prevent overwrite-selected winners; collision evidence preserves repeated record keys and enforces member bounds. |
+| P10.3 — duplicate-source detection | Audited integration candidate | Duplicate groups retain sorted member provenance, distinct-content analysis, and fail-closed per-side bounds. |
+| P10.4 — classification engine | Audited integration candidate | Every normalized record receives exactly one primary classification, bounded secondary evidence, and the sole allowed suggested resolution for that classification. |
+| P10.5 — field-difference builder | Audited integration candidate | Stable nested-path differences cover missing, null, type mismatch, Unicode normalization, and bounded canonical renderings. |
+| P10.6 — conflict artifact writer | Audited integration candidate | Conflict Parquet schema v1 round-trips through atomic artifact and manifest publication; parallel position/key provenance retains one shared order and rejects inconsistent resolution evidence. |
+| P10.7 — DuckDB reconciliation queries | Audited integration candidate | DuckDB and the independent Python reference agree on per-key classifications, summaries, and fingerprints across golden, reordered, duplicate-heavy, empty, generated, and 5,000-row datasets. |
+| P10.8 — summary and reconciliation fingerprint | Audited integration candidate | Kind `reconciliation`, version 1 fingerprints bind versioned inputs, counts, and order-independent outcome state without reinterpreting execution-evidence fingerprints. |
+
+### Phase 10 local evidence
+
+The complete reconciliation matrix passed after independent audit and repair
+on 2026-08-26: 129 tests passed with no skips or failures. Focused artifact,
+matching, classification, and provenance regressions passed. Ruff, strict
+Pyright, import-boundary validation, instruction validation, and
+`git diff --check` also passed.
+
+### Phase 10 known limitations
+
+- Operational services that persist reconciliation rows behind run nodes belong
+  to later application-composition phases.
+- DuckDB agreement currently covers the Phase 8 generator ceiling of 5,000
+  rows per dataset; later performance phases own larger showcase scale.
+- Quarantine evidence participates in counts, fingerprints, and analysis
+  results but is not yet published as its own artifact.
+
 ## Advancement rule
 
-Phase 9 is stacked on the audited Phase 8 integration commit. Each phase branch
-may merge only after its complete gate and remote CI pass; acceptance of a
-later stacked phase does not bypass acceptance of its prerequisites.
+Phase 10 is based on accepted Phase 9, which is based on accepted Phase 8. The
+Phase 10 branch may merge only after its complete gate and remote CI pass;
+acceptance of a later phase does not bypass acceptance of its prerequisites.
