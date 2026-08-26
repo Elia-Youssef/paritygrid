@@ -635,20 +635,19 @@ def run_wal_stress(config: WalStressConfig) -> WalStressReport:
         producer_counts = [0] * workload.producer_count
         producer_wait = [0.0] * workload.producer_count
         producer_errors: list[BaseException] = []
+        producer_turn_deadline = time.monotonic() + workload.total_budget_seconds * 0.8
 
         def produce(producer: int) -> None:
             nonlocal next_index
             try:
                 while True:
                     with producer_condition:
-                        # Preserve part of the operation bound for coordinated thread shutdown.
-                        turn_deadline = time.monotonic() + workload.timeout_seconds * 0.8
                         while (
                             not producer_abort.is_set()
                             and next_index < workload.work_commands
                             and scenario.owners[next_index] != producer
                         ):
-                            remaining = turn_deadline - time.monotonic()
+                            remaining = producer_turn_deadline - time.monotonic()
                             if remaining <= 0:
                                 raise WalStressError("producer turn wait timed out")
                             producer_condition.wait(remaining)
