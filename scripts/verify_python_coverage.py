@@ -31,6 +31,7 @@ RUNNER_COVERAGE_SCOPES = (
         "sequential-runner", "src/paritygrid/application/execution/runner.py", 95.0, True
     ),
     CoverageScope("runner-adapters", "src/paritygrid/adapters/runners/", 90.0),
+    CoverageScope("connector-adapters", "src/paritygrid/adapters/connectors/", 90.0),
 )
 
 
