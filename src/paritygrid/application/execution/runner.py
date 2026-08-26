@@ -433,12 +433,13 @@ class SequentialRunner:
                         authority=self._pause_authority,
                         _token=_PAUSE_RUNNER_TOKEN,
                     )
-                    return RunnerReport(
-                        RunnerStatus.PAUSED,
-                        tracker.state,
-                        tuple(started),
-                        acknowledgement,
-                    )
+                    if acknowledgement is not None:
+                        return RunnerReport(
+                            RunnerStatus.PAUSED,
+                            tracker.state,
+                            tuple(started),
+                            acknowledgement,
+                        )
                 node = tracker.next_ready_node()
                 if node is None:
                     raise RunnerProtocolError("active scheduler has no admissible node")
@@ -482,14 +483,18 @@ class SequentialRunner:
                         )
                     return RunnerReport(RunnerStatus.CANCELLED, tracker.state, tuple(started))
                 else:
+                    self._state = tracker.pause(node.node_id)
                     if not self._pause.is_requested:
                         raise RunnerProtocolError("paused node result requires requested pause")
-                    self._state = tracker.pause(node.node_id)
                     acknowledgement = self._pause._acknowledge_for_runner(  # pyright: ignore[reportPrivateUsage]
                         tracker.state,
                         authority=self._pause_authority,
                         _token=_PAUSE_RUNNER_TOKEN,
                     )
+                    if acknowledgement is None:
+                        raise RunnerProtocolError(
+                            "paused node acknowledgement lost an aborted pause"
+                        )
                     return RunnerReport(
                         RunnerStatus.PAUSED,
                         tracker.state,

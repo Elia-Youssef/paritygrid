@@ -18,7 +18,7 @@ from paritygrid.adapters.persistence.errors import (
     MigrationIntegrityError,
 )
 
-HEAD_REVISION = "0001_operational"
+HEAD_REVISION = "0002_execution_evidence"
 _SCRIPT_LOCATION = "paritygrid.adapters.persistence:migrations"
 _EXPECTED_TABLE_NAMES = frozenset(
     {
@@ -266,7 +266,7 @@ _EXPECTED_SCHEMA_HASHES: dict[tuple[str, str, str], str] = {
         "run_nodes",
         "run_nodes",
     ): "37990cbaa5f53c9bed65af0096cec9e5a26f7551ae3dbe5972e50ff43a378737",
-    ("table", "runs", "runs"): "e1386f26ca6df409bafb594300b33ed2d3abc3aead8bc9f1e56186a8af8a4b64",
+    ("table", "runs", "runs"): "c5195902ae9cc33607955ca49e372f6437fde1e6196525c9a84de90e23aa3fdd",
     (
         "table",
         "system_metadata",
@@ -657,6 +657,14 @@ def upgrade_to_head(connection: Connection) -> MigrationReport:
     try:
         config = _migration_config(connection)
         target_revision = _configured_head(config)
+        # The 0002 runs rebuild follows the documented SQLite table-rebuild
+        # procedure, which requires releasing foreign-key enforcement outside
+        # the migration transaction; postconditions restore and verify it.
+        connection.exec_driver_sql("PRAGMA foreign_keys = OFF")
+        if _foreign_keys_enabled(connection):
+            raise MigrationIntegrityError(
+                "SQLite foreign-key enforcement could not be released for the migration."
+            )
         connection.exec_driver_sql("BEGIN IMMEDIATE")
         previous_revision = _current_revision(connection)
         _validate_starting_state(connection, previous_revision)

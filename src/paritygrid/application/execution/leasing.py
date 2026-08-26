@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from collections.abc import Callable
 from dataclasses import dataclass, field, fields, is_dataclass
@@ -76,6 +77,7 @@ MAX_WORK_LEASE_MICROSECONDS = 86_400_000_000
 MAX_LEASE_OWNER_LENGTH = 128
 MAX_RUNNER_KIND_LENGTH = 32
 MAX_WORKER_IDENTITY_LENGTH = 128
+MAX_LEASE_EVENT_CORRELATION_ID_LENGTH = 96
 MAX_LEASE_ROW_VERSION = 2_147_483_647
 MAX_LEASE_WRITER_TIMEOUT_SECONDS = 86_400.0
 MAX_LEASE_CONTENTION_ATTEMPTS = 9
@@ -91,6 +93,10 @@ _LEASE_REJECTION_TYPES: tuple[type[Exception], ...] = (
     ConsistencyRecordNotFoundError,
     ConsistencyStaleRowVersionError,
     ConsistencyStateConflictError,
+)
+_LEASE_EVENT_CORRELATION_IDENTITY = re.compile(
+    r"[A-Za-z0-9][A-Za-z0-9._:-]*",
+    flags=re.ASCII,
 )
 
 
@@ -1394,6 +1400,18 @@ def _validate_event_frontier(request: EventAppendRequest) -> None:
         raise WorkLeaseInvalidRequestError("lease event sequence cannot advance")
     _validate_row_version(request.expected_counter_row_version, "lease event counter row version")
     _require_exact(request.event, PendingExecutionEvent, "lease pending event")
+    _validate_event_correlation_id(request.event.correlation_id)
+
+
+def _validate_event_correlation_id(value: object) -> None:
+    if value is None:
+        return
+    if (
+        type(value) is not str
+        or not 1 <= len(value) <= MAX_LEASE_EVENT_CORRELATION_ID_LENGTH
+        or _LEASE_EVENT_CORRELATION_IDENTITY.fullmatch(value) is None
+    ):
+        raise WorkLeaseInvalidRequestError("lease event correlation identifier is invalid")
 
 
 def _work_lease_event(
@@ -1454,6 +1472,7 @@ def _snapshot_run_id(value: object) -> RunId:
 
 __all__ = [
     "MAX_LEASE_CONTENTION_ATTEMPTS",
+    "MAX_LEASE_EVENT_CORRELATION_ID_LENGTH",
     "MAX_LEASE_OWNER_LENGTH",
     "MAX_LEASE_ROW_VERSION",
     "MAX_LEASE_WRITER_TIMEOUT_SECONDS",

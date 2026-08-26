@@ -72,7 +72,8 @@ class TransitionRun:
     expected_run_row_version: int
     target_state: RunState
     transitioned_at: UtcTimestamp
-    final_reconciliation_fingerprint: StateFingerprint | None
+    execution_evidence_fingerprint: StateFingerprint | None
+    execution_evidence_fingerprint_version: int | None
     event: EventAppendRequest
 
     @property

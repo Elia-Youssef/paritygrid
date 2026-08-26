@@ -286,7 +286,8 @@ def _transition_run(session: Session, command: TransitionRun) -> DispatchOutcome
         expected_row_version=command.expected_run_row_version,
         target_state=command.target_state,
         transitioned_at=command.transitioned_at,
-        final_reconciliation_fingerprint=command.final_reconciliation_fingerprint,
+        execution_evidence_fingerprint=command.execution_evidence_fingerprint,
+        execution_evidence_fingerprint_version=command.execution_evidence_fingerprint_version,
     )
     events = _append_event(session, command.run_id, command.event)
     return DispatchOutcome(TransitionRunResult(run, events))

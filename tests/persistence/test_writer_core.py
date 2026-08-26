@@ -1181,9 +1181,14 @@ def test_lease_races_are_command_local_and_writer_continues(
     monkeypatch: pytest.MonkeyPatch,
     lease_error: ExecutionLeaseLostError,
 ) -> None:
+    # DDL can wait for SQLite's configured five-second busy timeout on a
+    # contended Windows filesystem.  The writer assertion is about rolling
+    # back command-local data, so install its probe before the timed command.
+    with sessions.begin() as setup_session:
+        setup_session.execute(text("CREATE TABLE lease_guard (value INTEGER)"))
+
     def dispatch(session: Session, submitted: WriterCommand) -> DispatchOutcome:
         if cast(_Command, submitted).label == "lease-race":
-            session.execute(text("CREATE TABLE IF NOT EXISTS lease_guard (value INTEGER)"))
             session.execute(text("INSERT INTO lease_guard VALUES (1)"))
             raise lease_error
         return successful_dispatch(session, submitted)
@@ -1191,24 +1196,25 @@ def test_lease_races_are_command_local_and_writer_continues(
     monkeypatch.setattr(core, "dispatch_command", dispatch)
     writer = SQLiteTransactionalWriter(sessions, settings())
     writer.start()
-    raced = writer.submit(command("lease-race"), timeout_seconds=1.0)
-    following = writer.submit(command("following"), timeout_seconds=1.0)
-    with pytest.raises(type(lease_error)) as caught:
-        raced.result(timeout_seconds=1.0)
-    assert caught.value is lease_error
-    receipt = following.result(timeout_seconds=1.0)
-    assert cast(_Result, receipt.result).label == "following"
-    notification = writer.notifications.take()
-    assert notification is not None
-    assert notification.submission_id == following.submission_id
-    assert writer.notifications.take() is None
-    assert writer.close(timeout_seconds=1.0).drained
+    try:
+        raced = writer.submit(command("lease-race"), timeout_seconds=6.0)
+        following = writer.submit(command("following"), timeout_seconds=6.0)
+        with pytest.raises(type(lease_error)) as caught:
+            raced.result(timeout_seconds=6.0)
+        assert caught.value is lease_error
+        receipt = following.result(timeout_seconds=6.0)
+        assert cast(_Result, receipt.result).label == "following"
+        notification = writer.notifications.take()
+        assert notification is not None
+        assert notification.submission_id == following.submission_id
+        assert writer.notifications.take() is None
+    finally:
+        # A timeout or assertion failure must not strand the writer's
+        # non-daemon worker and hang the Windows job during interpreter exit.
+        # Six seconds exceeds SQLite's configured five-second busy timeout.
+        assert writer.close(timeout_seconds=6.0).drained
     with sessions() as session:
-        count = session.execute(
-            text("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='lease_guard'")
-        ).scalar_one()
-        if count:
-            assert session.execute(text("SELECT COUNT(*) FROM lease_guard")).scalar_one() == 0
+        assert session.execute(text("SELECT COUNT(*) FROM lease_guard")).scalar_one() == 0
 
 
 def test_closed_observer_loops_never_escape_writer_scheduling() -> None:

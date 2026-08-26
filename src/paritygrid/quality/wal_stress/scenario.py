@@ -102,7 +102,8 @@ def build_scenario(
         expected_run_row_version=1,
         target_state=RunState.RUNNING,
         transitioned_at=_timestamp(2),
-        final_reconciliation_fingerprint=None,
+        execution_evidence_fingerprint=None,
+        execution_evidence_fingerprint_version=None,
         event=_event(2, "run_started", run_id, _timestamp(2)),
     )
     node_versions = dict.fromkeys(node_ids, 1)

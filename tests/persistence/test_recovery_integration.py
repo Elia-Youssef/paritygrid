@@ -171,7 +171,8 @@ def _start_run(writer: SQLiteTransactionalWriter) -> None:
             expected_run_row_version=1,
             target_state=RunState.RUNNING,
             transitioned_at=_time(2),
-            final_reconciliation_fingerprint=None,
+            execution_evidence_fingerprint=None,
+            execution_evidence_fingerprint_version=None,
             event=_event(2, "run_started", RUN_ID, second=2),
         ),
     )
@@ -636,8 +637,11 @@ def test_real_quick_check_failure_fails_closed(tmp_path: Path) -> None:
 
     with database_path.open("r+b") as handle:
         size = handle.seek(0, 2)
-        handle.seek(size // 2)
-        handle.write(b"\x00corrupted-page-bytes\x00")
+        # Corrupt every page in the back half so the damage cannot land in
+        # layout-dependent free space left by the runs rebuild migration.
+        for offset in range(size // 2, size - 32, 4096):
+            handle.seek(offset)
+            handle.write(b"\x00corrupted-page-bytes\x00")
     from paritygrid.adapters.persistence.errors import SQLiteCapabilityError
 
     with warnings.catch_warnings(record=True) as caught:

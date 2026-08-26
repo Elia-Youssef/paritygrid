@@ -38,6 +38,10 @@ Topic branches target the current phase branch. Their names identify the change 
 
 The phase branch may merge into `main` only after all phase packages are accepted, the phase rubric scores at least 90, and every hard gate passes. Urgent fixes start from `main` as `fix/short-name`, receive the same checks, and are merged back into any active phase branch.
 
+### Implementation-goal boundary
+
+The standalone Phase 8–28 implementation prompts operate only inside a branch and working tree prepared beforehand. They must not stage, commit, push, switch branches, create tags, open pull requests, merge, or publish releases. After the implementation is audited and accepted, a separately authorized integration task performs the applicable steps below. Keeping integration outside the implementation goal does not waive any branch, review, exact-commit, or required-check rule.
+
 ## Pull-request sequence
 
 1. Create a topic branch from the current phase branch.

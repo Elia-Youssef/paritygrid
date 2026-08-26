@@ -411,9 +411,11 @@ class _Writer:
                 row_version=selected.expected_run_row_version + 1,
                 finished_at=selected.transitioned_at,
             )
-            if selected.final_reconciliation_fingerprint is not None:
+            if selected.execution_evidence_fingerprint is not None:
                 run = replace(
-                    run, final_reconciliation_fingerprint=selected.final_reconciliation_fingerprint
+                    run,
+                    execution_evidence_fingerprint=selected.execution_evidence_fingerprint,
+                    execution_evidence_fingerprint_version=2,
                 )
             events = _events(selected.event)
             receipt = WriterReceipt(
@@ -512,7 +514,8 @@ def test_failed_replay_with_fingerprint_is_a_conflict() -> None:
         replace(
             _run(state=RunState.FAILED, row_version=9),
             finished_at=_time(19),
-            final_reconciliation_fingerprint=StateFingerprint("4" * 64),
+            execution_evidence_fingerprint=StateFingerprint("4" * 64),
+            execution_evidence_fingerprint_version=2,
         ),
     )
     # Terminal failed replay requires work evidence that derives FAILED; give it one.
@@ -676,7 +679,12 @@ def _mutate_receipt(kind: str) -> Any:
             return replace(
                 receipt,
                 result=TransitionRunResult(
-                    replace(result.run, final_reconciliation_fingerprint=None), result.events
+                    replace(
+                        result.run,
+                        execution_evidence_fingerprint=None,
+                        execution_evidence_fingerprint_version=None,
+                    ),
+                    result.events,
                 ),
             )
         if kind == "events_type":
@@ -875,7 +883,7 @@ def _corrupt_evidence(kind: str) -> FinalizationEvidence:
             "run_cancellation_requested_at": ("cancellation_requested_at", object()),
             "run_recovery_started_at": ("recovery_started_at", object()),
             "run_recovered_at": ("recovered_at", object()),
-            "run_fingerprint": ("final_reconciliation_fingerprint", object()),
+            "run_fingerprint": ("execution_evidence_fingerprint", object()),
             "run_runner_kind": ("runner_kind", 42),
             "run_configuration": ("runner_configuration", object()),
             "configuration_pair": (

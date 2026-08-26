@@ -85,7 +85,7 @@ Keep it short enough to load comfortably on GitHub. Provide a still-image fallba
 
 ## Canonical narrative
 
-The README must state exact expected facts from the versioned scenario, including input counts, accepted records, quarantined records, conflict classifications, repair actions, retry count, artifacts, and final fingerprint. These values are populated only after Phase 13 locks them.
+The README must state exact expected facts from the versioned scenario, including input counts, accepted records, quarantined records, conflict classifications, repair actions, retry count, artifacts, and final fingerprint. These values are populated only after Phase 19 locks them.
 
 ## Code tour
 

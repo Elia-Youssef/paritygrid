@@ -17,8 +17,8 @@ Fingerprints use explicit kind and version fields that are independent of packag
 |---|---|---|---|
 | Plan fingerprint | Planner, Phase 5 | Logical compiled plan without visual layout | Identifies scheduling intent |
 | Execution-evidence fingerprint | Execution finalizer, Phase 6 | Plan fingerprint, pipeline identity and version, scenario seed, and sorted durable node, work, checkpoint, and logical-metric evidence | Identifies the durable evidence used to finalize one execution |
-| Reconciliation fingerprint | Reconciliation, Phase 9 | Versioned query and input-manifest identities plus canonical reconciliation state and summaries | Identifies one analytical reconciliation snapshot |
-| Target-state fingerprint | Verification, Phase 9 | Canonical observed target inventory and verification inputs | Identifies the independently observed target state after effects |
+| Reconciliation fingerprint | Reconciliation, Phase 10 | Versioned query and input-manifest identities plus canonical reconciliation state and summaries | Identifies one analytical reconciliation snapshot |
+| Target-state fingerprint | Verification, Phase 11 | Canonical observed target inventory and verification inputs | Identifies the independently observed target state after effects |
 
 The existing Phase 6 finalization document remains execution-evidence version 2. Phase 7 migrates the `runs` persistence name to `execution_evidence_fingerprint` and adds an explicit `execution_evidence_fingerprint_version`. Existing non-null values are preserved and backfilled as version 2 through a forward migration and frozen-schema upgrade test. Compatibility reads may recognize the former storage name only at the repository boundary during the migration window; new writes and public contracts use the new name.
 
@@ -30,7 +30,7 @@ Reconciliation and target-state fingerprints are separate facts. A successful re
 
 - Stored values state exactly what they prove.
 - The Phase 6 digest remains compatible while its column and public meaning become accurate.
-- Phase 7 runner comparison cannot overclaim Phase 9 behavior.
+- Phase 7 runner comparison cannot overclaim Phase 10 reconciliation or Phase 11 target-state behavior.
 - Every fingerprint change requires a new kind-specific version, golden vectors, and migration or compatibility rules.
 
 ## Alternatives considered

@@ -99,7 +99,8 @@ def _advanced_record(record: RunRecord) -> RunRecord:
         cancellation_requested_at=record.cancellation_requested_at,
         recovery_started_at=record.recovery_started_at,
         recovered_at=record.recovered_at,
-        final_reconciliation_fingerprint=record.final_reconciliation_fingerprint,
+        execution_evidence_fingerprint=record.execution_evidence_fingerprint,
+        execution_evidence_fingerprint_version=record.execution_evidence_fingerprint_version,
     )
 
 

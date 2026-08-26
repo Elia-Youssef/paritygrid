@@ -466,7 +466,7 @@ def _corrupt_durable(kind: str) -> CancellationDurableState:
             "run_cancellation_requested_at": ("cancellation_requested_at", object()),
             "run_recovery_started_at": ("recovery_started_at", object()),
             "run_recovered_at": ("recovered_at", object()),
-            "run_fingerprint": ("final_reconciliation_fingerprint", object()),
+            "run_fingerprint": ("execution_evidence_fingerprint", object()),
             "run_runner_kind": ("runner_kind", 42),
             "run_configuration": ("runner_configuration", object()),
             "document_array_values": ("runner_configuration", _corrupt_document_array()),
@@ -730,7 +730,8 @@ def test_run_evidence_with_seed_and_fingerprint_cancels_exactly() -> None:
     seeded = replace(
         _run(),
         scenario_seed=42,
-        final_reconciliation_fingerprint=StateFingerprint("0" * 64),
+        execution_evidence_fingerprint=StateFingerprint("0" * 64),
+        execution_evidence_fingerprint_version=2,
         runner_configuration=ConfigurationDocument(
             (
                 ("array", DocumentArray((1, "two"))),
@@ -745,7 +746,7 @@ def test_run_evidence_with_seed_and_fingerprint_cancels_exactly() -> None:
     writer.state = seeded_state
     report = coordinator.cancel()
     assert report.run.scenario_seed == 42
-    assert report.run.final_reconciliation_fingerprint == StateFingerprint("0" * 64)
+    assert report.run.execution_evidence_fingerprint == StateFingerprint("0" * 64)
 
 
 def test_cancel_work_rejects_non_text_runner_kind_and_detail() -> None:

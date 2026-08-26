@@ -900,7 +900,7 @@ def _advanced_run(run: RunRecord, row_version: int) -> RunRecord:
         run.cancellation_requested_at,
         run.recovery_started_at,
         run.recovered_at,
-        run.final_reconciliation_fingerprint,
+        run.execution_evidence_fingerprint,
     )
 
 

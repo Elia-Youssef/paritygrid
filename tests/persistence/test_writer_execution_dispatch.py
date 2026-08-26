@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 from paritygrid.adapters.persistence import (
     SQLiteDatabase,
     SQLiteDatabaseConfig,
+    SQLiteResultCoordinatorReader,
     create_session_factory,
 )
 from paritygrid.adapters.persistence.migration import upgrade_to_head
@@ -32,6 +33,34 @@ from paritygrid.adapters.persistence.schema import (
 from paritygrid.adapters.persistence.writer import dispatch as dispatch_runtime
 from paritygrid.adapters.persistence.writer.core import SQLiteTransactionalWriter
 from paritygrid.adapters.persistence.writer.dispatch import dispatch_command, validate_command
+from paritygrid.application.execution.capacity import ScheduledWorkLimiters
+from paritygrid.application.execution.channels import CHANNEL_KIND_RESULT, BoundedChannel
+from paritygrid.application.execution.clock_policy import ManualClock
+from paritygrid.application.execution.concurrency_settings import CapturedConcurrencySettings
+from paritygrid.application.execution.concurrent_scheduler import (
+    ConcurrentScheduler,
+    WorkIdentity,
+)
+from paritygrid.application.execution.result_coordinator import (
+    CommitIntent,
+    ConcurrentResultCoordinator,
+    RegisteredAssignment,
+    ResultStaleRejection,
+    ResultValidationRejection,
+)
+from paritygrid.application.execution.result_coordinator_writer import (
+    TransactionalResultCoordinatorWriter,
+)
+from paritygrid.application.execution.runner_contract import (
+    RUNNER_CONTRACT_VERSION,
+    WORK_RESULT_PROTOCOL,
+    ContractCleanupEvidence,
+    ContractCleanupStatus,
+    ContractMetric,
+    ContractOutcome,
+    ControlGeneration,
+    WorkResultV1,
+)
 from paritygrid.application.ports.configuration import ConfigurationDocument
 from paritygrid.application.ports.consistency import (
     EventSequence,
@@ -322,6 +351,289 @@ def claim_command(
     )
 
 
+class _StaticResultCommandFactory:
+    """Parent-owned test factory proving the intent never reaches dispatch."""
+
+    def __init__(self, command: WriterCommand) -> None:
+        self.command = command
+        self.intents: list[CommitIntent] = []
+
+    def build(self, intent: CommitIntent, /) -> WriterCommand:
+        self.intents.append(intent)
+        return self.command
+
+
+class _InvalidResultClock:
+    def now(self) -> UtcTimestamp:
+        return cast(UtcTimestamp, object())
+
+
+def _timestamp_micros(value: UtcTimestamp) -> int:
+    delta = value.value - datetime(1970, 1, 1, tzinfo=UTC)
+    return delta.days * 86_400_000_000 + delta.seconds * 1_000_000 + delta.microseconds
+
+
+def test_concurrent_result_adapter_commits_through_real_sqlite_writer(
+    database: SQLiteDatabase,
+) -> None:
+    """Bridge one P7.9 intent to the closed command set and real receipt."""
+    seed_pipeline(database)
+    writer = SQLiteTransactionalWriter(
+        create_session_factory(database.engine),
+        WriterSettings(),
+    )
+    writer.start()
+    try:
+        created = writer.submit(create_run_command(), timeout_seconds=1.0).result(
+            timeout_seconds=2.0
+        )
+        assert created.mutated is True
+        running = writer.submit(
+            TransitionRun(
+                RUN_ID,
+                1,
+                RunState.RUNNING,
+                timestamp(2),
+                None,
+                None,
+                append_request(2, "run_started", RUN_ID, timestamp(2)),
+            ),
+            timeout_seconds=1.0,
+        ).result(timeout_seconds=2.0)
+        assert running.mutated is True
+        bootstrapped = writer.submit(
+            bootstrap_command(3, 2, SUCCESS_NODE, SUCCESS_WORK, 3),
+            timeout_seconds=1.0,
+        ).result(timeout_seconds=2.0)
+        assert bootstrapped.mutated is True
+        claimed = writer.submit(
+            claim_command(4, 3, SUCCESS_NODE, SUCCESS_WORK, 4),
+            timeout_seconds=1.0,
+        ).result(timeout_seconds=2.0)
+        claim = cast(WorkClaim, claimed.result.claim)  # type: ignore[attr-defined]
+        reader_clock = ManualClock(timestamp(5))
+        reader = SQLiteResultCoordinatorReader(database, reader_clock)
+        frontier = reader.rebase(
+            str(RUN_ID),
+            str(SUCCESS_NODE),
+            "partition-3",
+            str(SUCCESS_WORK),
+        )
+        assert (
+            frontier.attempt_number,
+            frontier.lease_fence,
+            frontier.lease_owner,
+            frontier.attempt_state,
+        ) == (1, claim.row_version, claim.lease_owner, "running")
+        with pytest.raises(ResultStaleRejection, match="parents are inconsistent"):
+            reader.rebase(
+                str(RUN_ID),
+                str(SUCCESS_NODE),
+                "wrong-partition",
+                str(SUCCESS_WORK),
+            )
+        with pytest.raises(ResultStaleRejection, match="no longer exists"):
+            reader.rebase(
+                str(RUN_ID),
+                str(SUCCESS_NODE),
+                "partition-3",
+                "wrk_missing",
+            )
+        expired = SQLiteResultCoordinatorReader(
+            database,
+            ManualClock(timestamp(8)),
+        ).rebase(
+            str(RUN_ID),
+            str(SUCCESS_NODE),
+            "partition-3",
+            str(SUCCESS_WORK),
+        )
+        assert expired.attempt_state == "expired"
+        with pytest.raises(TypeError, match="invalid timestamp"):
+            SQLiteResultCoordinatorReader(
+                database,
+                _InvalidResultClock(),
+            ).rebase(
+                str(RUN_ID),
+                str(SUCCESS_NODE),
+                "partition-3",
+                str(SUCCESS_WORK),
+            )
+
+        result = WorkResultV1(
+            protocol=WORK_RESULT_PROTOCOL,
+            contract_version=RUNNER_CONTRACT_VERSION,
+            plan_fingerprint="f" * 64,
+            run_id=str(RUN_ID),
+            node_id=str(SUCCESS_NODE),
+            partition_key="partition-3",
+            work_item_id=str(SUCCESS_WORK),
+            attempt_number=1,
+            lease_fence=claim.row_version,
+            lease_owner=claim.lease_owner,
+            control_generation=ControlGeneration(1),
+            outcome=ContractOutcome.SUCCEEDED,
+            metrics=(ContractMetric("records", 1), ContractMetric("bytes", 10)),
+            artifact_references=(),
+            checkpoint_proposal=True,
+            failure_detail=None,
+            cleanup=ContractCleanupEvidence(
+                ContractCleanupStatus.COMPLETED,
+                (),
+                "cleanup-writer-adapter",
+            ),
+        )
+        intent = CommitIntent(
+            run_id=str(RUN_ID),
+            plan_fingerprint="f" * 64,
+            node_id=str(SUCCESS_NODE),
+            partition_key="partition-3",
+            work_item_id=str(SUCCESS_WORK),
+            attempt_number=1,
+            lease_fence=claim.row_version,
+            lease_owner=claim.lease_owner,
+            observed_at_micros=_timestamp_micros(timestamp(5)),
+            lease_expires_at_micros=_timestamp_micros(claim.lease_expires_at),
+            outcome="succeeded",
+            expected_run_row_version=4,
+            expected_node_row_version=3,
+            next_event_sequence=5,
+            event_counter_row_version=5,
+            checkpoint_proposed=True,
+            artifact_ids=(),
+            result=result,
+            runner_kind="threaded",
+            worker_identity="worker-01",
+            started_at_micros=_timestamp_micros(timestamp(4)),
+        )
+        concrete = CommitWorkWithCheckpoint(
+            RUN_ID,
+            SUCCESS_NODE,
+            claim,
+            WorkCompletion(
+                WorkItemState.SUCCEEDED,
+                timestamp(5),
+                None,
+                None,
+                None,
+                document(output="ok"),
+                1,
+                10,
+            ),
+            CheckpointWrite(
+                PartitionKey("partition-3"),
+                1,
+                None,
+                None,
+                None,
+                timestamp(5),
+            ),
+            WorkMetricDelta(records_read=1, bytes_read=10),
+            3,
+            4,
+            completion_append_request(
+                5,
+                SUCCESS_NODE,
+                claim,
+                WorkItemState.SUCCEEDED,
+                timestamp(5),
+                partition_key=PartitionKey("partition-3"),
+                checkpoint_payload_schema_version=1,
+            ),
+        )
+        factory = _StaticResultCommandFactory(concrete)
+        adapter = TransactionalResultCoordinatorWriter(writer, factory)
+        accepted_before_rejection = writer.snapshot().accepted
+        invalid_adapter = TransactionalResultCoordinatorWriter(
+            writer,
+            _StaticResultCommandFactory(replace(concrete, expected_run_row_version=99)),
+        )
+        with pytest.raises(ResultValidationRejection, match="does not match"):
+            invalid_adapter.submit(intent, timeout_seconds=1.0)
+        assert writer.snapshot().accepted == accepted_before_rejection
+        identity = WorkIdentity(str(RUN_ID), str(SUCCESS_NODE), "partition-3")
+        scheduler = ConcurrentScheduler(
+            run_id=str(RUN_ID),
+            plan_fingerprint="f" * 64,
+            node_order=(str(SUCCESS_NODE),),
+            edges=(),
+            partitions_by_node={str(SUCCESS_NODE): ("partition-3",)},
+            control_generation=ControlGeneration(1),
+        )
+        capacity = ScheduledWorkLimiters(
+            CapturedConcurrencySettings(),
+            strategy_id="threaded",
+            node_ids=(str(SUCCESS_NODE),),
+            clock=ManualClock(timestamp(5)),
+        )
+        scheduler.register_admission(identity, claim.row_version)
+        capacity.acquire(claim.lease_owner, str(SUCCESS_NODE))
+        coordinator = ConcurrentResultCoordinator(
+            run_id=str(RUN_ID),
+            plan_fingerprint="f" * 64,
+            control_generation=1,
+            reader=reader,
+            writer=adapter,
+            result_channel=BoundedChannel(kind=CHANNEL_KIND_RESULT, capacity=1),
+            scheduler=scheduler,
+            capacity=capacity,
+        )
+        coordinator.register_assignment(
+            RegisteredAssignment(
+                identity=identity,
+                work_item_id=str(SUCCESS_WORK),
+                attempt_number=1,
+                lease_fence=claim.row_version,
+                lease_owner=claim.lease_owner,
+                control_generation=1,
+                deadline_micros=_timestamp_micros(claim.lease_expires_at),
+                allowed_artifact_ids=(),
+            )
+        )
+
+        coordinator.submit_result(result)
+
+        assert coordinator.committed_count == 1
+        assert coordinator.registered_identities == ()
+        assert factory.intents == [intent]
+        with database.transaction() as session:
+            work = (
+                session.execute(
+                    select(work_items).where(work_items.c.work_item_id == str(SUCCESS_WORK))
+                )
+                .mappings()
+                .one()
+            )
+            assert (work["state"], work["row_version"]) == (
+                WorkItemState.SUCCEEDED.value,
+                claim.row_version + 2,
+            )
+            assert session.scalar(select(func.count()).select_from(work_attempts)) == 1
+            assert session.scalar(select(func.count()).select_from(checkpoints)) == 1
+            assert session.scalar(select(func.count()).select_from(execution_events)) == 5
+        with pytest.raises(ResultStaleRejection, match="no active lease"):
+            reader.rebase(
+                str(RUN_ID),
+                str(SUCCESS_NODE),
+                "partition-3",
+                str(SUCCESS_WORK),
+            )
+    finally:
+        writer.close(timeout_seconds=2.0)
+
+
+def test_sqlite_result_coordinator_reader_rejects_invalid_collaborators(
+    database: SQLiteDatabase,
+) -> None:
+    with pytest.raises(TypeError, match="database"):
+        SQLiteResultCoordinatorReader(
+            cast(SQLiteDatabase, object()),
+            ManualClock(timestamp(1)),
+        )
+    with pytest.raises(TypeError, match="clock"):
+        SQLiteResultCoordinatorReader(database, cast(ManualClock, object()))
+
+
 def test_all_execution_composites_preserve_order_and_advance_revision_once(
     database: SQLiteDatabase,
     monkeypatch: pytest.MonkeyPatch,
@@ -456,6 +768,7 @@ def test_all_execution_composites_preserve_order_and_advance_revision_once(
                 1,
                 RunState.RUNNING,
                 timestamp(2),
+                None,
                 None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
             ),
@@ -653,6 +966,7 @@ def test_work_commands_reject_cross_parent_hybrids_before_companions(
                 1,
                 RunState.RUNNING,
                 timestamp(2),
+                None,
                 None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
             ),
@@ -908,6 +1222,7 @@ def test_writer_rejects_bootstrap_after_empty_terminal_and_continues(
                 RunState.RUNNING,
                 timestamp(2),
                 None,
+                None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
             ),
             timeout_seconds=1.0,
@@ -993,6 +1308,7 @@ def test_composite_failure_rolls_back_every_prior_mutation(
                 RunState.RUNNING,
                 timestamp(2),
                 None,
+                None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
             ),
         )
@@ -1035,6 +1351,7 @@ def test_checkpoint_completion_failure_after_each_seam_is_atomic(
                 1,
                 RunState.RUNNING,
                 timestamp(2),
+                None,
                 None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
             ),
@@ -1121,6 +1438,7 @@ def test_checkpoint_partition_mismatch_rolls_back_every_completion_fact(
                 1,
                 RunState.RUNNING,
                 timestamp(2),
+                None,
                 None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
             ),
@@ -1350,6 +1668,7 @@ def test_execution_validation_error_matrix_is_fail_fast() -> None:
         1,
         cast(RunState, RunState.QUEUED),
         timestamp(2),
+        None,
         None,
         append_request(2, "run_started", RUN_ID, timestamp(2)),
     )
@@ -1599,6 +1918,7 @@ def test_claim_attempt_mismatch_rolls_back_before_event_or_aggregate_commit(
                 RunState.RUNNING,
                 timestamp(2),
                 None,
+                None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
             ),
         )
@@ -1662,6 +1982,7 @@ def test_transactional_writer_commits_to_wal_and_reopens_with_integrity(
                 1,
                 RunState.RUNNING,
                 timestamp(2),
+                None,
                 None,
                 append_request(2, "run_started", RUN_ID, timestamp(2)),
             ),

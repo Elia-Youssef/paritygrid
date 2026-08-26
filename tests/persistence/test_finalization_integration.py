@@ -180,7 +180,8 @@ def _start_run(writer: SQLiteTransactionalWriter) -> None:
             expected_run_row_version=1,
             target_state=RunState.RUNNING,
             transitioned_at=_time(2),
-            final_reconciliation_fingerprint=None,
+            execution_evidence_fingerprint=None,
+            execution_evidence_fingerprint_version=None,
             event=_event(2, "run_started", RUN_ID, second=2),
         ),
     )
@@ -392,7 +393,7 @@ def test_real_partial_success_finalizes_with_fingerprint_and_replay(tmp_path: Pa
             run = runs.get(RUN_ID)
             assert run is not None
             assert run.state is RunState.PARTIALLY_SUCCEEDED
-            assert run.final_reconciliation_fingerprint == report.fingerprint
+            assert run.execution_evidence_fingerprint == report.fingerprint
             page = SqlAlchemyExecutionEventRepository(session).list_after(
                 RUN_ID, after=None, limit=20
             )
@@ -444,7 +445,7 @@ def test_real_partial_success_finalizes_with_fingerprint_and_replay(tmp_path: Pa
             run = SqlAlchemyRunRepository(session).get(RUN_ID)
             assert run is not None
             assert run.state is RunState.PARTIALLY_SUCCEEDED
-            assert run.final_reconciliation_fingerprint == report.fingerprint
+            assert run.execution_evidence_fingerprint == report.fingerprint
     finally:
         reopened.close()
 
@@ -714,7 +715,8 @@ def test_real_reader_pages_large_frontiers_and_reports_missing_heads(tmp_path: P
                 expected_run_row_version=1,
                 target_state=RunState.RUNNING,
                 transitioned_at=_time(2),
-                final_reconciliation_fingerprint=None,
+                execution_evidence_fingerprint=None,
+                execution_evidence_fingerprint_version=None,
                 event=_event(2, "run_started", RUN_ID, second=2),
             ),
         )

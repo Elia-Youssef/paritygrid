@@ -199,7 +199,7 @@ uv run pytest tests/execution/test_sequential_end_to_end.py
 These commands verify the capability currently present; the synthetic fixture is not a
 production-connector or complete reconciliation workflow.
 
-The following Phase 13 runner smoke commands are planned and unavailable until their owning
+The following Phase 20 runner smoke commands are planned and unavailable until their owning
 packages and canonical scenario are accepted:
 
 ```powershell
@@ -208,7 +208,7 @@ uv run paritygrid demo --headless --runner threaded
 uv run paritygrid demo --headless --runner asyncio
 ```
 
-At Phase 13, each command must verify startup, migrations, simulator health, pipeline
+At Phase 20, each command must verify startup, migrations, simulator health, pipeline
 publication, run completion, artifact integrity, reconciliation summary, the expected
 kind-and-version fingerprints, and clean shutdown. A process CPU pool is a subordinate
 capability and is not exposed as a full-plan `--runner` value.
@@ -311,3 +311,30 @@ A phase is accepted only when:
 - Verification evidence is reproducible from documented commands.
 
 Hard-gate failures include data loss, required-strategy execution-evidence mismatch, exceeded concurrency bounds, unreleased owned resources, process-worker isolation failure, direct worker SQLite access, unresolved critical security issues, broken clean-clone setup, failing migrations, failing required tests, or repository-content violations.
+
+## Phase 7 concurrent execution gates
+
+- Shared full-plan conformance (`tests/execution/full_plan_conformance.py`) runs
+  identical durable-evidence, barrier, retry, pause, cancellation, bounds, and
+  cleanup assertions against the sequential, threaded, and asyncio strategies
+  over the real SQLite scenario, plus pooled overlap and out-of-order completion
+  proofs; defective doubles in `tests/execution/conformance_defects.py` must fail
+  the assertions they target.
+- Subordinate-pool conformance (`tests/execution/test_process_pool.py`) covers
+  codec rejection vectors, spawn execution, worker crash and timeout
+  classification, P7.6 CPU-permit gating, orphan-process checks, and a spawned
+  canary proving workers cannot import the database driver or open the
+  operational database.
+- The lifecycle matrix (`tests/execution/test_lifecycle_matrix.py`) covers every
+  full-plan strategy across completion, retry, pause/resume, cancellation,
+  worker failure, unknown writer outcome, structural blocked-writer
+  backpressure, repeated cleanup, and restart with expired and non-expired
+  leases.
+- The stress gate (`tests/execution/test_stress_shuffled.py`) runs fifty seeded
+  shuffled executions plus a triple-strategy reproduction proof comparing
+  normalized durable execution evidence across sequential, threaded, and
+  asyncio.
+- Import isolation for `src/paritygrid/adapters/runners/process_workers/` is
+  enforced by the existing `paritygrid-check-boundaries` transitive scan.
+- Cross-platform Windows/Linux CI execution of these gates passed on the Phase 7
+  exact head in [run 32827063567](https://github.com/Elia-Youssef/paritygrid/actions/runs/32827063567).

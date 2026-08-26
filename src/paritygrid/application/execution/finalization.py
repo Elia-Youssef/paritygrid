@@ -78,6 +78,7 @@ from paritygrid.domain.models import (
 
 FINALIZATION_EVENT_PAYLOAD_SCHEMA_VERSION = 1
 FINALIZATION_FINGERPRINT_DOMAIN = b"paritygrid:run-finalization:v2\0"
+EXECUTION_EVIDENCE_FINGERPRINT_VERSION = 2
 EMPTY_NODE_EVENT_PAYLOAD_SCHEMA_VERSION = 1
 MAX_FINALIZATION_CORRELATION_ID_LENGTH = 96
 MAX_FINALIZATION_TIMEOUT_SECONDS = 86_400.0
@@ -417,7 +418,7 @@ class RunFinalizer:
         evidence: FinalizationEvidence,
         plan_fingerprint: PlanFingerprint,
     ) -> FinalizationReport:
-        stored = evidence.run.final_reconciliation_fingerprint
+        stored = evidence.run.execution_evidence_fingerprint
         if stored is None:
             raise FinalizationConflictError("finalized run is missing its fingerprint")
         _require_work_terminal(evidence)
@@ -455,7 +456,7 @@ class RunFinalizer:
         outcome = _derive_outcome(evidence)
         if outcome is not FinalizationOutcome.FAILED:
             raise FinalizationConflictError("replay evidence diverges from the stored run")
-        if evidence.run.final_reconciliation_fingerprint is not None:
+        if evidence.run.execution_evidence_fingerprint is not None:
             raise FinalizationConflictError("failed run must not store a final fingerprint")
         _require_checkpoint_frontier(evidence)
         _require_nodes_terminal(evidence)
@@ -483,7 +484,7 @@ class RunFinalizer:
         _require_work_terminal(evidence)
         _require_checkpoint_frontier(evidence)
         self._require_aggregate_consistency(evidence)
-        if evidence.run.final_reconciliation_fingerprint is not None:
+        if evidence.run.execution_evidence_fingerprint is not None:
             raise FinalizationConflictError("cancelled run must not store a final fingerprint")
         return FinalizationReport(
             FinalizationAction.ALREADY_FINALIZED,
@@ -1056,7 +1057,7 @@ def _advanced_run(run: RunRecord, row_version: int) -> RunRecord:
         clean.cancellation_requested_at,
         clean.recovery_started_at,
         clean.recovered_at,
-        clean.final_reconciliation_fingerprint,
+        clean.execution_evidence_fingerprint,
     )
 
 
@@ -1089,6 +1090,7 @@ def _transition_command(
         target,
         _snapshot_timestamp(transitioned_at),
         fingerprint,
+        None if fingerprint is None else EXECUTION_EVIDENCE_FINGERPRINT_VERSION,
         EventAppendRequest(
             EventSequence(evidence.next_event_sequence.number),
             evidence.event_counter_row_version,
@@ -1241,7 +1243,8 @@ def _expected_final_run(previous: RunRecord, command: TransitionRun) -> RunRecor
         clean.cancellation_requested_at,
         clean.recovery_started_at,
         clean.recovered_at,
-        command.final_reconciliation_fingerprint,
+        command.execution_evidence_fingerprint,
+        command.execution_evidence_fingerprint_version,
     )
 
 
@@ -1313,7 +1316,8 @@ def _snapshot_run(value: object) -> RunRecord:
         _optional_timestamp(value.cancellation_requested_at),
         _optional_timestamp(value.recovery_started_at),
         _optional_timestamp(value.recovered_at),
-        _optional_fingerprint(value.final_reconciliation_fingerprint),
+        _optional_fingerprint(value.execution_evidence_fingerprint),
+        _optional_fingerprint_version(value.execution_evidence_fingerprint_version),
     )
 
 
@@ -1518,6 +1522,14 @@ def _optional_fingerprint(value: object) -> StateFingerprint | None:
     return StateFingerprint(value.value)
 
 
+def _optional_fingerprint_version(value: object) -> int | None:
+    if value is None:
+        return None
+    if type(value) is not int or not 1 <= value <= 2_147_483_647:
+        raise TypeError("execution-evidence fingerprint version is invalid")
+    return value
+
+
 def _snapshot_event_sequence(value: object) -> EventSequence:
     if type(value) is not EventSequence or type(value.number) is not int:
         raise TypeError("event sequence evidence is invalid")
@@ -1594,6 +1606,7 @@ def _frame(value: bytes) -> bytes:
 
 __all__ = [
     "EMPTY_NODE_EVENT_PAYLOAD_SCHEMA_VERSION",
+    "EXECUTION_EVIDENCE_FINGERPRINT_VERSION",
     "FINALIZATION_EVENT_PAYLOAD_SCHEMA_VERSION",
     "FINALIZATION_FINGERPRINT_DOMAIN",
     "MAX_FINALIZATION_CONTENTION_ATTEMPTS",

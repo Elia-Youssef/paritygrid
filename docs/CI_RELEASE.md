@@ -40,7 +40,7 @@ uv run python scripts/verify_frontend_api_path.py
 
 The frontend API smoke command runs after both locked environments are installed and exercises the Vite development proxy against the FastAPI application factory. Later phases add the stable `paritygrid verify` profiles without removing these underlying checks.
 
-The dependency audit exports every locked group to a temporary hash-pinned requirements file, omits only the unpublished local project, and audits that exact set in strict mode. The scoped coverage command consumes the same `.coverage` data as the aggregate report and independently requires at least 90 percent branch coverage for `paritygrid.application.execution` and 95 percent for the sequential runner. New adapter runner scopes must be registered in `scripts/verify_python_coverage.py` when they are introduced.
+The dependency audit exports every locked group to a temporary hash-pinned requirements file, omits only the unpublished local project, and audits that exact set in strict mode. The scoped coverage command consumes the same `.coverage` data as the aggregate report and independently requires at least 90 percent branch coverage for `paritygrid.application.execution`, 95 percent for the sequential runner, and 90 percent for `paritygrid.adapters.runners`. Every new runner adapter remains inside that registered gate.
 
 The wheel verifier builds into a temporary directory, exports locked runtime dependencies, installs them and the wheel into a fresh virtual environment, and runs import, CLI smoke, and spawned-child import probes outside the checkout. Temporary build, environment, and probe files are removed when verification finishes.
 
@@ -155,7 +155,9 @@ Use semantic versioning after the first public tag. Until then, use `0.x` releas
 
 ## Release checklist
 
-- Phase 15 scores at least 90.
+Phase 26 produces the reproducible candidate hashes and handoff checklist without staging, committing, pushing, tagging, or publishing. A separately authorized integration task creates the exact candidate commit and performs the Git and hosting actions required to evaluate the final checklist below.
+
+- Phase 26 scores at least 90.
 - No hard gate is open.
 - Working tree is clean.
 - Required workflows pass for the exact commit.

@@ -84,9 +84,11 @@ def test_database_upgrade_migrates_absolute_file_and_reports_repeat(tmp_path: Pa
     second = runner.invoke(app, ["database", "upgrade", "--database", str(database)])
 
     assert first.exit_code == 0
-    assert first.stdout == "Database revision: empty -> 0001_operational\n"
+    assert first.stdout == "Database revision: empty -> 0002_execution_evidence\n"
     assert second.exit_code == 0
-    assert second.stdout == "Database revision: 0001_operational -> 0001_operational\n"
+    assert (
+        second.stdout == "Database revision: 0002_execution_evidence -> 0002_execution_evidence\n"
+    )
 
 
 def test_database_upgrade_rejects_relative_and_missing_parent_paths(tmp_path: Path) -> None:
