@@ -278,7 +278,7 @@ def test_worker_notification_timeout_and_shutdown_close_failure(
         tmp_path / "scenario.sqlite3",
         tmp_path / "markers-v1.jsonl",
         1,
-        1.0,
+        15.0,
         invocation_token(CrashFailpoint.NORMAL, 1, 1),
     )
     scenario.prepare_crash_database(value.database_path, value.seed)
@@ -291,6 +291,22 @@ def test_worker_notification_timeout_and_shutdown_close_failure(
     ) -> bool:
         return super(worker._InstrumentedNotifications, self).offer(notification)
 
+    original_init = worker._WorkerInstrumentation.__init__
+
+    def replace_notification_completion(
+        self: worker._WorkerInstrumentation,
+        active_envelope: CrashControlEnvelope,
+        emitter: CrashMarkerEmitter,
+        stdin: BinaryIO,
+    ) -> None:
+        original_init(self, active_envelope, emitter, stdin)
+        self.notification_complete = MagicMock(wait=MagicMock(return_value=False))
+
+    monkeypatch.setattr(
+        worker._WorkerInstrumentation,
+        "__init__",
+        replace_notification_completion,
+    )
     monkeypatch.setattr(worker._InstrumentedNotifications, "offer", no_signal)
     with pytest.raises(CrashReopenWorkerError, match="notification"):
         worker.run_worker(control, stdin=io.BytesIO(), stdout=io.BytesIO())
