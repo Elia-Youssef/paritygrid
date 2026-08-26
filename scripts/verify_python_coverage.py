@@ -25,6 +25,7 @@ class CoverageScope:
 
 APPLICATION_COVERAGE_SCOPES = (
     CoverageScope("application-execution", "src/paritygrid/application/execution/", 90.0),
+    CoverageScope("reconciliation-analysis", "src/paritygrid/application/reconciliation/", 95.0),
 )
 RUNNER_COVERAGE_SCOPES = (
     CoverageScope(
@@ -32,6 +33,9 @@ RUNNER_COVERAGE_SCOPES = (
     ),
     CoverageScope("runner-adapters", "src/paritygrid/adapters/runners/", 90.0),
     CoverageScope("connector-adapters", "src/paritygrid/adapters/connectors/", 90.0),
+)
+RECONCILIATION_COVERAGE_SCOPES = (
+    CoverageScope("reconciliation", "src/paritygrid/domain/reconciliation/", 95.0),
 )
 def _mapping(value: object, subject: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
@@ -92,7 +96,11 @@ def verify_coverage(data_file: Path) -> bool:
         document = _mapping(json.loads(report_path.read_text(encoding="utf-8")), "document")
     files = _mapping(document.get("files"), "files")
     passed = True
-    for scope in (*APPLICATION_COVERAGE_SCOPES, *RUNNER_COVERAGE_SCOPES):
+    for scope in (
+        *APPLICATION_COVERAGE_SCOPES,
+        *RUNNER_COVERAGE_SCOPES,
+        *RECONCILIATION_COVERAGE_SCOPES,
+    ):
         percentage = _scope_percentage(files, scope)
         scope_passed = percentage + 1e-9 >= scope.minimum
         passed = passed and scope_passed

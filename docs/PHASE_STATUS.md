@@ -234,8 +234,46 @@ strict Pyright, import-boundary validation, instruction validation, and
 - HTTP routes remain the accepted Phase 8 synthetic routes; product API routes
   belong to Phase 12 and later.
 
+## Phase 10 progress
+
+Phase 10 implements deterministic, non-mutating reconciliation analysis over
+the accepted Phase 8 and 9 boundaries. The audited integration candidate
+completes all eight packages and keeps target mutation, approval, and repair
+outside the phase.
+
+### Phase 10 package status
+
+| Package | Status | Evidence |
+|---|---|---|
+| P10.1 — source schema normalization | Audited integration candidate | Versioned rules cover closed wire types, missing and null values, NFC Unicode, canonical attribute keys, deterministic order, and bounded quarantine evidence. |
+| P10.2 — canonical-key matching | Audited integration candidate | Explicit per-key member lists prevent overwrite-selected winners; collision evidence preserves repeated record keys and enforces member bounds. |
+| P10.3 — duplicate-source detection | Audited integration candidate | Duplicate groups retain sorted member provenance, distinct-content analysis, and fail-closed per-side bounds. |
+| P10.4 — classification engine | Audited integration candidate | Every normalized record receives exactly one primary classification, bounded secondary evidence, and the sole allowed suggested resolution for that classification. |
+| P10.5 — field-difference builder | Audited integration candidate | Stable nested-path differences cover missing, null, type mismatch, Unicode normalization, and bounded canonical renderings. |
+| P10.6 — conflict artifact writer | Audited integration candidate | Conflict Parquet schema v1 round-trips through atomic artifact and manifest publication; parallel position/key provenance retains one shared order and rejects inconsistent resolution evidence. |
+| P10.7 — DuckDB reconciliation queries | Audited integration candidate | DuckDB and the independent Python reference agree on per-key classifications, summaries, and fingerprints across golden, reordered, duplicate-heavy, empty, generated, and 5,000-row datasets. |
+| P10.8 — summary and reconciliation fingerprint | Audited integration candidate | Kind `reconciliation`, version 1 fingerprints bind versioned inputs, counts, and order-independent outcome state without reinterpreting execution-evidence fingerprints. |
+
+### Phase 10 local evidence
+
+The complete reconciliation matrix passed after independent audit and repair
+on 2026-08-26: 129 tests passed with no skips or failures. Focused artifact,
+matching, classification, and provenance regressions passed. Ruff, strict
+Pyright, import-boundary validation, instruction validation, and
+`git diff --check` also passed.
+
+### Phase 10 known limitations
+
+- Operational services that persist reconciliation rows behind run nodes belong
+  to later application-composition phases.
+- DuckDB agreement currently covers the Phase 8 generator ceiling of 5,000
+  rows per dataset; later performance phases own larger showcase scale.
+- Quarantine evidence participates in counts, fingerprints, and analysis
+  results but is not yet published as its own artifact.
+
 ## Advancement rule
 
-Phase 9 is stacked on the audited Phase 8 integration commit. Each phase branch
-may merge only after its complete gate and remote CI pass; acceptance of a
-later stacked phase does not bypass acceptance of its prerequisites.
+Phase 10 is stacked on the audited Phase 9 integration commit, which is stacked
+on Phase 8. Each phase branch may merge only after its complete gate and remote
+CI pass; acceptance of a later stacked phase does not bypass acceptance of its
+prerequisites.

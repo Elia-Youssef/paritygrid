@@ -8,6 +8,10 @@ from typing import Protocol, cast
 import pyarrow as pa
 import pyarrow.parquet as pq
 
+from paritygrid.adapters.artifacts.parquet.conflicts import (
+    CONFLICT_ARTIFACT_SCHEMA_FINGERPRINT,
+    encode_reconciliation_conflict_batch,
+)
 from paritygrid.adapters.artifacts.parquet.normalized import (
     NORMALIZED_INVENTORY_SCHEMA_FINGERPRINT,
     encode_normalized_inventory_batch,
@@ -23,6 +27,7 @@ from paritygrid.application.ports.artifacts import (
     ArtifactWriteReceipt,
 )
 from paritygrid.application.ports.parquet import (
+    CONFLICT_PARQUET_SCHEMA_VERSION,
     MAX_PARQUET_PARTITION_NUMBER,
     NORMALIZED_PARQUET_SCHEMA_VERSION,
     RAW_PARQUET_SCHEMA_VERSION,
@@ -32,6 +37,7 @@ from paritygrid.application.ports.parquet import (
     ParquetPartitionReceipt,
     ParquetPartitionWriter,
     RawInventoryBatch,
+    ReconciliationConflictBatch,
 )
 from paritygrid.domain.models import NodeId, RunId
 from paritygrid.domain.pipeline import PartitionKey
@@ -117,6 +123,37 @@ class AtomicParquetPartitionWriter(ParquetPartitionWriter):
             row_count=table.num_rows,
             schema_version=NORMALIZED_PARQUET_SCHEMA_VERSION,
             schema_fingerprint=NORMALIZED_INVENTORY_SCHEMA_FINGERPRINT,
+            write_receipt=receipt,
+        )
+
+    def write_conflicts(
+        self,
+        *,
+        run_id: RunId,
+        node_id: NodeId,
+        partition_key: PartitionKey,
+        partition_number: int,
+        batch: ReconciliationConflictBatch,
+    ) -> ParquetPartitionReceipt:
+        """Encode and publish one reconciliation conflict partition."""
+        path = parquet_partition_path(
+            run_id=run_id,
+            node_id=node_id,
+            partition_key=partition_key,
+            dataset=ParquetDatasetKind.RECONCILIATION,
+            partition_number=partition_number,
+        )
+        table = encode_reconciliation_conflict_batch(batch)
+        receipt = self._write(path, _buffer_chunks(_serialize_table(table)))
+        return ParquetPartitionReceipt(
+            run_id=run_id,
+            node_id=node_id,
+            partition_key=partition_key,
+            dataset=ParquetDatasetKind.RECONCILIATION,
+            partition_number=partition_number,
+            row_count=table.num_rows,
+            schema_version=CONFLICT_PARQUET_SCHEMA_VERSION,
+            schema_fingerprint=CONFLICT_ARTIFACT_SCHEMA_FINGERPRINT,
             write_receipt=receipt,
         )
 

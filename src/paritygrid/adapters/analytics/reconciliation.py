@@ -64,6 +64,7 @@ _TARGET_TABLE = "paritygrid_reconciliation_target"
 _REFERENCE_VIEW = "pgv_reconciliation_10_reference_v1"
 _TARGET_VIEW = "pgv_reconciliation_20_target_v1"
 _OUTCOMES_VIEW = "pgv_reconciliation_30_outcomes_v1"
+_SUMMARY_VIEW = "pgv_reconciliation_40_summary_v1"
 _VERIFY_CHUNK_BYTES = 1_048_576
 
 
@@ -100,6 +101,14 @@ _OUTCOME_COLUMNS = (
     DuckDBViewColumnDefinition("unit_price_mismatch", "BOOLEAN", True),
     DuckDBViewColumnDefinition("updated_at_mismatch", "BOOLEAN", True),
     DuckDBViewColumnDefinition("attributes_mismatch", "BOOLEAN", True),
+)
+_SUMMARY_COLUMNS = (
+    DuckDBViewColumnDefinition("classification", "VARCHAR", True),
+    DuckDBViewColumnDefinition("key_count", "BIGINT", True),
+)
+_SUMMARY_SELECT = (
+    f"SELECT classification, count(*) AS key_count FROM {_OUTCOMES_VIEW} "
+    "GROUP BY classification ORDER BY classification"
 )
 _SOURCE_SELECT = (
     "SELECT record_index, sku, name, quantity, unit_price_minor_units, "
@@ -245,16 +254,10 @@ class DuckDBReconciliationQueryEngine(ReconciliationQueryEngine):
         after: ReconciliationQueryCursor | None = None,
     ) -> ReconciliationQueryPage:
         """Return one SKU page and verify SQL classifications with domain values."""
-        installed = cast(object, snapshot)
-        if type(installed) is not ReconciliationQuerySnapshot:
-            raise TypeError("reconciliation snapshot is invalid")
-        if self._snapshot is None or installed != self._snapshot:
-            raise ReconciliationQueryStateError("reconciliation snapshot is not currently prepared")
+        installed = self._require_prepared(snapshot)
         page_size = validate_reconciliation_page_limit(limit)
         cursor = _require_cursor(after)
         try:
-            if self._registry.snapshot() != installed.view_catalog:
-                raise ReconciliationQueryCorruptionError("reconciliation analytical views changed")
             parameters: tuple[object, ...]
             predicate = ""
             if cursor is None:
@@ -288,6 +291,69 @@ class DuckDBReconciliationQueryEngine(ReconciliationQueryEngine):
             raise ReconciliationQueryStorageError("reconciliation query failed") from None
         next_cursor = ReconciliationQueryCursor(items[-1].sku) if len(rows) > page_size else None
         return ReconciliationQueryPage(installed, items, next_cursor)
+
+    def classification_counts(
+        self,
+        snapshot: ReconciliationQuerySnapshot,
+    ) -> tuple[tuple[ReconciliationClassification, int], ...]:
+        """Return the SQL classification counts for the prepared snapshot."""
+        self._require_prepared(snapshot)
+        try:
+            rows = self._database._fetch_all(  # pyright: ignore[reportPrivateUsage]
+                f"SELECT classification, key_count FROM {_SUMMARY_VIEW} ORDER BY classification"
+            )
+            totals = self._database._fetch_all(  # pyright: ignore[reportPrivateUsage]
+                f"SELECT count(*) FROM {_OUTCOMES_VIEW}"
+            )
+        except AnalyticalViewCorruptionError, AnalyticalViewSchemaError:
+            raise ReconciliationQueryCorruptionError(
+                "reconciliation analytical views are corrupt"
+            ) from None
+        except AnalyticalDatabaseError:
+            raise ReconciliationQueryStorageError("reconciliation summary query failed") from None
+        counts: list[tuple[ReconciliationClassification, int]] = []
+        names: list[str] = []
+        for row in rows:
+            if len(row) != 2 or type(row[0]) is not str or type(row[1]) is not int or row[1] < 1:
+                raise ReconciliationQueryCorruptionError("reconciliation summary row is malformed")
+            try:
+                counts.append((ReconciliationClassification(row[0]), row[1]))
+            except ValueError:
+                raise ReconciliationQueryCorruptionError(
+                    "reconciliation summary classification is unknown"
+                ) from None
+            names.append(row[0])
+        if names != sorted(names) or len(set(names)) != len(names):
+            raise ReconciliationQueryCorruptionError(
+                "reconciliation summary rows are not canonically ordered"
+            )
+        if totals != ((sum(count for _classification, count in counts),),):
+            raise ReconciliationQueryCorruptionError(
+                "reconciliation summary disagrees with the outcome total"
+            )
+        return tuple(counts)
+
+    def _require_prepared(
+        self,
+        snapshot: ReconciliationQuerySnapshot,
+    ) -> ReconciliationQuerySnapshot:
+        installed = cast(object, snapshot)
+        if type(installed) is not ReconciliationQuerySnapshot:
+            raise TypeError("reconciliation snapshot is invalid")
+        if self._snapshot is None or installed != self._snapshot:
+            raise ReconciliationQueryStateError("reconciliation snapshot is not currently prepared")
+        try:
+            if self._registry.snapshot() != installed.view_catalog:
+                raise ReconciliationQueryCorruptionError("reconciliation analytical views changed")
+        except ReconciliationQueryCorruptionError:
+            raise
+        except AnalyticalViewCorruptionError, AnalyticalViewSchemaError:
+            raise ReconciliationQueryCorruptionError(
+                "reconciliation analytical views are corrupt"
+            ) from None
+        except AnalyticalDatabaseError:
+            raise ReconciliationQueryStorageError("reconciliation query failed") from None
+        return installed
 
     def _verified_paths(self, source: NormalizedArtifactSet) -> tuple[Path, ...]:
         paths: list[Path] = []
@@ -391,6 +457,12 @@ def _view_definitions() -> tuple[DuckDBViewDefinition, ...]:
             AnalyticalViewVersion(1),
             _OUTCOMES_SELECT,
             _OUTCOME_COLUMNS,
+        ),
+        DuckDBViewDefinition(
+            AnalyticalViewName(_SUMMARY_VIEW),
+            AnalyticalViewVersion(1),
+            _SUMMARY_SELECT,
+            _SUMMARY_COLUMNS,
         ),
     )
 
