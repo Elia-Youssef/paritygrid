@@ -17,14 +17,15 @@ This document is the durable index of accepted phases, their integration commits
 | 7 — Concurrent execution | Accepted | [`6ad5fce`](https://github.com/Elia-Youssef/paritygrid/commit/6ad5fce2627642cdb1f8ff43517a4dde5a318d9d) | [Phase pull request #96](https://github.com/Elia-Youssef/paritygrid/pull/96) | Bounded concurrent scheduler and lifecycle, threaded and asyncio full-plan strategies, subordinate process and interpreter pools, capacity and channel controls, durable recovery, telemetry, and cross-strategy execution-evidence proof | Reconciliation, repair, and target-state equivalence remain outside the execution-evidence proof. |
 | 8 — Deterministic synthetic systems | Accepted | [`07c997b`](https://github.com/Elia-Youssef/paritygrid/commit/07c997b24c48460c6efade8ea55e1c0e872ecbf6) | [Phase pull request #97](https://github.com/Elia-Youssef/paritygrid/pull/97) | Seeded inventory datasets, scripted failure models, async and blocking source simulators, bounded files, idempotent warehouse simulation, and composed lifecycle control | The systems are loopback-only synthetic fixtures; production transport and authentication remain deferred. |
 | 9 — Connector contract and adapters | Accepted | [`38dac4e`](https://github.com/Elia-Youssef/paritygrid/commit/38dac4e134f8d90a97a428baf93c360ee99987e1) | [Phase pull request #98](https://github.com/Elia-Youssef/paritygrid/pull/98) | Application-owned connector contracts, async and blocking HTTP sources, CSV and JSON Lines sources, warehouse target integration, cooperative cancellation, deadlines, and bounded redaction | HTTP support intentionally targets the accepted loopback simulator protocol; product routes and broader transport features remain deferred. |
+| 10 — Reconciliation analysis | Accepted | [`724116a`](https://github.com/Elia-Youssef/paritygrid/commit/724116acc97678a2932848a99cdb87785d81487d) | [Phase pull request #99](https://github.com/Elia-Youssef/paritygrid/pull/99) | Deterministic schema normalization, matching, duplicate detection, classification, field differences, conflict artifacts, DuckDB agreement, summaries, and reconciliation fingerprints | Operational persistence and repair remain deferred; agreement testing is bounded by the accepted 5,000-row synthetic ceiling, and quarantine evidence is not yet a separate artifact. |
 
 ## Active boundary
 
-Phase 10 is active at the complete audited P10.1–P10.8 candidate on the integration branch `phase/10-reconciliation-analysis`.
+Phase 11 is the next delivery boundary. No Phase 11 implementation has been accepted.
 
-- Accepted `main`: [`38dac4e`](https://github.com/Elia-Youssef/paritygrid/commit/38dac4e134f8d90a97a428baf93c360ee99987e1).
-- Phase 9 acceptance evidence: [pull request #98](https://github.com/Elia-Youssef/paritygrid/pull/98) and its exact-head Windows and Ubuntu checks.
-- P10.1–P10.8 and the independent audit corrections passed exact-head Windows/Linux CI in [run 32955459935](https://github.com/Elia-Youssef/paritygrid/actions/runs/32955459935). The branch has been updated to accepted `main`; final phase-pull-request checks remain required before acceptance.
+- Accepted Phase 10 integration: [`724116a`](https://github.com/Elia-Youssef/paritygrid/commit/724116acc97678a2932848a99cdb87785d81487d).
+- Phase 10 acceptance evidence: [pull request #99](https://github.com/Elia-Youssef/paritygrid/pull/99) and its exact-head Windows, Ubuntu, policy, frontend, and smoke checks.
+- Phase 11 must begin from accepted Phase 10 and satisfy its own complete gate before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -235,33 +236,38 @@ strict Pyright, import-boundary validation, instruction validation, and
 - HTTP routes remain the accepted Phase 8 synthetic routes; product API routes
   belong to Phase 12 and later.
 
-## Phase 10 progress
+## Phase 10 acceptance record
 
 Phase 10 implements deterministic, non-mutating reconciliation analysis over
-the accepted Phase 8 and 9 boundaries. The audited integration candidate
-completes all eight packages and keeps target mutation, approval, and repair
-outside the phase.
+the accepted Phase 8 and 9 boundaries. All eight packages were accepted through
+[pull request #99](https://github.com/Elia-Youssef/paritygrid/pull/99) at merge
+commit [`724116a`](https://github.com/Elia-Youssef/paritygrid/commit/724116acc97678a2932848a99cdb87785d81487d).
+Target mutation, approval, and repair remain outside the phase.
 
 ### Phase 10 package status
 
 | Package | Status | Evidence |
 |---|---|---|
-| P10.1 — source schema normalization | Audited integration candidate | Versioned rules cover closed wire types, missing and null values, NFC Unicode, canonical attribute keys, deterministic order, and bounded quarantine evidence. |
-| P10.2 — canonical-key matching | Audited integration candidate | Explicit per-key member lists prevent overwrite-selected winners; collision evidence preserves repeated record keys and enforces member bounds. |
-| P10.3 — duplicate-source detection | Audited integration candidate | Duplicate groups retain sorted member provenance, distinct-content analysis, and fail-closed per-side bounds. |
-| P10.4 — classification engine | Audited integration candidate | Every normalized record receives exactly one primary classification, bounded secondary evidence, and the sole allowed suggested resolution for that classification. |
-| P10.5 — field-difference builder | Audited integration candidate | Stable nested-path differences cover missing, null, type mismatch, Unicode normalization, and bounded canonical renderings. |
-| P10.6 — conflict artifact writer | Audited integration candidate | Conflict Parquet schema v1 round-trips through atomic artifact and manifest publication; parallel position/key provenance retains one shared order and rejects inconsistent resolution evidence. |
-| P10.7 — DuckDB reconciliation queries | Audited integration candidate | DuckDB and the independent Python reference agree on per-key classifications, summaries, and fingerprints across golden, reordered, duplicate-heavy, empty, generated, and 5,000-row datasets. |
-| P10.8 — summary and reconciliation fingerprint | Audited integration candidate | Kind `reconciliation`, version 1 fingerprints bind versioned inputs, counts, and order-independent outcome state without reinterpreting execution-evidence fingerprints. |
+| P10.1 — source schema normalization | Accepted | Versioned rules cover closed wire types, missing and null values, NFC Unicode, canonical attribute keys, deterministic order, and bounded quarantine evidence. |
+| P10.2 — canonical-key matching | Accepted | Explicit per-key member lists prevent overwrite-selected winners; collision evidence preserves repeated record keys and enforces member bounds. |
+| P10.3 — duplicate-source detection | Accepted | Duplicate groups retain sorted member provenance, distinct-content analysis, and fail-closed per-side bounds. |
+| P10.4 — classification engine | Accepted | Every normalized record receives exactly one primary classification, bounded secondary evidence, and the sole allowed suggested resolution for that classification. |
+| P10.5 — field-difference builder | Accepted | Stable nested-path differences cover missing, null, type mismatch, Unicode normalization, and bounded canonical renderings. |
+| P10.6 — conflict artifact writer | Accepted | Conflict Parquet schema v1 round-trips through atomic artifact and manifest publication; parallel position/key provenance retains one shared order and rejects inconsistent resolution evidence. |
+| P10.7 — DuckDB reconciliation queries | Accepted | DuckDB and the independent Python reference agree on per-key classifications, summaries, and fingerprints across golden, reordered, duplicate-heavy, empty, generated, and 5,000-row datasets. |
+| P10.8 — summary and reconciliation fingerprint | Accepted | Kind `reconciliation`, version 1 fingerprints bind versioned inputs, counts, and order-independent outcome state without reinterpreting execution-evidence fingerprints. |
 
 ### Phase 10 local evidence
 
 The complete reconciliation matrix passed after independent audit and repair
-on 2026-08-26: 129 tests passed with no skips or failures. Focused artifact,
-matching, classification, and provenance regressions passed. Ruff, strict
-Pyright, import-boundary validation, instruction validation, and
-`git diff --check` also passed.
+on 2026-08-26: 129 tests passed with no skips or failures. The final local full
+suite passed 6,104 tests with 5 expected skips and 96.85% aggregate branch
+coverage; every scoped coverage gate passed, including 96.08% for the
+reconciliation domain and 100% for reconciliation analysis. Pull request #99
+then passed duplicate exact-head Windows and Ubuntu jobs plus repository policy,
+frontend, and frontend API smoke checks before merge. Ruff, strict Pyright,
+import-boundary validation, instruction validation, and `git diff --check` also
+passed.
 
 ### Phase 10 known limitations
 
@@ -274,6 +280,7 @@ Pyright, import-boundary validation, instruction validation, and
 
 ## Advancement rule
 
-Phase 10 is based on accepted Phase 9, which is based on accepted Phase 8. The
-Phase 10 branch may merge only after its complete gate and remote CI pass;
-acceptance of a later phase does not bypass acceptance of its prerequisites.
+Phase 10 is accepted on top of accepted Phases 8 and 9. Phase 11 may begin from
+the accepted Phase 10 integration commit and may merge only after its own
+complete gate and remote CI pass; acceptance of a later phase does not bypass
+acceptance of its prerequisites.
