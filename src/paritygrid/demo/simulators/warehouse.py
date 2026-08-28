@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from hashlib import sha256
 from typing import cast
 
+from paritygrid.application.ports.connectors import canonical_target_payload_sha256
 from paritygrid.demo.failures import (
     AppliedFailure,
     FailureScript,
@@ -43,6 +44,7 @@ _SKU_PATTERN = re.compile(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", flags=re.ASCII)
 _MAX_IDEMPOTENCY_ENTRIES = 10_000
 _IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", flags=re.ASCII)
 _CURSOR_PREFIX = "wh1"
+_TARGET_PRECONDITION_HEADER = "x-paritygrid-target-precondition"
 
 
 class WarehouseError(ValueError):
@@ -235,8 +237,9 @@ class WarehouseBehavior:
             return error_response(
                 400, "body_mismatch", "The body SKU must match the addressed record."
             )
+        precondition = request.headers.get(_TARGET_PRECONDITION_HEADER)
         fingerprint = _request_fingerprint(
-            request.method, request_path_only(request.path), request.body
+            request.method, request_path_only(request.path), request.body, precondition
         )
         stored = self._idempotency.get(key)
         if stored is not None:
@@ -265,6 +268,12 @@ class WarehouseBehavior:
                 507, "capacity_exceeded", "The warehouse record capacity is exhausted."
             )
         existing = self._records.get(sku)
+        if not _precondition_holds(precondition, existing):
+            return error_response(
+                409,
+                "target_precondition_failed",
+                "The target no longer satisfies the repair precondition.",
+            )
         canonical = json.dumps(payload, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
         if (
             existing is not None
@@ -463,9 +472,35 @@ class SimulatedWarehouse:
         await self._service.aclose()
 
 
-def _request_fingerprint(method: str, path: str, body: bytes) -> str:
-    payload = b"\0".join((method.encode("ascii"), path.encode("ascii"), body))
+def _request_fingerprint(
+    method: str, path: str, body: bytes, precondition: str | None = None
+) -> str:
+    condition = b"" if precondition is None else precondition.encode("ascii")
+    payload = b"\0".join((method.encode("ascii"), path.encode("ascii"), body, condition))
     return sha256(b"paritygrid-warehouse-request-v1\0" + payload).hexdigest()
+
+
+def _precondition_holds(
+    precondition: str | None,
+    existing: tuple[dict[str, object], int] | None,
+) -> bool:
+    """Evaluate one target predicate in the same turn as the mutation.
+
+    Idempotency lookup runs before this predicate, so a retry of a committed
+    write returns its durable receipt even if another actor has since changed
+    the record.  New writes must prove the precondition atomically.
+    """
+    if precondition is None:
+        return True
+    if precondition == "absent":
+        return existing is None
+    digest_prefix = "sha256:"
+    if not precondition.startswith(digest_prefix):
+        return False
+    expected = precondition.removeprefix(digest_prefix)
+    if len(expected) != 64 or re.fullmatch(r"[0-9a-f]{64}", expected, flags=re.ASCII) is None:
+        return False
+    return existing is not None and canonical_target_payload_sha256(existing[0]) == expected
 
 
 def _method_not_allowed(allow: str) -> PlannedResponse:

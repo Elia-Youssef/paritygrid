@@ -20,7 +20,7 @@ from paritygrid.domain.models import (
     UtcTimestamp,
 )
 from paritygrid.domain.reconciliation import FieldMismatch, differences_between
-from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan
+from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan, RepairPlanBinding
 
 MAX_REPAIR_PAGE_SIZE = 100
 MAX_AUDIT_PAGE_SIZE = 100
@@ -330,6 +330,7 @@ class RepairPlanRecord:
     rejected_at: UtcTimestamp | None
     failed_at: UtcTimestamp | None
     failure: RedactedDocument | None
+    binding: RepairPlanBinding | None = None
 
     def __repr__(self) -> str:
         return (

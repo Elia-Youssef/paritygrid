@@ -19,17 +19,13 @@ from paritygrid.application.repair.identities import (
     derive_plan_id,
 )
 from paritygrid.domain.canonical import FingerprintScope, fingerprint_state
-from paritygrid.domain.models import (
-    RepairActionId,
-    RunId,
-    StateFingerprint,
-)
+from paritygrid.domain.models import RepairActionId, RunId, StateFingerprint
 from paritygrid.domain.reconciliation import (
     ReconciliationClassification,
     SuggestedResolution,
     suggested_resolution_for,
 )
-from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan
+from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan, RepairPlanBinding
 
 REPAIR_GENERATION_POLICY_VERSION = 1
 REPAIR_GENERATION_VERSION = 1
@@ -39,22 +35,6 @@ REPAIRABLE_CLASSIFICATIONS: frozenset[ReconciliationClassification] = frozenset(
 _REPAIRABLE_ACTION_KINDS: frozenset[RepairActionKind] = frozenset(
     {RepairActionKind.CREATE_TARGET, RepairActionKind.UPDATE_TARGET}
 )
-
-
-@dataclass(frozen=True, slots=True)
-class RepairPlanBinding:
-    """Every identity a generated plan is bound to."""
-
-    run_id: RunId
-    reconciliation_fingerprint: StateFingerprint
-    source_input_identity: str
-    target_input_identity: str
-    policy_version: int
-    generation_version: int
-    rules_version: int
-    analysis_version: int
-    analytical_query_version: int
-    action_count: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -99,7 +79,7 @@ def generate_repair_plan(
         analytical_query_version=summary.analytical_query_version,
         action_count=0,
     )
-    repairable: list[RepairAction] = []
+    repairable_outcomes = []
     repairable_keys: list[str] = []
     review_only: list[str] = []
     for key in analysis.classification.keys:
@@ -108,15 +88,8 @@ def generate_repair_plan(
             review_only.append(outcome.sku)
             continue
         repairable_keys.append(outcome.sku)
-        repairable.append(
-            RepairAction.from_outcome(
-                action_id=derive_action_id(run_id, summary.fingerprint, outcome.sku),
-                conflict_id=derive_conflict_id(run_id, outcome.sku),
-                state_fingerprint=summary.fingerprint,
-                outcome=outcome,
-            )
-        )
-    if not repairable:
+        repairable_outcomes.append(outcome)
+    if not repairable_outcomes:
         return GeneratedRepairPlan(
             plan=None,
             content_fingerprint=None,
@@ -125,10 +98,21 @@ def generate_repair_plan(
             repairable_keys=(),
             review_only_keys=tuple(sorted(review_only)),
         )
+    bound = replace_count(binding, len(repairable_outcomes))
+    repairable = tuple(
+        RepairAction.from_outcome(
+            action_id=derive_action_id(run_id, summary.fingerprint, outcome.sku, bound),
+            conflict_id=derive_conflict_id(run_id, outcome.sku),
+            state_fingerprint=summary.fingerprint,
+            outcome=outcome,
+        )
+        for outcome in repairable_outcomes
+    )
     plan = RepairPlan(
-        plan_id=derive_plan_id(run_id, summary.fingerprint),
+        plan_id=derive_plan_id(run_id, summary.fingerprint, bound),
         state_fingerprint=summary.fingerprint,
-        actions=tuple(repairable),
+        actions=repairable,
+        binding=bound,
     )
     content = fingerprint_state((plan,), scope=FingerprintScope.REPAIR_PLAN_CONTENT)
     keys: dict[RepairActionId, str] = {
@@ -139,7 +123,7 @@ def generate_repair_plan(
         plan=plan,
         content_fingerprint=content,
         action_keys=RepairActionKeyMap.from_mapping(keys),
-        binding=replace_count(binding, len(plan.actions)),
+        binding=bound,
         repairable_keys=tuple(sorted(repairable_keys)),
         review_only_keys=tuple(sorted(review_only)),
     )

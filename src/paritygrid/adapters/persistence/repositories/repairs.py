@@ -83,7 +83,7 @@ from paritygrid.domain.models import (
     UtcTimestamp,
 )
 from paritygrid.domain.reconciliation import ReconciliationClassification
-from paritygrid.domain.repair import RepairActionKind, RepairPlan
+from paritygrid.domain.repair import RepairActionKind, RepairPlan, RepairPlanBinding
 
 
 class SqlAlchemyRepairRepository(RepairRepository):
@@ -114,7 +114,12 @@ class SqlAlchemyRepairRepository(RepairRepository):
             action_id: portable_identity(key, "external repair key", 128)
             for action_id, key in key_map.items()
         }
-        self._validate_summary(run, domain_plan.state_fingerprint, timestamp)
+        binding = domain_plan.binding
+        if binding is None:
+            raise RepairInvalidRequestError("repair plan requires an immutable generation binding")
+        if binding.run_id != run or binding.reconciliation_fingerprint != domain_plan.state_fingerprint:
+            raise RepairInvalidRequestError("repair plan binding does not match command identities")
+        self._validate_summary(run, domain_plan.state_fingerprint, timestamp, binding)
         effects = tuple(RepairActionEffect.from_action(action) for action in domain_plan.actions)
         self._validate_conflicts(run, effects)
         content = plan_content_fingerprint(domain_plan)
@@ -125,6 +130,14 @@ class SqlAlchemyRepairRepository(RepairRepository):
                 run_id=run.value,
                 reconciliation_fingerprint=domain_plan.state_fingerprint.value,
                 content_fingerprint=content.value,
+                source_input_identity=binding.source_input_identity,
+                target_input_identity=binding.target_input_identity,
+                policy_version=binding.policy_version,
+                generation_version=binding.generation_version,
+                rules_version=binding.rules_version,
+                analysis_version=binding.analysis_version,
+                analytical_query_version=binding.analytical_query_version,
+                action_count=binding.action_count,
                 status=RepairPlanStatus.PROPOSED.value,
                 row_version=1,
                 created_at=str(timestamp),
@@ -696,12 +709,19 @@ class SqlAlchemyRepairRepository(RepairRepository):
         )
 
     def _validate_summary(
-        self, run: RunId, fingerprint: StateFingerprint, created_at: UtcTimestamp
+        self,
+        run: RunId,
+        fingerprint: StateFingerprint,
+        created_at: UtcTimestamp,
+        binding: RepairPlanBinding,
     ) -> None:
         row = (
             self._session.execute(
                 select(
                     reconciliation_summaries.c.reconciliation_fingerprint,
+                    reconciliation_summaries.c.source_fingerprint,
+                    reconciliation_summaries.c.target_fingerprint,
+                    reconciliation_summaries.c.analytical_query_version,
                     reconciliation_summaries.c.created_at,
                     runs.c.state.label("run_state"),
                     runs.c.execution_evidence_fingerprint,
@@ -722,6 +742,14 @@ class SqlAlchemyRepairRepository(RepairRepository):
         summary_at = stored_timestamp(row["created_at"], "reconciliation summary time")
         if stored != fingerprint:
             raise RepairStateConflictError("repair plan reconciliation is stale")
+        if (
+            stored_fingerprint(row["source_fingerprint"], "reconciliation source fingerprint").value
+            != binding.source_input_identity
+            or stored_fingerprint(row["target_fingerprint"], "reconciliation target fingerprint").value
+            != binding.target_input_identity
+            or row["analytical_query_version"] != binding.analytical_query_version
+        ):
+            raise RepairStateConflictError("repair plan binding does not match reconciliation")
         self._require_monotonic(created_at, summary_at, "repair-plan creation time")
 
     def _validate_conflicts(self, run: RunId, effects: tuple[RepairActionEffect, ...]) -> None:
@@ -783,6 +811,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
             aggregate.plan.run_id != run
             or aggregate.plan.reconciliation_fingerprint != plan.state_fingerprint
             or aggregate.plan.content_fingerprint != content
+            or aggregate.plan.binding != plan.binding
             or aggregate.plan.created_at != created_at
             or aggregate.plan.status is not RepairPlanStatus.PROPOSED
             or tuple(action.effect for action in aggregate.actions) != expected_effects

@@ -5,6 +5,7 @@ from paritygrid.domain.repair.plans import (
     RepairAction,
     RepairActionKind,
     RepairPlan,
+    RepairPlanBinding,
 )
 from paritygrid.domain.repair.verification import (
     TARGET_OBSERVATION_VERSION,
@@ -21,6 +22,7 @@ __all__ = [
     "RepairAction",
     "RepairActionKind",
     "RepairPlan",
+    "RepairPlanBinding",
     "StaleRepairPlanError",
     "TargetStateIdentity",
     "compute_target_state_fingerprint",

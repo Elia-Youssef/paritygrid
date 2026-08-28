@@ -39,6 +39,7 @@ from paritygrid.application.ports.connectors import (
     ConnectorValidationError,
     TargetConnector,
     TargetWriteOutcome,
+    TargetWritePrecondition,
     TargetWriteRequest,
 )
 from paritygrid.application.ports.consistency import RedactedDocument
@@ -363,6 +364,13 @@ class RepairApplicationService:
             sku=action.effect.proposed.sku,
             payload=render_effect_payload(action.effect.proposed),
             idempotency_key=action.external_idempotency_key,
+            precondition=(
+                TargetWritePrecondition.must_be_absent()
+                if action.effect.expected_target is None
+                else TargetWritePrecondition.expected_payload(
+                    render_effect_payload(action.effect.expected_target)
+                )
+            ),
         )
         attempts = 0
         ambiguous_replays = 0

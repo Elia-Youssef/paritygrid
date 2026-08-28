@@ -34,11 +34,13 @@ construction instead of leaking.
 """
 
 import asyncio
+import json
 import re
 import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import StrEnum
+from hashlib import sha256
 from typing import Protocol, cast
 
 from paritygrid.application.planner.connectors import (
@@ -81,6 +83,7 @@ _CURSOR_PATTERN = re.compile(r"[A-Za-z0-9._:-]{1,128}", flags=re.ASCII)
 _CORRELATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,95}", flags=re.ASCII)
 _SKU_PATTERN = re.compile(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", flags=re.ASCII)
 _IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", flags=re.ASCII)
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}", flags=re.ASCII)
 
 
 class ConnectorContractError(RuntimeError):
@@ -582,11 +585,12 @@ def validate_idempotency_key(key: object) -> str:
 
 @dataclass(frozen=True, slots=True)
 class TargetWriteRequest:
-    """One target upsert with its stable idempotency identity."""
+    """One target upsert with stable idempotency and an optional CAS guard."""
 
     sku: str
     payload: Mapping[str, object]
     idempotency_key: str
+    precondition: "TargetWritePrecondition | None" = None
 
     def __post_init__(self) -> None:
         validate_sku(self.sku)
@@ -594,6 +598,61 @@ class TargetWriteRequest:
         if self.payload.get("sku") != self.sku:
             raise ConnectorValidationError("payload must address the same record key")
         validate_idempotency_key(self.idempotency_key)
+        if self.precondition is not None and type(self.precondition) is not TargetWritePrecondition:
+            raise ConnectorValidationError("target write precondition is invalid")
+
+
+class TargetWritePreconditionKind(StrEnum):
+    """Closed atomic target-state guards for one target write."""
+
+    MUST_BE_ABSENT = "must_be_absent"
+    EXPECTED_PAYLOAD_SHA256 = "expected_payload_sha256"
+
+
+@dataclass(frozen=True, slots=True)
+class TargetWritePrecondition:
+    """An immutable state predicate the target evaluates with the upsert.
+
+    The expected-payload digest describes canonical business state, excluding
+    observation provenance such as ``source_record_key``.  It is consequently
+    stable across repair retries while still fencing a target that changed
+    after reconciliation.
+    """
+
+    kind: TargetWritePreconditionKind
+    expected_payload_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if type(self.kind) is not TargetWritePreconditionKind:
+            raise ConnectorValidationError("target precondition kind is invalid")
+        absent = self.kind is TargetWritePreconditionKind.MUST_BE_ABSENT
+        if absent != (self.expected_payload_sha256 is None):
+            raise ConnectorValidationError("target precondition payload hash is invalid")
+        if self.expected_payload_sha256 is not None and (
+            type(self.expected_payload_sha256) is not str
+            or _SHA256_PATTERN.fullmatch(self.expected_payload_sha256) is None
+        ):
+            raise ConnectorValidationError("target precondition payload hash is invalid")
+
+    @classmethod
+    def must_be_absent(cls) -> TargetWritePrecondition:
+        """Require that the addressed target record does not exist."""
+        return cls(TargetWritePreconditionKind.MUST_BE_ABSENT)
+
+    @classmethod
+    def expected_payload(cls, payload: Mapping[str, object]) -> TargetWritePrecondition:
+        """Require one exact canonical business-state preimage."""
+        return cls(
+            TargetWritePreconditionKind.EXPECTED_PAYLOAD_SHA256,
+            canonical_target_payload_sha256(payload),
+        )
+
+    def header_value(self) -> str:
+        """Render the bounded wire representation included in idempotency identity."""
+        if self.kind is TargetWritePreconditionKind.MUST_BE_ABSENT:
+            return "absent"
+        assert self.expected_payload_sha256 is not None
+        return f"sha256:{self.expected_payload_sha256}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -635,6 +694,35 @@ class TargetRecord:
             value = getattr(self, name)
             if isinstance(value, bool) or not isinstance(value, int) or value < 0:
                 raise ConnectorValidationError(f"target {name} must be a nonnegative integer")
+
+
+@dataclass(frozen=True, slots=True)
+class TargetRecordPage:
+    """One bounded cursor page of independently observed target records."""
+
+    records: tuple[TargetRecord, ...]
+    next_cursor: str | None
+    request_count: int
+    byte_count: int
+
+    def __post_init__(self) -> None:
+        if type(self.records) is not tuple:
+            raise ConnectorValidationError("target page records must be a tuple")
+        if len(self.records) > MAX_PAGE_RECORDS:
+            raise ConnectorValidationError("target page exceeds the record bound")
+        if any(type(record) is not TargetRecord for record in self.records):
+            raise ConnectorValidationError("target page records are invalid")
+        for name in ("request_count", "byte_count"):
+            value = getattr(self, name)
+            if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+                raise ConnectorValidationError(f"target page {name} must be a nonnegative integer")
+        if self.next_cursor is not None:
+            validate_cursor(self.next_cursor)
+
+    @property
+    def exhausted(self) -> bool:
+        """Return whether the target has no further records."""
+        return self.next_cursor is None
 
 
 @dataclass(frozen=True, slots=True)
@@ -817,6 +905,12 @@ class TargetConnector(Protocol):
         context: ConnectorCallContext,
     ) -> TargetRecord | None: ...
 
+    async def list_records_async(
+        self,
+        cursor: str | None,
+        context: ConnectorCallContext,
+    ) -> TargetRecordPage: ...
+
     async def state_snapshot_async(
         self,
         context: ConnectorCallContext,
@@ -848,6 +942,22 @@ def describe_connector_error(error: ConnectorError) -> str:
         else ""
     )
     return f"{type(error).__name__}({error.classification.value}): {error.detail}{suffix}"
+
+
+def canonical_target_payload_sha256(payload: Mapping[str, object]) -> str:
+    """Hash the portable business state used by target-write preconditions.
+
+    Target records retain a source-record key for provenance, but repairs must
+    not fail merely because their own write stamps a different provenance key.
+    Every other bounded payload member is included, recursively sorted by the
+    JSON encoder, so the digest changes for any business-state mutation.
+    """
+    document = validate_source_record_payload(payload)
+    projected = {key: value for key, value in document.items() if key != "source_record_key"}
+    encoded = json.dumps(
+        projected, ensure_ascii=True, separators=(",", ":"), sort_keys=True
+    ).encode("utf-8")
+    return sha256(b"paritygrid:target-precondition:v1\0" + encoded).hexdigest()
 
 
 __all__ = [
@@ -890,9 +1000,13 @@ __all__ = [
     "TargetConnector",
     "TargetEffectOutcome",
     "TargetRecord",
+    "TargetRecordPage",
     "TargetStateSnapshot",
     "TargetWriteOutcome",
+    "TargetWritePrecondition",
+    "TargetWritePreconditionKind",
     "TargetWriteRequest",
+    "canonical_target_payload_sha256",
     "describe_connector_error",
     "require_no_running_loop",
     "validate_base_url",

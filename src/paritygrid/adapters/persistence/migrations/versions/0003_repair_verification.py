@@ -7,6 +7,7 @@ compared against, the verdict, and bounded redacted evidence. Rows are
 append-only; triggers installed by this revision reject delete and update.
 """
 
+import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0003_repair_verification"
@@ -28,6 +29,48 @@ _TRIGGERS: tuple[str, ...] = (
 
 def upgrade() -> None:
     """Create the append-only verification table with its guards."""
+    # Phase 3's historical repair rows predate explicit generation binding.
+    # Backfill their immutable reconciliation parents before new Phase 11
+    # writes make every binding field mandatory at the repository boundary.
+    for name, type_ in (
+        ("source_input_identity", sa.String(length=64)),
+        ("target_input_identity", sa.String(length=64)),
+        ("policy_version", sa.Integer()),
+        ("generation_version", sa.Integer()),
+        ("rules_version", sa.Integer()),
+        ("analysis_version", sa.Integer()),
+        ("analytical_query_version", sa.Integer()),
+        ("action_count", sa.Integer()),
+    ):
+        op.add_column("repair_plans", sa.Column(name, type_, nullable=True))
+    op.execute(
+        "UPDATE repair_plans AS p SET "
+        "source_input_identity=(SELECT source_fingerprint FROM reconciliation_summaries s "
+        "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint), "
+        "target_input_identity=(SELECT target_fingerprint FROM reconciliation_summaries s "
+        "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint), "
+        "policy_version=1, generation_version=1, rules_version=1, analysis_version=1, "
+        "action_count=(SELECT COUNT(*) FROM repair_actions a WHERE a.repair_plan_id=p.repair_plan_id), "
+        "analytical_query_version=(SELECT analytical_query_version FROM reconciliation_summaries s "
+        "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint)"
+    )
+    op.execute('DROP TRIGGER IF EXISTS "trg_repair_plans_protect_immutable_columns"')
+    op.execute(
+        'CREATE TRIGGER "trg_repair_plans_protect_immutable_columns" BEFORE UPDATE ON "repair_plans" '
+        'WHEN NEW."repair_plan_id" IS NOT OLD."repair_plan_id" OR NEW."run_id" IS NOT OLD."run_id" '
+        'OR NEW."reconciliation_fingerprint" IS NOT OLD."reconciliation_fingerprint" '
+        'OR NEW."content_fingerprint" IS NOT OLD."content_fingerprint" '
+        'OR NEW."source_input_identity" IS NOT OLD."source_input_identity" '
+        'OR NEW."target_input_identity" IS NOT OLD."target_input_identity" '
+        'OR NEW."policy_version" IS NOT OLD."policy_version" '
+        'OR NEW."generation_version" IS NOT OLD."generation_version" '
+        'OR NEW."rules_version" IS NOT OLD."rules_version" '
+        'OR NEW."analysis_version" IS NOT OLD."analysis_version" '
+        'OR NEW."analytical_query_version" IS NOT OLD."analytical_query_version" '
+        'OR NEW."action_count" IS NOT OLD."action_count" '
+        'OR NEW."created_at" IS NOT OLD."created_at" '
+        "BEGIN SELECT RAISE(ABORT, 'repair_plans immutable columns cannot change'); END"
+    )
     op.execute(_TABLE)
     for statement in (*_INDEXES, *_TRIGGERS):
         op.execute(statement)

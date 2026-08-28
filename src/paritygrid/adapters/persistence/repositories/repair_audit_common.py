@@ -52,7 +52,7 @@ from paritygrid.domain.models import (
     UtcTimestamp,
 )
 from paritygrid.domain.reconciliation import FieldMismatch, ReconciliationField, differences_between
-from paritygrid.domain.repair import RepairAction, RepairPlan
+from paritygrid.domain.repair import RepairAction, RepairPlan, RepairPlanBinding
 
 _PORTABLE_IDENTITY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]*", flags=re.ASCII)
 _SNAKE_CASE_PATTERN = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*", flags=re.ASCII)
@@ -257,12 +257,14 @@ def effect_content_fingerprint(
     plan_id: RepairPlanId,
     reconciliation_fingerprint: StateFingerprint,
     effects: tuple[RepairActionEffect, ...],
+    binding: RepairPlanBinding | None = None,
 ) -> StateFingerprint:
     actions = tuple(_synthetic_action(effect) for effect in effects)
     plan = RepairPlan(
         plan_id=plan_id,
         state_fingerprint=reconciliation_fingerprint,
         actions=actions,
+        binding=binding,
     )
     return fingerprint_state((plan,), scope=FingerprintScope.REPAIR_PLAN_CONTENT)
 

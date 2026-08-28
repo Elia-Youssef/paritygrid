@@ -18,14 +18,34 @@ from paritygrid.domain.models import (
     StateFingerprint,
     TargetVerificationId,
 )
+from paritygrid.domain.repair import RepairPlanBinding
 
 _ID_PAYLOAD_MAXIMUM = 64
 _IDEMPOTENCY_KEY_MAXIMUM = 128
 
 
-def derive_plan_id(run_id: RunId, reconciliation: StateFingerprint) -> RepairPlanId:
+def derive_plan_id(
+    run_id: RunId,
+    reconciliation: StateFingerprint,
+    binding: RepairPlanBinding | None = None,
+) -> RepairPlanId:
     """Derive the stable plan identity for one run and reconciliation snapshot."""
-    return RepairPlanId(f"rpl_{_slug((_run_slug(run_id), reconciliation.value[:24]))}")
+    pieces = (_run_slug(run_id), reconciliation.value[:24])
+    if binding is not None:
+        if binding.run_id != run_id or binding.reconciliation_fingerprint != reconciliation:
+            raise ValueError("repair plan binding does not match plan identity")
+        policy = ".".join(
+            str(value)
+            for value in (
+                binding.policy_version,
+                binding.generation_version,
+                binding.rules_version,
+                binding.analysis_version,
+                binding.analytical_query_version,
+            )
+        )
+        pieces = (*pieces, binding.source_input_identity[:12], binding.target_input_identity[:12], policy)
+    return RepairPlanId(f"rpl_{_slug(pieces)}")
 
 
 def derive_conflict_id(run_id: RunId, canonical_key: str) -> ConflictId:
@@ -34,12 +54,16 @@ def derive_conflict_id(run_id: RunId, canonical_key: str) -> ConflictId:
 
 
 def derive_action_id(
-    run_id: RunId, reconciliation: StateFingerprint, canonical_key: str
+    run_id: RunId,
+    reconciliation: StateFingerprint,
+    canonical_key: str,
+    binding: RepairPlanBinding | None = None,
 ) -> RepairActionId:
     """Derive the stable action identity for one repairable key."""
-    return RepairActionId(
-        f"rac_{_slug((_run_slug(run_id), reconciliation.value[:16], canonical_key.lower()))}"
-    )
+    pieces = (_run_slug(run_id), reconciliation.value[:16], canonical_key.lower())
+    if binding is not None:
+        pieces = (*pieces, derive_plan_id(run_id, reconciliation, binding).value[4:])
+    return RepairActionId(f"rac_{_slug(pieces)}")
 
 
 def derive_action_idempotency_key(

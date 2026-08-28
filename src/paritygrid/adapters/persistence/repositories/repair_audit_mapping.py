@@ -49,23 +49,43 @@ from paritygrid.domain.models import (
     RunId,
     UtcTimestamp,
 )
-from paritygrid.domain.repair import RepairActionKind
+from paritygrid.domain.repair import RepairActionKind, RepairPlanBinding
 
 
 def plan_from_row(row: Mapping[str, object]) -> RepairPlanRecord:
     """Map one plan row and reject every unsupported stored state."""
     status = _stored_plan_status(row["status"])
     failure_value = row["failure_detail"]
+    run_id = stored_identifier(row["run_id"], RunId, "repair run identifier")
+    reconciliation = stored_fingerprint(
+        row["reconciliation_fingerprint"], "repair reconciliation fingerprint"
+    )
     return RepairPlanRecord(
         repair_plan_id=stored_identifier(
             row["repair_plan_id"], RepairPlanId, "repair-plan identifier"
         ),
-        run_id=stored_identifier(row["run_id"], RunId, "repair run identifier"),
-        reconciliation_fingerprint=stored_fingerprint(
-            row["reconciliation_fingerprint"], "repair reconciliation fingerprint"
-        ),
+        run_id=run_id,
+        reconciliation_fingerprint=reconciliation,
         content_fingerprint=stored_fingerprint(
             row["content_fingerprint"], "repair content fingerprint"
+        ),
+        binding=RepairPlanBinding(
+            run_id=run_id,
+            reconciliation_fingerprint=reconciliation,
+            source_input_identity=stored_fingerprint(
+                row["source_input_identity"], "repair source identity"
+            ).value,
+            target_input_identity=stored_fingerprint(
+                row["target_input_identity"], "repair target identity"
+            ).value,
+            policy_version=stored_positive_int(row["policy_version"], "repair policy version"),
+            generation_version=stored_positive_int(row["generation_version"], "repair generation version"),
+            rules_version=stored_positive_int(row["rules_version"], "repair rules version"),
+            analysis_version=stored_positive_int(row["analysis_version"], "repair analysis version"),
+            analytical_query_version=stored_positive_int(
+                row["analytical_query_version"], "repair analytical query version"
+            ),
+            action_count=_stored_nonnegative_int(row["action_count"], "repair action count"),
         ),
         status=status,
         row_version=stored_positive_int(row["row_version"], "repair-plan row version"),
@@ -192,6 +212,8 @@ def validate_aggregate(
     """Validate plan, approval, and action rows as one coherent aggregate."""
     if not 1 <= len(actions) <= 10_000:
         raise RepairCorruptionError("repair plan action set is corrupt")
+    if plan.binding is None or plan.binding.action_count != len(actions):
+        raise RepairCorruptionError("repair plan binding action count is corrupt")
     if tuple(sorted(actions, key=_action_order)) != actions:
         raise RepairCorruptionError("repair plan action ordering is corrupt")
     if len({action.effect.action_id for action in actions}) != len(actions):
@@ -211,6 +233,7 @@ def validate_aggregate(
         plan.repair_plan_id,
         plan.reconciliation_fingerprint,
         tuple(action.effect for action in actions),
+        plan.binding,
     )
     if computed != plan.content_fingerprint:
         raise RepairCorruptionError("repair plan content fingerprint is corrupt")
@@ -410,6 +433,12 @@ def _stored_text(value: object, subject: str, maximum: int) -> str:
     if type(value) is not str or not 1 <= len(value) <= maximum:
         raise RepairCorruptionError(f"{subject} is corrupt")
     if unicodedata.normalize("NFC", value) != value:
+        raise RepairCorruptionError(f"{subject} is corrupt")
+    return value
+
+
+def _stored_nonnegative_int(value: object, subject: str) -> int:
+    if type(value) is not int or value < 0:
         raise RepairCorruptionError(f"{subject} is corrupt")
     return value
 

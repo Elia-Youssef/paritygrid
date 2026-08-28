@@ -29,6 +29,7 @@ from paritygrid.application.ports.reconciliation_persistence import (
     TargetVerificationRecord,
     TargetVerificationVerdict,
 )
+from paritygrid.application.ports.repair_audit import RepairPlanStatus
 from paritygrid.application.ports.writer import TransactionalWriter
 from paritygrid.application.reconciliation.analysis import ReconciliationAnalysis
 from paritygrid.application.repair.companions import (
@@ -100,6 +101,13 @@ class ExpectedInventory:
             raise ValueError("expected inventory must use sorted unique keys")
         if len(self.records) > _MAX_FINGERPRINT_ITEMS:
             raise ValueError("expected inventory exceeds the fingerprint bound")
+        for name in ("absent_keys", "ambiguous_keys"):
+            keys = getattr(self, name)
+            if tuple(sorted(set(keys))) != keys or any(type(key) is not str or not key for key in keys):
+                raise ValueError(f"expected inventory {name} must use sorted unique keys")
+        record_keys = set(skus)
+        if record_keys.intersection(self.absent_keys) or record_keys.intersection(self.ambiguous_keys):
+            raise ValueError("expected inventory keys must not overlap")
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,7 +193,7 @@ class TargetParityVerifier:
         context_id: str,
         cancellation: ConnectorCancellationToken = NEVER_CANCELLED,
     ) -> TargetVerificationReport:
-        """Read every expected record from the target and compare fingerprints."""
+        """Enumerate the target independently and compare complete inventories."""
         context = ConnectorCallContext(correlation_id=context_id, cancellation_token=cancellation)
         observed_at = self._now()
         expected = expected_fingerprint(inventory)
@@ -195,27 +203,20 @@ class TargetParityVerifier:
             return _interrupted_report(observed_at, expected, len(inventory.records))
         except Exception as error:
             return _failed_report(observed_at, expected, len(inventory.records), error)
-        observed_records: list[InventoryRecord] = []
-        divergences: list[InventoryDivergence] = []
+        if snapshot.record_count > _MAX_FINGERPRINT_ITEMS:
+            return _failed_report(
+                observed_at,
+                expected,
+                len(inventory.records),
+                RuntimeError("the observed target exceeds the verification inventory bound"),
+            )
         try:
-            for position, record in enumerate(inventory.records):
-                context.raise_if_cancelled()
-                diverged = await self._observe_key(
-                    record, position, target, context, observed_records
-                )
-                if diverged is not None:
-                    divergences.append(diverged)
-            for key in inventory.absent_keys:
-                context.raise_if_cancelled()
-                observed = await target.read_record_async(key, context)
-                if observed is not None:
-                    divergences.append(
-                        InventoryDivergence(key, "unexpected target record is present")
-                    )
+            observed_records = await self._observe_inventory(target, context)
         except ConnectorCancelledError:
             return _interrupted_report(observed_at, expected, len(inventory.records))
         except Exception as error:
             return _failed_report(observed_at, expected, len(inventory.records), error)
+        divergences = _inventory_divergences(inventory, observed_records)
         divergences.extend(
             InventoryDivergence(key, "expected content is ambiguous after duplicate review")
             for key in inventory.ambiguous_keys
@@ -233,6 +234,8 @@ class TargetParityVerifier:
         if (
             closing.record_count != snapshot.record_count
             or closing.target_version != snapshot.target_version
+            or closing.content_fingerprint != snapshot.content_fingerprint
+            or closing.record_count != len(observed_records)
         ):
             return _failed_report(
                 observed_at,
@@ -241,7 +244,8 @@ class TargetParityVerifier:
                 RuntimeError("the target changed while it was being observed"),
             )
         observed_digest = fingerprint_state(
-            observed_records, scope=FingerprintScope.TARGET_OBSERVATION_STATE
+            tuple(sorted(observed_records, key=lambda record: record.sku)),
+            scope=FingerprintScope.TARGET_OBSERVATION_STATE,
         )
         identity = TargetStateIdentity(
             fingerprint_kind=TARGET_STATE_FINGERPRINT_KIND,
@@ -276,26 +280,45 @@ class TargetParityVerifier:
             detail=None,
         )
 
-    async def _observe_key(
+    async def _observe_inventory(
         self,
-        record: InventoryRecord,
-        position: int,
         target: TargetConnector,
         context: ConnectorCallContext,
-        observed_records: list[InventoryRecord],
-    ) -> InventoryDivergence | None:
-        observed = await target.read_record_async(record.sku, context)
-        if observed is None:
-            return InventoryDivergence(record.sku, "target record is missing")
-        parsed = parse_observed_payload(position, observed.payload)
-        if parsed.record is None:
-            return InventoryDivergence(record.sku, "target record is unparsable")
-        observed_records.append(parsed.record)
-        # Content equality is provenance-free, matching the fingerprint: the
-        # observation connector identity must never affect parity.
-        if _observation_bytes(parsed.record) != _observation_bytes(record):
-            return InventoryDivergence(record.sku, "target record content differs")
-        return None
+    ) -> tuple[InventoryRecord, ...]:
+        """Return the entire bounded target inventory from cursor pages.
+
+        No partial inventory receives a target-state fingerprint: malformed,
+        repeated, cyclic, or over-bound pages fail observation instead.  The
+        opening and closing target snapshots in :meth:`verify` then prove that
+        this enumeration observed one coherent target cut.
+        """
+        cursor: str | None = None
+        seen_cursors: set[str] = set()
+        seen_keys: set[str] = set()
+        records: list[InventoryRecord] = []
+        while True:
+            context.raise_if_cancelled()
+            page = await target.list_records_async(cursor, context)
+            for target_record in page.records:
+                context.raise_if_cancelled()
+                if target_record.sku in seen_keys:
+                    raise RuntimeError("the target enumeration repeated a record key")
+                seen_keys.add(target_record.sku)
+                parsed = parse_observed_payload(len(records), target_record.payload)
+                if parsed.record is None:
+                    raise RuntimeError("the target enumeration contains an unparsable record")
+                records.append(parsed.record)
+                if len(records) > _MAX_FINGERPRINT_ITEMS:
+                    raise RuntimeError("the target enumeration exceeds the verification inventory bound")
+            next_cursor = page.next_cursor
+            if next_cursor is None:
+                return tuple(records)
+            if next_cursor in seen_cursors:
+                raise RuntimeError("the target enumeration cursor repeated")
+            seen_cursors.add(next_cursor)
+            if len(seen_cursors) > _MAX_FINGERPRINT_ITEMS:
+                raise RuntimeError("the target enumeration exceeds the page bound")
+            cursor = next_cursor
 
 
 class TargetVerificationService:
@@ -340,12 +363,23 @@ class TargetVerificationService:
             raise RepairReconciliationStaleError(
                 expected=current.value, actual=reconciliation_fingerprint.value
             )
-        if repair_plan_id is not None:
+        if repair_plan_id is None:
+            if plan_content_fingerprint is not None:
+                raise RepairPlanMismatchError("verification plan content requires a repair plan")
+        else:
+            if plan_content_fingerprint is None:
+                raise RepairPlanMismatchError("verification repair plan requires its content fingerprint")
             aggregate = self._reader.load_plan(repair_plan_id)
             if aggregate is None:
                 raise RepairPlanMismatchError("verified repair plan does not exist")
             if aggregate.plan.run_id != run_id:
                 raise RepairPlanMismatchError("verified repair plan belongs to another run")
+            if aggregate.plan.status is not RepairPlanStatus.APPLIED:
+                raise RepairPlanMismatchError("verified repair plan has not been applied")
+            if aggregate.plan.reconciliation_fingerprint != reconciliation_fingerprint:
+                raise RepairPlanMismatchError("verified repair plan addresses another reconciliation")
+            if aggregate.plan.content_fingerprint != plan_content_fingerprint:
+                raise RepairPlanMismatchError("verified repair plan contents do not match")
         verdict = _recordable_verdict(report)
         observed = report.observed
         if verdict is not TargetVerificationVerdict.OBSERVATION_FAILED and observed is None:
@@ -443,6 +477,31 @@ def _expected_target_record(
     if len(distinct) > 1:
         ambiguous.append(outcome.sku)
     return outcome.target_records[0]
+
+
+def _inventory_divergences(
+    expected: ExpectedInventory,
+    observed_records: tuple[InventoryRecord, ...],
+) -> list[InventoryDivergence]:
+    """Compare the complete independently enumerated target inventory."""
+    observed = {record.sku: record for record in observed_records}
+    divergences: list[InventoryDivergence] = []
+    for expected_record in expected.records:
+        actual = observed.pop(expected_record.sku, None)
+        if actual is None:
+            divergences.append(InventoryDivergence(expected_record.sku, "target record is missing"))
+        elif _observation_bytes(actual) != _observation_bytes(expected_record):
+            divergences.append(
+                InventoryDivergence(expected_record.sku, "target record content differs")
+            )
+    for key in expected.absent_keys:
+        if observed.pop(key, None) is not None:
+            divergences.append(InventoryDivergence(key, "unexpected target record is present"))
+    divergences.extend(
+        InventoryDivergence(key, "unexpected target record is present")
+        for key in sorted(observed)
+    )
+    return divergences
 
 
 def _observation_bytes(record: InventoryRecord) -> bytes:
