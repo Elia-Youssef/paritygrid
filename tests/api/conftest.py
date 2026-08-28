@@ -21,7 +21,7 @@ from paritygrid.application.ports.consistency import (
 from paritygrid.application.ports.writer import EventAppendRequest, WriterReceipt
 from paritygrid.application.writes.execution import TransitionRun
 from paritygrid.domain.execution import RunState
-from paritygrid.domain.models import RunId, UtcTimestamp
+from paritygrid.domain.models import RunId, StateFingerprint, UtcTimestamp
 from paritygrid.runtime.composition import (
     RuntimeContainer,
     RuntimeReadinessProbe,
@@ -136,6 +136,7 @@ def clock_driven_services(
     container: RuntimeContainer, clock: DeterministicClock, *, lease_seconds: float
 ) -> RuntimeServices:
     """Rebuild the service surface over one injected clock and lease window."""
+    from paritygrid.adapters.persistence.repair_workflow import SQLiteRepairWorkflowReader
     from paritygrid.application.services.artifacts import ArtifactService
     from paritygrid.application.services.connectors import (
         ConnectorService,
@@ -146,6 +147,8 @@ def clock_driven_services(
         IdempotentCommandService,
     )
     from paritygrid.application.services.pipelines import PipelineService
+    from paritygrid.application.services.reconciliation import ReconciliationService
+    from paritygrid.application.services.repair import RepairApplyService, RepairService
     from paritygrid.application.services.runs import RunLifecycleService, RunService
 
     unit_of_work = SQLOperationalUnitOfWork(
@@ -153,6 +156,7 @@ def clock_driven_services(
         artifact_root=container.settings.artifact_root_path,
         artifact_chunk_bytes=container.settings.artifact_chunk_bytes,
     )
+    repair_reader = SQLiteRepairWorkflowReader(container.database)
     now = clock.now
     return RuntimeServices(
         pipelines=PipelineService(unit_of_work=unit_of_work, now=now),
@@ -171,6 +175,21 @@ def clock_driven_services(
             now=now,
         ),
         capabilities=container.services.capabilities,
+        reconciliation=ReconciliationService(unit_of_work=unit_of_work),
+        repair=RepairService(
+            writer=container.writer,
+            reader=repair_reader,
+            unit_of_work=unit_of_work,
+            now=now,
+        ),
+        repair_application=RepairApplyService(
+            writer=container.writer,
+            reader=repair_reader,
+            unit_of_work=unit_of_work,
+            now=now,
+        ),
+        event_stream=container.services.event_stream,
+        telemetry=container.services.telemetry,
         clock=now,
     )
 
@@ -210,7 +229,14 @@ async def seed_scenario(
     )
 
 
-def transition_run(container: RuntimeContainer, run_id: str, target: RunState) -> WriterReceipt:
+def transition_run(
+    container: RuntimeContainer,
+    run_id: str,
+    target: RunState,
+    *,
+    execution_evidence_fingerprint: str | None = None,
+    execution_evidence_fingerprint_version: int | None = None,
+) -> WriterReceipt:
     """Advance one run through the durable writer exactly as the engine does."""
     with container.database.transaction() as session:
         repository = SqlAlchemyRunRepository(session)
@@ -223,8 +249,12 @@ def transition_run(container: RuntimeContainer, run_id: str, target: RunState) -
         expected_run_row_version=record.row_version,
         target_state=target,
         transitioned_at=record.created_at,
-        execution_evidence_fingerprint=None,
-        execution_evidence_fingerprint_version=None,
+        execution_evidence_fingerprint=(
+            None
+            if execution_evidence_fingerprint is None
+            else StateFingerprint(execution_evidence_fingerprint)
+        ),
+        execution_evidence_fingerprint_version=execution_evidence_fingerprint_version,
         event=EventAppendRequest(
             expected_next_sequence=EventSequence(counter.next_sequence_number),
             expected_counter_row_version=counter.row_version,
@@ -244,6 +274,54 @@ def transition_run(container: RuntimeContainer, run_id: str, target: RunState) -
     ticket = container.writer.submit(command, timeout_seconds=5.0)
     receipt = ticket.result(timeout_seconds=5.0)
     return receipt
+
+
+def seed_reconciled_run(
+    container: RuntimeContainer,
+    *,
+    run_id: str,
+    analysis: object,
+    correlation_id: str = "seed-reconciliation",
+) -> None:
+    """Drive one run to a terminal state and persist its reconciliation."""
+    from paritygrid.adapters.persistence.repair_workflow import SQLiteRepairWorkflowReader
+    from paritygrid.application.reconciliation.analysis import ReconciliationAnalysis
+    from paritygrid.application.repair import ReconciliationResultService
+    from paritygrid.domain.models import StateFingerprint
+
+    assert isinstance(analysis, ReconciliationAnalysis)
+    with container.database.transaction() as session:
+        repository = SqlAlchemyRunRepository(session)
+        record = repository.get(RunId(run_id))
+        assert record is not None, "seed run must exist before reconciliation"
+        moment = record.created_at
+        repository.transition(
+            record.run_id,
+            expected_row_version=record.row_version,
+            target_state=RunState.RUNNING,
+            transitioned_at=moment,
+        )
+        running = repository.get(record.run_id)
+        assert running is not None
+        repository.transition(
+            running.run_id,
+            expected_row_version=running.row_version,
+            target_state=RunState.SUCCEEDED,
+            transitioned_at=moment,
+            execution_evidence_fingerprint=StateFingerprint("a" * 64),
+            execution_evidence_fingerprint_version=2,
+        )
+    service = ReconciliationResultService(
+        container.writer,
+        SQLiteRepairWorkflowReader(container.database),
+        now=container.services.clock,
+    )
+    service.persist(
+        run_id=RunId(run_id),
+        analysis=analysis,
+        actor="seed-operator",
+        correlation_id=correlation_id,
+    )
 
 
 _ENGINE_EVENT_KINDS = {

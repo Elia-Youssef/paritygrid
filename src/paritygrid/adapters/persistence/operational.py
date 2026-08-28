@@ -9,12 +9,19 @@ from paritygrid.adapters.artifacts.streaming import FileSystemArtifactStreamRead
 from paritygrid.adapters.persistence.repositories.connectors import (
     SqlAlchemyConnectorRepository,
 )
+from paritygrid.adapters.persistence.repositories.execution_events import (
+    SqlAlchemyExecutionEventRepository,
+)
 from paritygrid.adapters.persistence.repositories.idempotency import (
     SqlAlchemyIdempotencyRepository,
 )
 from paritygrid.adapters.persistence.repositories.pipelines import (
     SqlAlchemyPipelineRepository,
 )
+from paritygrid.adapters.persistence.repositories.reconciliation import (
+    SqlAlchemyReconciliationResultRepository,
+)
+from paritygrid.adapters.persistence.repositories.repairs import SqlAlchemyRepairRepository
 from paritygrid.adapters.persistence.repositories.runs import SqlAlchemyRunRepository
 from paritygrid.adapters.persistence.sqlite import SQLiteDatabase
 from paritygrid.application.ports.operations import (
@@ -55,4 +62,7 @@ class SQLOperationalUnitOfWork(OperationalUnitOfWork):
                     self._artifact_root,
                     chunk_size=self._artifact_chunk_bytes,
                 ),
+                events=SqlAlchemyExecutionEventRepository(session),
+                reconciliation=SqlAlchemyReconciliationResultRepository(session),
+                repair=SqlAlchemyRepairRepository(session),
             )

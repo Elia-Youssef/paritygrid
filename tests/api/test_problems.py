@@ -155,17 +155,78 @@ async def test_services_absent_returns_runtime_unavailable_problem() -> None:
 
 
 def test_translate_error_covers_the_problem_matrix() -> None:
+    from paritygrid.api.errors.problems import not_found_problem
+    from paritygrid.application.ports.reconciliation_persistence import (
+        ReconciliationInvalidRequestError,
+        ReconciliationRecordNotFoundError,
+        ReconciliationResultConflictError,
+        ReconciliationStorageError,
+        ReconciliationStorageUnavailableError,
+    )
+    from paritygrid.application.ports.repair_audit import (
+        RepairCorruptionError,
+        RepairDuplicateError,
+        RepairInvalidRequestError,
+        RepairRecordNotFoundError,
+        RepairStaleRowVersionError,
+        RepairStateConflictError,
+        RepairStorageError,
+        RepairStorageUnavailableError,
+    )
+    from paritygrid.application.repair.errors import (
+        RepairPlanMismatchError,
+        RepairPlanStateError,
+        RepairReconciliationMissingError,
+        RepairReconciliationStaleError,
+        RepairRunNotFoundError,
+        RepairWriterOutcomeUnknownError,
+        RepairWriterUnavailableError,
+        TargetApplicationError,
+        TargetApplicationInterruptedError,
+        TargetApplicationUnresolvedError,
+    )
+    from paritygrid.application.services.telemetry import TelemetrySubscriberLimitError
+
     cases: list[tuple[Exception, int, str]] = [
         (OperationalRecordNotFoundError("run", "run_x"), 404, "run_not_found"),
         (RunInvalidTransitionError("nope"), 409, "run_invalid_transition"),
         (IdempotencyInProgressError("busy"), 409, "idempotency_in_progress"),
         (ProblemError(type_slug="conflict", title="t", status=409), 409, "conflict"),
         (RuntimeError("boom"), 500, "internal_error"),
+        (RepairRunNotFoundError("no run"), 404, "run_not_found"),
+        (RepairReconciliationMissingError("absent"), 409, "reconciliation_missing"),
+        (RepairReconciliationStaleError("stale", "other"), 409, "reconciliation_stale"),
+        (RepairPlanMismatchError("diverged"), 409, "repair_plan_mismatch"),
+        (RepairPlanStateError("bad state"), 409, "repair_plan_state"),
+        (RepairWriterOutcomeUnknownError("unknown"), 503, "writer_outcome_unknown"),
+        (RepairWriterUnavailableError("busy"), 503, "unavailable"),
+        (TargetApplicationUnresolvedError("unresolved"), 503, "repair_outcome_unresolved"),
+        (
+            TargetApplicationInterruptedError("cancelled"),
+            503,
+            "repair_application_interrupted",
+        ),
+        (TargetApplicationError("target failed"), 409, "target_application_failed"),
+        (ReconciliationRecordNotFoundError("gone"), 404, "reconciliation_not_found"),
+        (ReconciliationResultConflictError("conflict"), 409, "reconciliation_conflict"),
+        (ReconciliationInvalidRequestError("bad"), 422, "validation"),
+        (TelemetrySubscriberLimitError("full"), 503, "telemetry_capacity"),
+        (RepairInvalidRequestError("bad"), 422, "validation"),
+        (RepairRecordNotFoundError("gone"), 404, "repair_plan_not_found"),
+        (RepairDuplicateError("dupe"), 409, "duplicate_record"),
+        (RepairStaleRowVersionError("stale"), 409, "stale_row_version"),
+        (RepairStateConflictError("conflict"), 409, "repair_state_conflict"),
+        (RepairCorruptionError("corrupt"), 500, "data_integrity"),
+        (RepairStorageUnavailableError("down"), 503, "unavailable"),
+        (RepairStorageError("failed"), 503, "unavailable"),
+        (ReconciliationStorageUnavailableError("down"), 503, "unavailable"),
+        (ReconciliationStorageError("failed"), 503, "unavailable"),
     ]
     for error, status, code in cases:
         problem = translate_error(error)
         assert problem.status == status, (error, status)
         assert problem.code == code, (error, code)
+    del not_found_problem
 
 
 def test_problem_documents_never_expose_internals() -> None:

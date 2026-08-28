@@ -98,6 +98,14 @@ POST /api/v1/repair-plans/{plan_id}/apply
 
 A repair plan references one exact reconciliation fingerprint. Approval or application fails when the fingerprint is stale. Application is idempotent per action.
 
+### Phase 13 domain boundary
+
+- `GET …/reconciliation` returns the persisted summary with run coherence fields (`run_id`, `run_version`, `state`, `observed_at`), the reconciliation fingerprint, both input identities, every classification count, and the analytical query version. A run without a persisted reconciliation returns `404` (`reconciliation_not_found`).
+- `GET …/conflicts` pages the persisted conflict projection with `limit` (1–100, default 50) and an opaque `cursor` equal to the last canonical key of the previous page. Every page repeats the run identity fields and the reconciliation fingerprint so stale pages cannot be silently merged.
+- `POST …/repair-plans` carries the bounded reconciliation observations for both sides exactly as the run read them (`source`/`target`: connector identity, 64-hex input identity, and up to 10 000 observations each of `{position, payload}` or `{position, malformed_reason}`). The server re-runs the accepted analysis and the Phase 11 planner; the plan is created only when the regenerated reconciliation fingerprint matches the persisted summary, otherwise `409` (`reconciliation_stale`). The body is bounded by the configured request byte limit.
+- `POST …/approve` echoes the exact `approved_content_fingerprint` and `approved_reconciliation_fingerprint` the operator reviewed; any divergence from the durable plan is rejected with `409`. Replay of an identical approval returns the stored plan.
+- `POST …/apply` takes no body. It resolves the run pipeline's single `warehouse_target` connector binding, applies every action idempotently through the Phase 11 applier, and reports the durable disposition (`completed`, `already_applied`, `failed`, `unresolved`, `interrupted`). `unresolved` and `interrupted` return `503` Problem Details with codes `repair_outcome_unresolved` and `repair_application_interrupted`; neither is cached as an idempotency-terminal success, and repeating the same request safely resumes the exact durable plan.
+
 ## Artifact routes
 
 ```text
@@ -131,6 +139,13 @@ The SSE endpoint:
 - Disconnects slow clients rather than blocking execution.
 - Allows reconnection without losing committed history.
 
+### Phase 13 stream contract
+
+- Frames use `id:` (the per-run sequence), `event:` (the durable event kind), and a `data:` JSON envelope `{schema_version, channel: "durable-events", sequence, run_id, event_kind, subject_kind, subject_id, occurred_at, correlation_id?, payload_schema_version, payload}`. An initial `retry: 3000` line sets the client reconnect hint; heartbeats are `: paritygrid-heartbeat` comments and never carry data.
+- Resume is supplied through `?after=<sequence>` or the `Last-Event-ID` header, never both (`400` `invalid_resume_position`). `after=0` replays the full retained history. Malformed, non-numeric, zero-padded, or oversized identities are rejected with `400` (`invalid_last_event_id`) before any streaming begins.
+- A resume position ahead of the durable frontier is rejected with `409` (`stream_sequence_ahead`) rather than silently skipped. Events are append-only and contiguous per run, so a valid resume always continues at exactly `after + 1`; because durable events are never pruned, every retained event is delivered on reconnection without duplication.
+- Every poll is one short transaction over committed rows only. A subscriber that stops reading stops polling; the writer, persistence, and execution continue unaffected. Streams occupy one concurrency slot each for the bound, and cancellation or disconnect always releases the slot and the database read.
+
 ## Live telemetry
 
 ```text
@@ -138,6 +153,14 @@ WS /api/v1/live/runs/{run_id}
 ```
 
 The WebSocket carries ephemeral metrics such as queue depths, active workers, resource saturation, and short-lived timing. Loss of this channel does not affect execution and does not prevent state recovery through REST and SSE.
+
+### Phase 13 telemetry contract
+
+- The run is validated before the upgrade: an unknown run closes the handshake with code `4404`; a saturated run closes with `1013`.
+- The first message is a snapshot `{schema_version, channel: "telemetry", advisory: true, records: [...]}` built from the live writer queue diagnostics. Later batches add `sampled: true` and a `dropped` counter; both envelopes are unmistakably distinct from the durable SSE envelope (`channel: "durable-events"`, sequence identities, no advisory marker).
+- Telemetry is advisory only. It is never persisted, never authoritative, and never usable to reconstruct durable history; the durable stores remain the sole recovery and audit truth.
+- Client messages are validated strictly: one UTF-8 JSON object `{"type": "ping"}` of at most 4 096 bytes is answered with a `pong` frame; oversized messages close with `1009`, malformed or unsupported messages close with `1008`.
+- Per-subscriber queues are bounded with drop-oldest sampling; a consumer whose sends exceed the configured send timeout is disconnected. Disconnect, reconnect, backpressure, and telemetry loss never alter run state, execution correctness, persistence, or recovery.
 
 ## Problem response
 
@@ -185,6 +208,31 @@ The frontend must reject or separately display data from incompatible run versio
 - Commit both only when deterministic.
 - CI rebuilds them and fails on unexplained differences.
 - Every public route has success, validation, authorization if applicable, conflict, and failure tests.
+
+### Phase 13 generation commands
+
+```powershell
+uv run python scripts/export_openapi.py            # regenerate docs/generated/openapi.json
+uv run python scripts/export_openapi.py --check     # fail on OpenAPI drift
+uv run python scripts/generate_api_types.py         # regenerate web/src/api/generated/schema.d.ts
+uv run python scripts/generate_api_types.py --check # fail on generated-type drift
+npm --prefix web run generate:api                   # frontend-boundary regeneration entry point
+npm --prefix web run generate:api:check             # frontend-boundary drift entry point
+npm --prefix web run generate:api:compile           # compile generated declarations with library checks
+npm --prefix web run build                          # produce web/dist reproducibly
+uv run python scripts/verify_frontend_dist.py       # clean-rebuild drift check for web/dist
+```
+
+- The OpenAPI export comes from the real `create_app` factory, is sorted and normalized, and contains no timestamps, machine paths, secrets, or nondeterministic identifiers. The WebSocket channel is recorded under `x-paritygrid-live-transports` because OpenAPI 3.1 does not model WebSocket routes; the SSE route is a normal path entry.
+- Generated TypeScript output is produced by the pinned in-repository generator (standard library only, generator version recorded in the file header) from the committed OpenAPI document, lives under `web/src/api/generated/`, is excluded from hand formatting and lint, and is never edited by hand.
+- The generated-file inventory in `scripts/validate_instructions.ps1` records every committed generated artifact.
+
+## Packaged frontend serving
+
+- `paritygrid serve` starts the composed application with the frontend embedded in the installed wheel. The embedded files are copied from committed `web/dist`; Node.js is not required at runtime or for the installed application. The distribution root can be overridden with the `PARITYGRID_FRONTEND_DIST` setting.
+- Requests under `/api`, `/healthz`, and `/readyz` never reach the SPA fallback; unknown API paths keep the versioned `404` Problem Details response.
+- Asset serving is confined to the resolved distribution root: traversal, encoded or double-encoded traversal, backslashes, drive-shaped segments, symlink escapes, directories (no listings), and malformed paths are rejected. Valid client-side navigation without a file extension falls back to `index.html`; asset-like misses return `404`.
+- Content types come from a closed safe-extension map with `application/octet-stream` as the fallback and `X-Content-Type-Options: nosniff` always present. Hashed `/assets/` files are served `public, max-age=31536000, immutable`; the shell document is `no-cache`. HTML responses carry the application shell content security policy; every other response keeps `default-src 'none'`.
 
 ## API QA
 

@@ -31,6 +31,7 @@ from paritygrid.application.ports.reconciliation_persistence import (
     MAX_RECONCILIATION_CONFLICTS,
     MAX_VERIFICATION_DETAIL_BYTES,
     PersistedConflict,
+    ReconciliationConflictPage,
     ReconciliationCorruptionError,
     ReconciliationInvalidRequestError,
     ReconciliationRecordNotFoundError,
@@ -46,6 +47,7 @@ from paritygrid.application.ports.reconciliation_persistence import (
     TargetVerificationStorageError,
     TargetVerificationStorageUnavailableError,
     TargetVerificationVerdict,
+    validate_reconciliation_conflict_page_limit,
 )
 from paritygrid.application.ports.writer import PersistenceContentionError
 from paritygrid.domain.execution import RunState
@@ -237,6 +239,38 @@ class SqlAlchemyReconciliationResultRepository:
             return None
         timestamp = stored_timestamp(row["created_at"], "reconciliation summary time")
         return self._load_result(identity, timestamp)
+
+    @_translated(ReconciliationStorageError, ReconciliationStorageUnavailableError)
+    def list_conflicts(
+        self, run_id: RunId, *, after: str | None, limit: int
+    ) -> ReconciliationConflictPage:
+        """Return one keyset page of conflicts ordered by canonical key."""
+        self._require_transaction()
+        identity = _require_exact(run_id, RunId, "reconciliation run identifier")
+        page_limit = validate_reconciliation_conflict_page_limit(limit)
+        if after is not None and (type(after) is not str or not after):
+            raise ReconciliationInvalidRequestError(
+                "reconciliation conflict cursor must be non-empty text"
+            )
+        statement = (
+            select(reconciliation_conflicts)
+            .where(reconciliation_conflicts.c.run_id == identity.value)
+            .order_by(reconciliation_conflicts.c.canonical_key)
+            .limit(page_limit + 1)
+        )
+        if after is not None:
+            statement = statement.where(reconciliation_conflicts.c.canonical_key > after)
+        rows = tuple(
+            self._session.execute(statement).mappings(),
+        )
+        probe = rows[: page_limit + 1]
+        has_more = len(probe) > page_limit
+        page = probe[:page_limit]
+        conflicts = tuple(_conflict_from_row(cast(Mapping[str, object], item)) for item in page)
+        return ReconciliationConflictPage(
+            items=conflicts,
+            next_cursor=(None if not has_more or not conflicts else conflicts[-1].canonical_key),
+        )
 
     def _summary_row(self, identity: RunId) -> RowMapping | None:
         return (

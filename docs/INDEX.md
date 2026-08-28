@@ -86,3 +86,7 @@ The remaining roadmap is split into one independently executable prompt per phas
 - Keep examples executable or explicitly label them as illustrative.
 - Prefer links to tests and stable source entry points once implementation exists.
 - Record substantial design changes in `docs/decisions/` using the decision template.
+
+## Generated artifacts
+
+`generated/openapi.json` in this directory is the committed OpenAPI contract exported from the application factory. Together with `web/src/api/generated/schema.d.ts` (the generated TypeScript API boundary) and `web/dist` (the reproducible production frontend), it is a generated artifact governed by the repository policy: regeneration commands and drift checks are documented in the [API contract](API_CONTRACT.md), and the tracked inventory lives in `scripts/validate_instructions.ps1`. Generated files are never edited by hand.

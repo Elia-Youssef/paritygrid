@@ -90,6 +90,63 @@ if __name__ == "__main__":
     print(f"Spawned-process import passed: {module_path}")
 """
 
+_FRONTEND_PROBE = """from __future__ import annotations
+
+import asyncio
+from pathlib import Path
+
+import paritygrid
+from paritygrid.runtime.composition import create_runtime_app
+
+
+async def request_shell() -> None:
+    app = create_runtime_app()
+    messages: list[dict[str, object]] = []
+    delivered = False
+
+    async def receive() -> dict[str, object]:
+        nonlocal delivered
+        if delivered:
+            return {"type": "http.disconnect"}
+        delivered = True
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(message: dict[str, object]) -> None:
+        messages.append(message)
+
+    await app(
+        {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.3"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/",
+            "raw_path": b"/",
+            "query_string": b"",
+            "root_path": "",
+            "headers": [(b"host", b"127.0.0.1")],
+            "client": ("127.0.0.1", 12345),
+            "server": ("127.0.0.1", 8000),
+        },
+        receive,
+        send,
+    )
+    start = next(message for message in messages if message["type"] == "http.response.start")
+    assert start["status"] == 200, start
+    body = b"".join(
+        message.get("body", b"")
+        for message in messages
+        if message["type"] == "http.response.body"
+    )
+    assert b"<!doctype html" in body.lower()
+    package_root = Path(paritygrid.__file__).resolve().parent
+    assert (package_root / "_frontend" / "index.html").is_file()
+
+
+asyncio.run(request_shell())
+"""
+
 
 def _run(
     arguments: Sequence[str | Path],
@@ -177,6 +234,14 @@ def verify_wheel(checkout: Path) -> None:
             "Scripts/paritygrid.exe" if os.name == "nt" else "bin/paritygrid"
         )
         _run((executable, "smoke"), cwd=outside_checkout, environment=isolated_environment)
+
+        frontend_probe = temporary_root / "frontend_probe.py"
+        frontend_probe.write_text(_FRONTEND_PROBE, encoding="utf-8")
+        _run(
+            (environment_python, "-I", frontend_probe),
+            cwd=outside_checkout,
+            environment=isolated_environment,
+        )
 
         spawn_probe = temporary_root / "spawn_probe.py"
         spawn_probe.write_text(_SPAWN_PROBE, encoding="utf-8")

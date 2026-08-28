@@ -257,6 +257,20 @@ class RequestLimitsMiddleware:
                 await _send_problem(scope, receive, send, bounded)
                 return None
             raw, wrapped_receive = bounded
+            if raw and _requires_empty_body(method, scope.get("path", "")):
+                await _send_problem(
+                    scope,
+                    receive,
+                    send,
+                    ProblemError(
+                        type_slug="invalid-input",
+                        title="Request input is invalid",
+                        status=400,
+                        detail="this command does not accept a request body",
+                        code="request_body_not_allowed",
+                    ),
+                )
+                return None
             if raw and not content_type:
                 await _send_problem(
                     scope,
@@ -341,12 +355,29 @@ def _requires_json_content_type(method: object, path: object) -> bool:
         return False
     if (method, path) in _JSON_BODY_COMMANDS:
         return True
-    prefix = "/api/v1/pipelines/"
-    suffix = "/versions"
-    if method != "POST" or not path.startswith(prefix) or not path.endswith(suffix):
+    for prefix, suffix in (
+        ("/api/v1/pipelines/", "/versions"),
+        ("/api/v1/runs/", "/repair-plans"),
+        ("/api/v1/repair-plans/", "/approve"),
+    ):
+        if method != "POST" or not path.startswith(prefix) or not path.endswith(suffix):
+            continue
+        identifier = path[len(prefix) : -len(suffix)]
+        if identifier and "/" not in identifier:
+            return True
+    return False
+
+
+def _requires_empty_body(method: object, path: object) -> bool:
+    """Return whether a command has an explicitly bodyless wire contract."""
+    if type(method) is not str or type(path) is not str or method != "POST":
         return False
-    pipeline_id = path[len(prefix) : -len(suffix)]
-    return bool(pipeline_id) and "/" not in pipeline_id
+    prefix = "/api/v1/repair-plans/"
+    suffix = "/apply"
+    if not path.startswith(prefix) or not path.endswith(suffix):
+        return False
+    plan_id = path[len(prefix) : -len(suffix)]
+    return bool(plan_id) and "/" not in plan_id
 
 
 def _declared_length(value: str) -> int:

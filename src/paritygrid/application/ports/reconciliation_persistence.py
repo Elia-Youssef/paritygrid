@@ -27,6 +27,7 @@ MAX_RECONCILIATION_CONFLICTS = 100_000
 MAX_CONFLICT_REFERENCES = 1_024
 MAX_CONFLICT_DIFFERENCES = 128
 MAX_VERIFICATION_DETAIL_BYTES = 4_096
+MAX_RECONCILIATION_CONFLICT_PAGE_SIZE = 100
 
 
 class ReconciliationPersistenceError(Exception):
@@ -314,6 +315,38 @@ class ReconciliationResultRepository(Protocol):
     def get_summary(self, run_id: RunId) -> ReconciliationSummaryRecord | None: ...
 
     def get_result(self, run_id: RunId) -> ReconciliationResultRecord | None: ...
+
+    def list_conflicts(
+        self, run_id: RunId, *, after: str | None, limit: int
+    ) -> ReconciliationConflictPage: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ReconciliationConflictPage:
+    """One bounded keyset page of persisted conflict evidence."""
+
+    items: tuple[PersistedConflict, ...]
+    next_cursor: str | None
+
+    def __post_init__(self) -> None:
+        if type(self.items) is not tuple or any(
+            type(item) is not PersistedConflict for item in self.items
+        ):
+            raise TypeError("reconciliation conflict page items are invalid")
+        if len(self.items) > MAX_RECONCILIATION_CONFLICT_PAGE_SIZE:
+            raise ValueError("reconciliation conflict page exceeds the limit")
+        keys = [item.canonical_key for item in self.items]
+        if keys != sorted(keys) or len(set(keys)) != len(keys):
+            raise ValueError("reconciliation conflict page must use sorted unique keys")
+
+
+def validate_reconciliation_conflict_page_limit(limit: object) -> int:
+    """Validate one conflict page limit before storage work."""
+    if type(limit) is not int or not 1 <= limit <= MAX_RECONCILIATION_CONFLICT_PAGE_SIZE:
+        raise ReconciliationInvalidRequestError(
+            "reconciliation conflict page limit is outside the supported range"
+        )
+    return limit
 
 
 class TargetVerificationRepository(Protocol):

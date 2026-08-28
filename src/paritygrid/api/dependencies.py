@@ -21,13 +21,17 @@ from paritygrid.application.services.connectors import (
     ConnectorService,
     ConnectorTestService,
 )
+from paritygrid.application.services.events import DurableEventStreamService
 from paritygrid.application.services.idempotency import (
     CommandExecution,
     CommandOutcome,
     IdempotentCommandService,
 )
 from paritygrid.application.services.pipelines import PipelineService
+from paritygrid.application.services.reconciliation import ReconciliationService
+from paritygrid.application.services.repair import RepairApplyService, RepairService
 from paritygrid.application.services.runs import RunLifecycleService, RunService
+from paritygrid.application.services.telemetry import LiveTelemetryChannel
 from paritygrid.domain.models import UtcTimestamp
 
 IDEMPOTENCY_KEY_HEADER = "Idempotency-Key"
@@ -61,6 +65,21 @@ class ApiServices(Protocol):
 
     @property
     def capabilities(self) -> CapabilitiesView: ...
+
+    @property
+    def reconciliation(self) -> ReconciliationService: ...
+
+    @property
+    def repair(self) -> RepairService: ...
+
+    @property
+    def repair_application(self) -> RepairApplyService: ...
+
+    @property
+    def event_stream(self) -> DurableEventStreamService: ...
+
+    @property
+    def telemetry(self) -> LiveTelemetryChannel: ...
 
     @property
     def clock(self) -> Callable[[], UtcTimestamp]: ...

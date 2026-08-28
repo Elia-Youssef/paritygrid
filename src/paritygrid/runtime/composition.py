@@ -21,6 +21,7 @@ from paritygrid import __version__
 from paritygrid.adapters.artifacts.paths import resolve_artifact_root
 from paritygrid.adapters.persistence.migration import HEAD_REVISION, upgrade_to_head
 from paritygrid.adapters.persistence.operational import SQLOperationalUnitOfWork
+from paritygrid.adapters.persistence.repair_workflow import SQLiteRepairWorkflowReader
 from paritygrid.adapters.persistence.sqlite import (
     SQLiteDatabase,
     SQLiteDatabaseConfig,
@@ -28,6 +29,7 @@ from paritygrid.adapters.persistence.sqlite import (
 )
 from paritygrid.adapters.persistence.writer.core import SQLiteTransactionalWriter
 from paritygrid.api.app import create_app
+from paritygrid.api.frontend import FrontendAssets
 from paritygrid.api.middleware.request_limits import RequestLimitSettings
 from paritygrid.api.operational import ReadinessResult
 from paritygrid.application.execution.concurrency_settings import (
@@ -48,12 +50,19 @@ from paritygrid.application.services.connectors import (
     ConnectorService,
     ConnectorTestService,
 )
+from paritygrid.application.services.events import DurableEventStreamService
 from paritygrid.application.services.idempotency import (
     IdempotencyLeasePolicy,
     IdempotentCommandService,
 )
 from paritygrid.application.services.pipelines import PipelineService
+from paritygrid.application.services.reconciliation import ReconciliationService
+from paritygrid.application.services.repair import RepairApplyService, RepairService
 from paritygrid.application.services.runs import RunLifecycleService, RunService
+from paritygrid.application.services.telemetry import (
+    LiveTelemetryChannel,
+    LiveTelemetryHub,
+)
 from paritygrid.domain.models import RunId, UtcTimestamp
 from paritygrid.runtime.config import Settings
 from paritygrid.runtime.execution_owners import RuntimeExecutionOwnership
@@ -62,6 +71,8 @@ from paritygrid.runtime.run_controls import RuntimeActiveRunControlRegistry
 DEFAULT_SERVICE_NAME = "ParityGrid"
 MAX_PAGE_SIZE = 100
 WRITER_CLOSE_TIMEOUT_SECONDS = 5.0
+DEFAULT_FRONTEND_DIST = Path("web/dist")
+PACKAGED_FRONTEND_DIRECTORY = "_frontend"
 
 
 class SystemEnvironment:
@@ -83,6 +94,11 @@ class RuntimeServices:
     artifacts: ArtifactService
     idempotency: IdempotentCommandService
     capabilities: CapabilitiesView
+    reconciliation: ReconciliationService
+    repair: RepairService
+    repair_application: RepairApplyService
+    event_stream: DurableEventStreamService
+    telemetry: LiveTelemetryChannel
     clock: Callable[[], UtcTimestamp]
 
 
@@ -216,6 +232,23 @@ def compose_runtime(settings: Settings) -> RuntimeContainer:
             request_timeout_seconds=settings.request_timeout_seconds,
             max_concurrent_requests=settings.max_concurrent_requests,
         )
+        repair_reader = SQLiteRepairWorkflowReader(database)
+        event_stream = DurableEventStreamService(
+            unit_of_work=unit_of_work,
+            heartbeat_seconds=settings.stream_heartbeat_seconds,
+            poll_seconds=settings.stream_poll_seconds,
+        )
+        telemetry_hub = LiveTelemetryHub(
+            queue_capacity=settings.telemetry_queue_capacity,
+            max_subscribers_per_run=settings.telemetry_max_subscribers_per_run,
+        )
+        telemetry_channel = LiveTelemetryChannel(
+            hub=telemetry_hub,
+            writer_snapshot=writer.snapshot,
+            clock=_real_now,
+            send_timeout_seconds=settings.telemetry_send_timeout_seconds,
+            poll_seconds=settings.telemetry_poll_seconds,
+        )
         services = RuntimeServices(
             pipelines=PipelineService(unit_of_work=unit_of_work, now=_real_now),
             connectors=ConnectorService(unit_of_work=unit_of_work, now=_real_now),
@@ -238,6 +271,21 @@ def compose_runtime(settings: Settings) -> RuntimeContainer:
                 now=_real_now,
             ),
             capabilities=_capabilities_from(database, settings),
+            reconciliation=ReconciliationService(unit_of_work=unit_of_work),
+            repair=RepairService(
+                writer=writer,
+                reader=repair_reader,
+                unit_of_work=unit_of_work,
+                now=_real_now,
+            ),
+            repair_application=RepairApplyService(
+                writer=writer,
+                reader=repair_reader,
+                unit_of_work=unit_of_work,
+                now=_real_now,
+            ),
+            event_stream=event_stream,
+            telemetry=telemetry_channel,
             clock=_real_now,
         )
         return RuntimeContainer(
@@ -249,7 +297,9 @@ def compose_runtime(settings: Settings) -> RuntimeContainer:
             services=services,
             limits=limits,
             started_steps=order,
-            shutdown=lambda: _shutdown_runtime(active_run_controls, steps, started),
+            shutdown=lambda: _shutdown_runtime(
+                active_run_controls, event_stream, telemetry_hub, steps, started
+            ),
         )
     except BaseException:
         if active_run_controls is not None:
@@ -260,15 +310,19 @@ def compose_runtime(settings: Settings) -> RuntimeContainer:
 
 def _shutdown_runtime(
     active_run_controls: RuntimeActiveRunControlRegistry,
+    event_stream: DurableEventStreamService,
+    telemetry_hub: LiveTelemetryHub,
     steps: list[StartupStep],
     started: dict[str, object],
 ) -> None:
-    """Release execution owners before the writer and database they borrow."""
+    """Release live channels and execution owners before durable resources."""
     first_error: BaseException | None = None
-    try:
-        active_run_controls.close()
-    except BaseException as error:
-        first_error = error
+    for release in (event_stream.stop, telemetry_hub.close, active_run_controls.close):
+        try:
+            release()
+        except BaseException as error:
+            if first_error is None:
+                first_error = error
     try:
         shutdown_started(steps, started)
     except BaseException as error:
@@ -424,9 +478,36 @@ def create_runtime_app(settings: Settings | None = None) -> FastAPI:
             max_concurrent_requests=captured.max_concurrent_requests,
         ),
         lifespan=lifespan,
+        frontend=_resolve_frontend_assets(captured),
     )
     application.state.settings = captured
     return application
+
+
+def _resolve_frontend_assets(settings: Settings) -> FrontendAssets | None:
+    """Locate the packaged frontend distribution without opening resources.
+
+    The explicit setting wins. Installed wheels use the frontend embedded
+    alongside the Python package; source checkouts then fall back to their
+    committed build. A missing distribution leaves the application fully
+    operational without the SPA surface.
+    """
+    if settings.frontend_dist is not None:
+        return _frontend_or_none(Path(settings.frontend_dist))
+    installed_package_root = Path(__file__).resolve().parents[1]
+    checkout_root = Path(__file__).resolve().parents[3]
+    return (
+        _frontend_or_none(installed_package_root / PACKAGED_FRONTEND_DIRECTORY)
+        or _frontend_or_none(checkout_root / DEFAULT_FRONTEND_DIST)
+        or _frontend_or_none(Path.cwd() / DEFAULT_FRONTEND_DIST)
+    )
+
+
+def _frontend_or_none(candidate: Path) -> FrontendAssets | None:
+    try:
+        return FrontendAssets(candidate)
+    except ValueError:
+        return None
 
 
 def _shutdown_container(container: RuntimeContainer) -> None:

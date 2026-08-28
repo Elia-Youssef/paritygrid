@@ -20,6 +20,7 @@ dependencies = [
   "sqlalchemy>=2.0,<3",
   "typer>=0.16,<1",
   "uvicorn>=0.52.3,<1",
+  "websockets>=15,<16",
 ]
 
 [project.scripts]
@@ -42,11 +43,17 @@ dev = [
 [tool.hatch.build.targets.wheel]
 packages = ["src/paritygrid"]
 
+[tool.hatch.build.targets.wheel.force-include]
+"web/dist" = "src/paritygrid/_frontend"
+
 [tool.pyright]
 include = [
   "src",
   "tests",
   "scripts/verify_frontend_api_path.py",
+  "scripts/export_openapi.py",
+  "scripts/generate_api_types.py",
+  "scripts/verify_frontend_dist.py",
   "scripts/verify_python_dependencies.py",
   "scripts/verify_python_coverage.py",
   "scripts/verify_wheel_install.py",
@@ -105,3 +112,5 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**/*.py" = ["ANN401"]
+"src/paritygrid/api/ts_generation.py" = ["ANN401"]
+"src/paritygrid/api/openapi_export.py" = ["ANN401"]

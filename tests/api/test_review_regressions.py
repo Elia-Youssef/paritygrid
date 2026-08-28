@@ -224,6 +224,11 @@ async def test_catch_all_internal_error_renders_a_problem_over_real_http(
         artifacts=container.services.artifacts,
         idempotency=container.services.idempotency,
         capabilities=container.services.capabilities,
+        reconciliation=container.services.reconciliation,
+        repair=container.services.repair,
+        repair_application=container.services.repair_application,
+        event_stream=container.services.event_stream,
+        telemetry=container.services.telemetry,
         clock=container.services.clock,
     )
     application = build_app(container, services=services)

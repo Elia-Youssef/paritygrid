@@ -37,6 +37,16 @@ Completion handoff:
 - Report package IDs, wire contracts, generated artifacts, changed files, verification results, and limitations.
 - Leave the work uncommitted for review and do not begin Phase 14.
 
+## Acceptance rubric
+
+- Domain routes: 20 points.
+- Durable streaming: 20 points.
+- Telemetry isolation: 15 points.
+- Generated contracts: 25 points.
+- Packaged serving: 20 points.
+
+The phase requires at least 90/100 and no hard-gate failure. Hard gates are a lost durable event, authoritative telemetry, API or generated-type drift, slow-client execution blockage, or broken production frontend serving.
+
 ## Absolute Git prohibition
 
 Do not stage files, commit, push, create or update a pull request, create a tag, publish a release, merge, rebase, cherry-pick, reset, switch branches, or perform any Git mutation. Read-only status, diff, and log inspection is allowed. Finish with all Phase 13 changes uncommitted and unpushed. This prohibition is absolute.

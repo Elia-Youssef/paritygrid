@@ -8,6 +8,8 @@ from fastapi.routing import APIRoute
 from paritygrid.api.routers.artifacts import router as artifacts_router
 from paritygrid.api.routers.connectors import router as connectors_router
 from paritygrid.api.routers.pipelines import router as pipelines_router
+from paritygrid.api.routers.reconciliation import router as reconciliation_router
+from paritygrid.api.routers.repairs import router as repairs_router
 from paritygrid.api.routers.runs import router as runs_router
 from paritygrid.api.routers.system import router as system_router
 
@@ -15,6 +17,8 @@ from paritygrid.api.routers.system import router as system_router
 def test_blocking_operational_routes_are_synchronous() -> None:
     routers: tuple[APIRouter, ...] = (
         pipelines_router,
+        reconciliation_router,
+        repairs_router,
         connectors_router,
         runs_router,
         artifacts_router,
