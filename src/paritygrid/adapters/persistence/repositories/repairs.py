@@ -44,6 +44,7 @@ from paritygrid.adapters.persistence.schema import (
 )
 from paritygrid.application.ports.consistency import RedactedDocument
 from paritygrid.application.ports.repair_audit import (
+    MAX_PERSISTED_INTEGER,
     AppliedRepairAction,
     RepairActionCursor,
     RepairActionEffect,
@@ -704,6 +705,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
                     reconciliation_summaries.c.created_at,
                     runs.c.state.label("run_state"),
                     runs.c.execution_evidence_fingerprint,
+                    runs.c.execution_evidence_fingerprint_version,
                 )
                 .join(runs, runs.c.run_id == reconciliation_summaries.c.run_id)
                 .where(reconciliation_summaries.c.run_id == run.value)
@@ -716,7 +718,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
         stored = stored_fingerprint(
             row["reconciliation_fingerprint"], "reconciliation summary fingerprint"
         )
-        self._validate_run_fingerprint(cast(Mapping[str, object], row), stored)
+        self._validate_run_finalization(cast(Mapping[str, object], row))
         summary_at = stored_timestamp(row["created_at"], "reconciliation summary time")
         if stored != fingerprint:
             raise RepairStateConflictError("repair plan reconciliation is stale")
@@ -820,6 +822,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
                     reconciliation_summaries.c.reconciliation_fingerprint,
                     runs.c.state.label("run_state"),
                     runs.c.execution_evidence_fingerprint,
+                    runs.c.execution_evidence_fingerprint_version,
                 )
                 .join(runs, runs.c.run_id == reconciliation_summaries.c.run_id)
                 .where(reconciliation_summaries.c.run_id == plan.run_id.value)
@@ -832,14 +835,21 @@ class SqlAlchemyRepairRepository(RepairRepository):
         summary = stored_fingerprint(
             row["reconciliation_fingerprint"], "reconciliation summary fingerprint"
         )
-        self._validate_run_fingerprint(cast(Mapping[str, object], row), summary)
+        self._validate_run_finalization(cast(Mapping[str, object], row))
         if summary != plan.reconciliation_fingerprint:
             raise RepairCorruptionError("repair reconciliation relationship is corrupt")
         if current != summary:
             raise RepairStateConflictError("repair plan reconciliation is stale")
 
     @staticmethod
-    def _validate_run_fingerprint(row: Mapping[str, object], summary: StateFingerprint) -> None:
+    def _validate_run_finalization(row: Mapping[str, object]) -> None:
+        """Fence repairs on a completed run without aliasing fingerprint kinds.
+
+        The execution-evidence fingerprint proves this run finalized its
+        durable execution evidence. It is a different fingerprint kind from
+        the reconciliation snapshot: the two identify separate facts, are
+        never compared, and are never copied between columns.
+        """
         state_value = row["run_state"]
         if type(state_value) is not str:
             raise RepairCorruptionError("repair run state is corrupt")
@@ -850,11 +860,14 @@ class SqlAlchemyRepairRepository(RepairRepository):
         if state not in {RunState.SUCCEEDED, RunState.PARTIALLY_SUCCEEDED}:
             raise RepairStateConflictError("repair run has not completed reconciliation")
         fingerprint_value = row["execution_evidence_fingerprint"]
-        if fingerprint_value is None:
-            raise RepairCorruptionError("repair run final fingerprint is missing")
-        final = stored_fingerprint(fingerprint_value, "repair run final fingerprint")
-        if final != summary:
-            raise RepairCorruptionError("repair run and summary fingerprints diverge")
+        version_value = row["execution_evidence_fingerprint_version"]
+        if fingerprint_value is None or version_value is None:
+            raise RepairCorruptionError("repair run execution-evidence fingerprint is missing")
+        stored_fingerprint(fingerprint_value, "repair run execution-evidence fingerprint")
+        if type(version_value) is not int or not 1 <= version_value <= MAX_PERSISTED_INTEGER:
+            raise RepairCorruptionError(
+                "repair run execution-evidence fingerprint version is corrupt"
+            )
 
     def _require_transition(
         self, plan: RepairPlanRecord, expected: int, status: RepairPlanStatus

@@ -86,6 +86,7 @@ PLAN_ID = RepairPlanId("rpl_writerrepair")
 ACTION_ID = RepairActionId("rac_writerrepair")
 CONFLICT_ID = ConflictId("cnf_writerrepair")
 FINGERPRINT = StateFingerprint("6" * 64)
+EVIDENCE = StateFingerprint("7" * 64)
 
 
 class _CompanionFailure(BaseException):
@@ -175,7 +176,7 @@ def seed_reconciliation(database: SQLiteDatabase) -> None:
             expected_row_version=2,
             target_state=RunState.SUCCEEDED,
             transitioned_at=timestamp(1),
-            execution_evidence_fingerprint=FINGERPRINT,
+            execution_evidence_fingerprint=EVIDENCE,
             execution_evidence_fingerprint_version=2,
         )
         session.execute(

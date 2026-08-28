@@ -4,6 +4,8 @@ from paritygrid.domain.canonical.encoding import (
     CanonicalEncoder,
     CanonicalVersion,
     encode_canonical,
+    encode_inventory_observation,
+    encode_repair_plan_content,
 )
 from paritygrid.domain.canonical.fingerprints import (
     MAX_FINGERPRINT_ITEMS,
@@ -17,5 +19,7 @@ __all__ = [
     "CanonicalVersion",
     "FingerprintScope",
     "encode_canonical",
+    "encode_inventory_observation",
+    "encode_repair_plan_content",
     "fingerprint_state",
 ]

@@ -165,8 +165,8 @@ def test_trigger_names_and_sql_are_unique_deterministic_and_migration_ready() ->
     assert names == tuple(sorted(names))
     assert len(names) == len(set(names))
     assert category_counts == {
-        "delete": 21,
-        "whole_update": 10,
+        "delete": 22,
+        "whole_update": 11,
         "immutable_columns": 11,
         "monotonic": 2,
         "terminal": 3,

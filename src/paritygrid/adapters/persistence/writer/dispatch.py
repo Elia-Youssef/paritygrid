@@ -12,6 +12,10 @@ from paritygrid.adapters.persistence.repositories.checkpoints import (
 from paritygrid.adapters.persistence.repositories.execution_events import (
     SqlAlchemyExecutionEventRepository,
 )
+from paritygrid.adapters.persistence.repositories.reconciliation import (
+    SqlAlchemyReconciliationResultRepository,
+    SqlAlchemyTargetVerificationRepository,
+)
 from paritygrid.adapters.persistence.repositories.repairs import SqlAlchemyRepairRepository
 from paritygrid.adapters.persistence.repositories.run_node_aggregates import (
     SqlAlchemyRunNodeAggregateRepository,
@@ -38,6 +42,10 @@ from paritygrid.application.ports.execution import (
     WorkClaim,
     WorkCompletion,
     WorkItemRecord,
+)
+from paritygrid.application.ports.reconciliation_persistence import (
+    PersistedConflict,
+    TargetVerificationRecord,
 )
 from paritygrid.application.ports.repair_audit import (
     AppliedRepairAction,
@@ -80,6 +88,12 @@ from paritygrid.application.writes.execution import (
     TransitionRun,
     TransitionRunResult,
 )
+from paritygrid.application.writes.reconciliation import (
+    PersistReconciliation,
+    PersistReconciliationResult,
+    RecordTargetVerification,
+    RecordTargetVerificationResult,
+)
 from paritygrid.application.writes.repairs import (
     ApproveRepairPlan,
     BeginRepairApplication,
@@ -104,10 +118,12 @@ from paritygrid.domain.models import (
     RepairPlanId,
     RunId,
     StateFingerprint,
+    TargetVerificationId,
     UtcTimestamp,
     WorkItemId,
 )
 from paritygrid.domain.pipeline import PartitionKey
+from paritygrid.domain.reconciliation import ReconciliationSummary
 from paritygrid.domain.repair import RepairPlan
 
 type ExecutionCommand = (
@@ -130,7 +146,8 @@ type RepairCommand = (
     | RecordRepairActionFailed
     | CompleteRepairApplication
 )
-type ClosedCommand = ExecutionCommand | RepairCommand
+type ReconciliationCommand = PersistReconciliation | RecordTargetVerification
+type ClosedCommand = ExecutionCommand | RepairCommand | ReconciliationCommand
 
 _COMMAND_TYPES = (
     CreateCapturedRun,
@@ -149,6 +166,8 @@ _COMMAND_TYPES = (
     RecordRepairActionApplied,
     RecordRepairActionFailed,
     CompleteRepairApplication,
+    PersistReconciliation,
+    RecordTargetVerification,
 )
 
 
@@ -236,6 +255,10 @@ def validate_command(command: WriterCommand) -> ClosedCommand:
         _validate_run_event(closed.event, closed.run_id, "run_node_succeeded")
         _positive(closed.expected_node_row_version, "node row version")
         _positive(closed.expected_run_row_version, "run row version")
+    elif isinstance(closed, PersistReconciliation):
+        _validate_reconciliation_persist_command(closed)
+    elif isinstance(closed, RecordTargetVerification):
+        _validate_target_verification_command(closed)
     else:
         _validate_repair_command(closed)
     return closed
@@ -262,6 +285,10 @@ def dispatch_command(session: Session, command: WriterCommand) -> DispatchOutcom
         return _recover_work(session, closed)
     if isinstance(closed, FinalizeEmptyRunNode):
         return _finalize_empty(session, closed)
+    if isinstance(closed, PersistReconciliation):
+        return _persist_reconciliation(session, closed)
+    if isinstance(closed, RecordTargetVerification):
+        return _record_target_verification(session, closed)
     return _dispatch_repair(session, closed)
 
 
@@ -419,6 +446,35 @@ def _finalize_empty(session: Session, command: FinalizeEmptyRunNode) -> Dispatch
     )
     run = _advance_run(session, command.run_id, command.expected_run_row_version)
     return DispatchOutcome(FinalizeEmptyRunNodeResult(node, events, run))
+
+
+def _persist_reconciliation(session: Session, command: PersistReconciliation) -> DispatchOutcome:
+    repository = SqlAlchemyReconciliationResultRepository(session)
+    replay = repository.get_summary(command.run_id) is not None
+    record = repository.persist(
+        run_id=command.run_id,
+        summary=command.summary,
+        conflicts=command.conflicts,
+        created_at=command.created_at,
+    )
+    if replay:
+        _verify_repair_replay(session, command.run_id, command.companions)
+        return DispatchOutcome(PersistReconciliationResult(record, None, None, None), False)
+    audit, events, run = _repair_companions(session, command.run_id, command.companions)
+    return DispatchOutcome(PersistReconciliationResult(record, audit, events, run))
+
+
+def _record_target_verification(
+    session: Session, command: RecordTargetVerification
+) -> DispatchOutcome:
+    repository = SqlAlchemyTargetVerificationRepository(session)
+    replay = repository.get(command.verification.verification_id) is not None
+    record = repository.record(command.verification)
+    if replay:
+        _verify_repair_replay(session, command.run_id, command.companions)
+        return DispatchOutcome(RecordTargetVerificationResult(record, None, None, None), False)
+    audit, events, run = _repair_companions(session, command.run_id, command.companions)
+    return DispatchOutcome(RecordTargetVerificationResult(record, audit, events, run))
 
 
 def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcome:
@@ -711,6 +767,43 @@ def _validate_completion_command(
         raise WriterInvalidRequestError("durable result event payload is inconsistent")
 
 
+def _validate_reconciliation_persist_command(command: PersistReconciliation) -> None:
+    companions = _exact(command.companions, RepairCompanions, "reconciliation companions")
+    _positive(companions.expected_run_row_version, "run row version")
+    summary = _exact(command.summary, ReconciliationSummary, "reconciliation summary")
+    occurred_at = _exact(command.created_at, UtcTimestamp, "reconciliation snapshot time")
+    if any(type(item) is not PersistedConflict for item in command.conflicts):
+        raise WriterInvalidRequestError("reconciliation conflicts contain an invalid type")
+    _validate_repair_companions(
+        companions,
+        command.run_id,
+        "reconciliation_persisted",
+        "reconciliation_persisted",
+        "reconciliation_summary",
+        command.run_id,
+        occurred_at,
+    )
+    if summary.fingerprint_version < 1:
+        raise WriterInvalidRequestError("reconciliation summary version is invalid")
+
+
+def _validate_target_verification_command(command: RecordTargetVerification) -> None:
+    companions = _exact(command.companions, RepairCompanions, "verification companions")
+    _positive(companions.expected_run_row_version, "run row version")
+    verification = _exact(command.verification, TargetVerificationRecord, "target verification")
+    if verification.run_id != command.run_id:
+        raise WriterInvalidRequestError("target verification belongs to another run")
+    _validate_repair_companions(
+        companions,
+        command.run_id,
+        "target_state_verified",
+        "target_state_verified",
+        "target_state_verification",
+        verification.verification_id,
+        verification.observed_at,
+    )
+
+
 def _validate_repair_command(command: RepairCommand) -> None:
     companions = _exact(command.companions, RepairCompanions, "repair companions")
     _positive(companions.expected_run_row_version, "run row version")
@@ -826,7 +919,7 @@ def _validate_repair_companions(
     event_kind: str,
     operation: str,
     object_kind: str,
-    object_id: RepairPlanId | RepairActionId,
+    object_id: RepairPlanId | RepairActionId | RunId | TargetVerificationId,
     occurred_at: UtcTimestamp,
 ) -> None:
     if type(companions) is not RepairCompanions:

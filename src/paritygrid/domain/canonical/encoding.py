@@ -404,6 +404,30 @@ def encode_repair_plan_content(
     )
 
 
+def encode_inventory_observation(
+    record: InventoryRecord,
+    *,
+    version: CanonicalVersion,
+) -> bytes:
+    """Encode one inventory observation without connector provenance.
+
+    Target-state identity covers the logical business content a record
+    carries, never the connector or source position that observed it, so
+    the same stored record observed through different reads encodes
+    identically.
+    """
+    if type(record) is not InventoryRecord:
+        raise CanonicalEncodingError(
+            reason=CanonicalErrorCode.UNSUPPORTED_CANONICAL_TYPE,
+            subject_type="inventory-observation",
+        )
+    return _encode_envelope(
+        type_tag="inventory-observation",
+        value=_inventory_effect_value(record),
+        version=version,
+    )
+
+
 _ADAPTERS: Mapping[type[object], _CanonicalAdapter] = MappingProxyType(
     {
         PipelineId: _CanonicalAdapter("pipeline-id", _identifier_primitive),

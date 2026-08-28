@@ -22,6 +22,14 @@ from paritygrid.application.writes.execution import (
     TransitionRun,
     TransitionRunResult,
 )
+from paritygrid.application.writes.reconciliation import (
+    RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION,
+    TARGET_VERIFICATION_EVENT_PAYLOAD_SCHEMA_VERSION,
+    PersistReconciliation,
+    PersistReconciliationResult,
+    RecordTargetVerification,
+    RecordTargetVerificationResult,
+)
 from paritygrid.application.writes.repairs import (
     ApproveRepairPlan,
     BeginRepairApplication,
@@ -37,6 +45,8 @@ from paritygrid.application.writes.repairs import (
 )
 
 __all__ = [
+    "RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION",
+    "TARGET_VERIFICATION_EVENT_PAYLOAD_SCHEMA_VERSION",
     "WORK_LEASE_EVENT_PAYLOAD_SCHEMA_VERSION",
     "WORK_RESULT_EVENT_PAYLOAD_SCHEMA_VERSION",
     "ApproveRepairPlan",
@@ -56,8 +66,12 @@ __all__ = [
     "CreateRepairPlan",
     "FinalizeEmptyRunNode",
     "FinalizeEmptyRunNodeResult",
+    "PersistReconciliation",
+    "PersistReconciliationResult",
     "RecordRepairActionApplied",
     "RecordRepairActionFailed",
+    "RecordTargetVerification",
+    "RecordTargetVerificationResult",
     "RecoverExpiredWork",
     "RecoverExpiredWorkResult",
     "RejectRepairPlan",

@@ -8,6 +8,7 @@ from typing import cast
 from paritygrid.domain.canonical.encoding import (
     CanonicalEncoder,
     CanonicalVersion,
+    encode_inventory_observation,
     encode_repair_plan_content,
 )
 from paritygrid.domain.errors import CanonicalEncodingError, CanonicalErrorCode
@@ -27,6 +28,7 @@ class FingerprintScope(StrEnum):
     INVENTORY_STATE = "inventory_state"
     RECONCILIATION_STATE = "reconciliation_state"
     REPAIR_PLAN_CONTENT = "repair_plan_content"
+    TARGET_OBSERVATION_STATE = "target_observation_state"
 
 
 def fingerprint_state(
@@ -84,6 +86,8 @@ def _encode_state_value(
         expected_type = InventoryRecord
     elif scope is FingerprintScope.RECONCILIATION_STATE:
         expected_type = ReconciliationOutcome
+    elif scope is FingerprintScope.TARGET_OBSERVATION_STATE:
+        expected_type = InventoryRecord
     else:
         expected_type = RepairPlan
     if type(value) is not expected_type:
@@ -93,6 +97,8 @@ def _encode_state_value(
         )
     if scope is FingerprintScope.REPAIR_PLAN_CONTENT:
         return encode_repair_plan_content(cast(RepairPlan, value), version=encoder.version)
+    if scope is FingerprintScope.TARGET_OBSERVATION_STATE:
+        return encode_inventory_observation(cast(InventoryRecord, value), version=encoder.version)
     return encoder.encode(value)
 
 

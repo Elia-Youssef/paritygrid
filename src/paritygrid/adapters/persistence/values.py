@@ -65,6 +65,14 @@ class RepairActionApplicationStatus(StrEnum):
     FAILED = "failed"
 
 
+class TargetVerificationVerdict(StrEnum):
+    """Stored verdict of one independent target-state verification."""
+
+    PARITY_HOLDING = "parity_holding"
+    PARITY_DIVERGENT = "parity_divergent"
+    OBSERVATION_FAILED = "observation_failed"
+
+
 @dataclass(frozen=True, slots=True, order=True)
 class Sha256Digest:
     """A lowercase SHA-256 value that is not necessarily a state fingerprint."""

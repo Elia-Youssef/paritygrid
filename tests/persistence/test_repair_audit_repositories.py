@@ -96,6 +96,7 @@ PLAN_ID = RepairPlanId("rpl_repair-tests")
 ACTION_ID = RepairActionId("rac_repair-tests")
 CONFLICT_ID = ConflictId("cnf_repair-tests")
 RECONCILIATION = StateFingerprint("4" * 64)
+EVIDENCE = StateFingerprint("5" * 64)
 
 
 @pytest.fixture
@@ -184,7 +185,7 @@ def seed_reconciliation(database: SQLiteDatabase) -> None:
             expected_row_version=2,
             target_state=RunState.SUCCEEDED,
             transitioned_at=timestamp(1),
-            execution_evidence_fingerprint=RECONCILIATION,
+            execution_evidence_fingerprint=EVIDENCE,
             execution_evidence_fingerprint_version=2,
         )
         session.execute(
@@ -462,7 +463,38 @@ def test_repair_creation_rejects_a_nonterminal_run_parent(database: SQLiteDataba
 
 
 @pytest.mark.parametrize("operation", ["approve", "begin"])
-def test_freshness_rejects_run_and_summary_fingerprint_divergence(
+def test_freshness_keeps_execution_evidence_and_reconciliation_kinds_separate(
+    database: SQLiteDatabase, operation: str
+) -> None:
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        repository = SqlAlchemyRepairRepository(session)
+        create_plan(repository)
+        if operation == "begin":
+            approve(repository)
+        # A changed execution-evidence fingerprint is a different fingerprint
+        # kind: it must not block repair fencing, and it must never be copied
+        # into or compared with the reconciliation identity.
+        session.execute(
+            sql_update(runs)
+            .where(runs.c.run_id == RUN_ID.value)
+            .values(execution_evidence_fingerprint="9" * 64)
+        )
+        if operation == "approve":
+            aggregate = approve(repository)
+        else:
+            begun = repository.begin_application(
+                PLAN_ID,
+                expected_row_version=2,
+                current_reconciliation_fingerprint=RECONCILIATION,
+                applying_at=timestamp(4),
+            )
+            aggregate = begun.aggregate
+        assert aggregate.plan.reconciliation_fingerprint == RECONCILIATION
+
+
+@pytest.mark.parametrize("operation", ["approve", "begin"])
+def test_freshness_rejects_a_run_without_finalized_execution_evidence(
     database: SQLiteDatabase, operation: str
 ) -> None:
     seed_reconciliation(database)
@@ -474,13 +506,16 @@ def test_freshness_rejects_run_and_summary_fingerprint_divergence(
         session.execute(
             sql_update(runs)
             .where(runs.c.run_id == RUN_ID.value)
-            .values(execution_evidence_fingerprint="9" * 64)
+            .values(
+                execution_evidence_fingerprint=None,
+                execution_evidence_fingerprint_version=None,
+            )
         )
         if operation == "approve":
-            with pytest.raises(RepairCorruptionError, match="fingerprints diverge"):
+            with pytest.raises(RepairCorruptionError, match="evidence fingerprint is missing"):
                 approve(repository)
         else:
-            with pytest.raises(RepairCorruptionError, match="fingerprints diverge"):
+            with pytest.raises(RepairCorruptionError, match="evidence fingerprint is missing"):
                 repository.begin_application(
                     PLAN_ID,
                     expected_row_version=2,
@@ -1169,18 +1204,40 @@ def test_defensive_repair_cas_classification_paths(  # pyright: ignore[reportPri
                 RECONCILIATION,
             )
         for row in (
-            {"run_state": 1, "execution_evidence_fingerprint": RECONCILIATION.value},
-            {"run_state": "unknown", "execution_evidence_fingerprint": RECONCILIATION.value},
-            {"run_state": RunState.SUCCEEDED.value, "execution_evidence_fingerprint": None},
+            {
+                "run_state": 1,
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": 2,
+            },
+            {
+                "run_state": "unknown",
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": 2,
+            },
+            {
+                "run_state": RunState.SUCCEEDED.value,
+                "execution_evidence_fingerprint": None,
+                "execution_evidence_fingerprint_version": None,
+            },
+            {
+                "run_state": RunState.SUCCEEDED.value,
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": None,
+            },
+            {
+                "run_state": RunState.SUCCEEDED.value,
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": "2",
+            },
         ):
             with pytest.raises(RepairCorruptionError):
-                repository._validate_run_fingerprint(row, RECONCILIATION)
-        repository._validate_run_fingerprint(
+                repository._validate_run_finalization(row)
+        repository._validate_run_finalization(
             {
                 "run_state": RunState.PARTIALLY_SUCCEEDED.value,
-                "execution_evidence_fingerprint": RECONCILIATION.value,
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": 2,
             },
-            RECONCILIATION,
         )
         with pytest.raises(RepairDuplicateError):
             repository._classify_create_replay(

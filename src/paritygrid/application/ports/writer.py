@@ -54,7 +54,7 @@ class WriterCommitOutcomeUnknownError(WriterFailedError):
 
 
 class WriterCommandKind(StrEnum):
-    """Closed commands accepted by the Phase 3 transactional writer."""
+    """Closed commands accepted by the transactional writer."""
 
     CREATE_CAPTURED_RUN = "create_captured_run"
     TRANSITION_RUN = "transition_run"
@@ -72,6 +72,8 @@ class WriterCommandKind(StrEnum):
     RECORD_REPAIR_ACTION_APPLIED = "record_repair_action_applied"
     RECORD_REPAIR_ACTION_FAILED = "record_repair_action_failed"
     COMPLETE_REPAIR_APPLICATION = "complete_repair_application"
+    PERSIST_RECONCILIATION = "persist_reconciliation"
+    RECORD_TARGET_VERIFICATION = "record_target_verification"
 
 
 class WriterState(StrEnum):

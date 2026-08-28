@@ -30,6 +30,7 @@ _IMMUTABLE_TABLES: Final[frozenset[str]] = frozenset(
         "reconciliation_summaries",
         "reconciliation_conflicts",
         "repair_approvals",
+        "target_state_verifications",
         "audit_entries",
     }
 )
