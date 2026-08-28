@@ -193,6 +193,23 @@ class SqlAlchemyRepairRepository(RepairRepository):
         return self._get_aggregate(identity)
 
     @translate_repair_storage_errors
+    def record_application_attempt(
+        self,
+        reservation: RepairApplicationReservation,
+        repair_action_id: RepairActionId,
+    ) -> RepairPlanAggregate:
+        """Fence a nonterminal external-attempt audit fact on the current reservation."""
+        self._require_transaction()
+        claim = require_exact(reservation, RepairApplicationReservation, "repair application reservation")
+        action = require_exact(repair_action_id, RepairActionId, "repair action identifier")
+        aggregate = self._require_claim(claim)
+        self._require_claim_frontier(aggregate.plan, claim)
+        stored = _find_action(aggregate, action)
+        if stored.status is not RepairActionStatus.PENDING:
+            raise RepairApplicationConflictError("repair action is no longer pending")
+        return aggregate
+
+    @translate_repair_storage_errors
     def list_for_run(
         self,
         run_id: RunId,

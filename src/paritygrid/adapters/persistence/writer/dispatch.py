@@ -100,6 +100,7 @@ from paritygrid.application.writes.repairs import (
     BeginRepairApplicationResult,
     CompleteRepairApplication,
     CreateRepairPlan,
+    RecordRepairActionAttempt,
     RecordRepairActionApplied,
     RecordRepairActionFailed,
     RejectRepairPlan,
@@ -142,6 +143,7 @@ type RepairCommand = (
     | ApproveRepairPlan
     | RejectRepairPlan
     | BeginRepairApplication
+    | RecordRepairActionAttempt
     | RecordRepairActionApplied
     | RecordRepairActionFailed
     | CompleteRepairApplication
@@ -163,6 +165,7 @@ _COMMAND_TYPES = (
     ApproveRepairPlan,
     RejectRepairPlan,
     BeginRepairApplication,
+    RecordRepairActionAttempt,
     RecordRepairActionApplied,
     RecordRepairActionFailed,
     CompleteRepairApplication,
@@ -545,6 +548,14 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
             return DispatchOutcome(RepairActionAppliedResult(operation, None, None, None), False)
         audit, events, run = _repair_companions(session, command.run_id, command.companions)
         return DispatchOutcome(RepairActionAppliedResult(operation, audit, events, run))
+    if isinstance(command, RecordRepairActionAttempt):
+        aggregate = repairs.record_application_attempt(
+            command.reservation, command.repair_action_id
+        )
+        audit, events, run = _repair_companions(session, command.run_id, command.companions)
+        return DispatchOutcome(
+            RepairMutationResult(command.kind, aggregate, audit, events, run)
+        )
     if isinstance(command, RecordRepairActionFailed):
         prior = repairs.get_action(command.repair_action_id)
         replay = prior is not None and prior.status is RepairActionStatus.FAILED
@@ -850,6 +861,19 @@ def _validate_repair_command(command: RepairCommand) -> None:
         object_kind = "repair_plan"
         event_kind = operation = "repair_application_started"
         occurred_at = command.applying_at
+    elif isinstance(command, RecordRepairActionAttempt):
+        reservation = _exact(
+            command.reservation,
+            RepairApplicationReservation,
+            "repair application reservation",
+        )
+        _validate_reservation(command.run_id, reservation.run_id)
+        _exact(command.repair_action_id, RepairActionId, "repair action identity")
+        _exact(command.attempted_at, UtcTimestamp, "repair action attempt time")
+        plan_id = reservation.repair_plan_id
+        object_kind = "repair_action"
+        event_kind = operation = "repair_action_ambiguous"
+        occurred_at = command.attempted_at
     elif isinstance(command, RecordRepairActionApplied):
         reservation = _exact(
             command.reservation,
@@ -894,7 +918,7 @@ def _validate_repair_command(command: RepairCommand) -> None:
         occurred_at = command.applied_at
     object_id = (
         command.repair_action_id
-        if isinstance(command, (RecordRepairActionApplied, RecordRepairActionFailed))
+        if isinstance(command, (RecordRepairActionAttempt, RecordRepairActionApplied, RecordRepairActionFailed))
         else plan_id
     )
     _validate_repair_companions(
