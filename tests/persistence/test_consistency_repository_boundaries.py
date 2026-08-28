@@ -206,6 +206,14 @@ def test_idempotency_begin_result_enforces_reservation_authority() -> None:
         IdempotencyBeginResult(IdempotencyBeginDisposition.STARTED, record, None)
     with pytest.raises(ValueError, match="started"):
         IdempotencyBeginResult(IdempotencyBeginDisposition.IN_PROGRESS_REPLAY, record, reservation)
+    with pytest.raises(ValueError, match="only a started"):
+        IdempotencyBeginResult(IdempotencyBeginDisposition.RECLAIMED, record, None)
+    assert (
+        IdempotencyBeginResult(
+            IdempotencyBeginDisposition.RECLAIMED, record, reservation
+        ).reservation
+        is reservation
+    )
     assert (
         IdempotencyBeginResult(IdempotencyBeginDisposition.STARTED, record, reservation).reservation
         is reservation

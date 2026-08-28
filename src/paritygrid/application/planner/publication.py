@@ -189,6 +189,19 @@ class PipelinePublicationService:
         if type(published_at) is not UtcTimestamp:
             raise TypeError("publication time must use UtcTimestamp")
 
+        specification = self.prepare(draft)
+        return self._pipelines.publish_version(
+            pipeline_id=pipeline_id,
+            expected_latest_version=expected_latest_version,
+            specification=specification,
+            planner_format_version=PIPELINE_PLANNER_FORMAT_VERSION,
+            published_at=published_at,
+        )
+
+    def prepare(self, draft: PipelineDocument) -> ConfigurationDocument:
+        """Validate and materialize the immutable publication document."""
+        if type(draft) is not PipelineDocument:
+            raise TypeError("pipeline draft must use PipelineDocument")
         validate_registered_nodes(draft)
         validate_typed_ports(draft)
         validate_acyclic_graph(draft)
@@ -216,13 +229,7 @@ class PipelinePublicationService:
             pipeline=total_pipeline,
             connector_bindings=bindings,
         )
-        return self._pipelines.publish_version(
-            pipeline_id=pipeline_id,
-            expected_latest_version=expected_latest_version,
-            specification=specification.to_configuration_document(),
-            planner_format_version=PIPELINE_PLANNER_FORMAT_VERSION,
-            published_at=published_at,
-        )
+        return specification.to_configuration_document()
 
 
 def _parse_binding(value: object, index: int) -> ConnectorBindingSnapshot:

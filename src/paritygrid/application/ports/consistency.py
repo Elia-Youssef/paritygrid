@@ -135,6 +135,7 @@ class IdempotencyBeginDisposition(StrEnum):
     """Outcome of beginning or replaying an idempotent command."""
 
     STARTED = "started"
+    RECLAIMED = "reclaimed"
     IN_PROGRESS_REPLAY = "in_progress_replay"
     COMPLETED_REPLAY = "completed_replay"
     FAILED_REPLAY = "failed_replay"
@@ -359,7 +360,10 @@ class IdempotencyBeginResult:
     reservation: IdempotencyReservation | None
 
     def __post_init__(self) -> None:
-        started = self.disposition is IdempotencyBeginDisposition.STARTED
+        started = self.disposition in {
+            IdempotencyBeginDisposition.STARTED,
+            IdempotencyBeginDisposition.RECLAIMED,
+        }
         if started != (type(self.reservation) is IdempotencyReservation):
             raise ValueError("only a started idempotency result carries a reservation")
 
@@ -455,6 +459,16 @@ class IdempotencyRepository(Protocol):
         key: str,
         request: ConfigurationDocument,
         started_at: UtcTimestamp,
+    ) -> IdempotencyBeginResult: ...
+
+    def reclaim(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request: ConfigurationDocument,
+        lease_expires_after_seconds: float,
+        now: UtcTimestamp,
     ) -> IdempotencyBeginResult: ...
 
     def get(self, *, scope: str, key: str) -> IdempotencyRecord | None: ...

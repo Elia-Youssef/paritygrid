@@ -190,8 +190,6 @@ def stored_idempotency_from_row(row: RowMapping) -> StoredIdempotencyRecord:
         if status is IdempotencyStatus.IN_PROGRESS:
             if schema_value is not None or response_value is not None or completed_at is not None:
                 raise ConsistencyCorruptionError("in-progress idempotency record is corrupt")
-            if updated_at != created_at:
-                raise ConsistencyCorruptionError("in-progress idempotency chronology is corrupt")
             schema_version = None
             response = None
         else:

@@ -257,6 +257,7 @@ class ConcurrentLifecycleCoordinator:
     __slots__ = (
         "_clock",
         "_correlation_id",
+        "_last_report",
         "_lock",
         "_reader",
         "_settings",
@@ -289,6 +290,7 @@ class ConcurrentLifecycleCoordinator:
         self._clock = clock_value
         self._settings = settings or ConcurrentLifecycleSettings()
         self._correlation_id = _require_correlation_id(correlation_id)
+        self._last_report: ConcurrentLifecycleReport | None = None
         self._lock = Lock()
         self._uncertain = False
 
@@ -296,6 +298,30 @@ class ConcurrentLifecycleCoordinator:
     def is_uncertain(self) -> bool:
         """Report whether any lifecycle writer outcome stayed unknown."""
         return self._uncertain
+
+    @property
+    def last_report(self) -> ConcurrentLifecycleReport | None:
+        """Return the latest proven durable lifecycle outcome, if any.
+
+        The owning engine uses this narrow evidence surface to hand a
+        completed control request to the runtime.  It is intentionally a
+        report, not a mutable state reference: every transition identity in
+        the report came from the transactional writer receipt.
+        """
+        with self._lock:
+            return self._last_report
+
+    def set_correlation_id(self, correlation_id: str | None) -> None:
+        """Set the correlation identity for the next owner-side control.
+
+        The concurrent engine serializes durable lifecycle arrows.  Updating
+        this value through that owner before it requests pause, resume, or
+        cancellation lets HTTP control requests retain their own correlation
+        identity without granting the transport layer access to a writer.
+        """
+        correlation = _require_correlation_id(correlation_id)
+        with self._lock:
+            self._correlation_id = correlation
 
     def read_state(self, run_id: RunId) -> PauseDurableState:
         """Return the durable run and event frontier for one run."""
@@ -346,7 +372,15 @@ class ConcurrentLifecycleCoordinator:
                 "pause acknowledgement lost the compare-and-set; the pause was aborted"
             )
         with self._lock:
-            self._transition_pair(run_id, (RunState.PAUSING, RunState.PAUSED))
+            from_state, to_state, submission_ids = self._transition_pair(
+                run_id, (RunState.PAUSING, RunState.PAUSED)
+            )
+            self._last_report = ConcurrentLifecycleReport(
+                action="paused",
+                from_state=from_state,
+                to_state=to_state,
+                submission_ids=submission_ids,
+            )
         return ConcurrentPausedProof(
             run_id=str(run_id),
             generation=generation,
@@ -373,17 +407,19 @@ class ConcurrentLifecycleCoordinator:
             raise TypeError("resume must use ConcurrentPauseSignal")
         run_id = RunId(proof.run_id)
         with self._lock:
-            from_state, to_state = self._transition_pair(
+            from_state, to_state, submission_ids = self._transition_pair(
                 run_id, (RunState.RESUMING, RunState.RUNNING)
             )
+            report = ConcurrentLifecycleReport(
+                action="resumed",
+                from_state=from_state,
+                to_state=to_state,
+                submission_ids=submission_ids,
+            )
+            self._last_report = report
         signal.clear(proof.generation)
         lease_service.release_pause(reservation)
-        return ConcurrentLifecycleReport(
-            action="resumed",
-            from_state=from_state,
-            to_state=to_state,
-            submission_ids=(),
-        )
+        return report
 
     def begin_cancellation(
         self,
@@ -405,23 +441,27 @@ class ConcurrentLifecycleCoordinator:
             elif current is RunState.RUNNING:
                 target = RunState.CANCELLING
             elif current is RunState.CANCELLING:
-                return ConcurrentLifecycleReport(
+                report = ConcurrentLifecycleReport(
                     action="cancelling",
                     from_state=current,
                     to_state=current,
                     submission_ids=(),
                 )
+                self._last_report = report
+                return report
             else:
                 raise ConcurrentLifecycleRejectedError(
                     "run state does not admit a cancellation request"
                 )
             submission = self._transition(run_id, target)
-            return ConcurrentLifecycleReport(
+            report = ConcurrentLifecycleReport(
                 action="cancellation_begun",
                 from_state=current,
                 to_state=target,
                 submission_ids=(submission,),
             )
+            self._last_report = report
+            return report
 
     def finish_cancellation(self, run_id: RunId) -> ConcurrentLifecycleReport:
         """Write the terminal cancelled arrow after owned work drained."""
@@ -431,32 +471,36 @@ class ConcurrentLifecycleCoordinator:
             state = self.read_state(run_id)
             current = state.run.state
             if current is RunState.CANCELLED:
-                return ConcurrentLifecycleReport(
+                report = ConcurrentLifecycleReport(
                     action="already_cancelled",
                     from_state=current,
                     to_state=current,
                     submission_ids=(),
                 )
+                self._last_report = report
+                return report
             if current is not RunState.CANCELLING:
                 raise ConcurrentLifecycleRejectedError(
                     "only a cancelling run can finish cancellation"
                 )
             submission = self._transition(run_id, RunState.CANCELLED)
-            return ConcurrentLifecycleReport(
+            report = ConcurrentLifecycleReport(
                 action="cancelled",
                 from_state=current,
                 to_state=RunState.CANCELLED,
                 submission_ids=(submission,),
             )
+            self._last_report = report
+            return report
 
     def _transition_pair(
         self,
         run_id: RunId,
         targets: tuple[RunState, RunState],
-    ) -> tuple[RunState, RunState]:
-        self._transition(run_id, targets[0])
-        self._transition(run_id, targets[1])
-        return targets[0], targets[1]
+    ) -> tuple[RunState, RunState, tuple[WriterSubmissionId, WriterSubmissionId]]:
+        first = self._transition(run_id, targets[0])
+        second = self._transition(run_id, targets[1])
+        return targets[0], targets[1], (first, second)
 
     def _transition(self, run_id: RunId, target: RunState) -> WriterSubmissionId:
         state = self.read_state(run_id)
