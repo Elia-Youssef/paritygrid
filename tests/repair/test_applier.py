@@ -24,6 +24,7 @@ from paritygrid.application.ports.connectors import (
     TargetConnector,
     TargetEffectOutcome,
     TargetRecord,
+    TargetRecordPage,
     TargetStateSnapshot,
     TargetWriteOutcome,
     TargetWriteRequest,
@@ -177,10 +178,14 @@ class _IdempotentFakeTarget:
             contract_version=1,
             kind=ConnectorKind.WAREHOUSE_TARGET,
             capabilities=ConnectorCapabilitySet(
-                values=(ConnectorCapability.WRITE, ConnectorCapability.IDEMPOTENCY)
+                values=(
+                    ConnectorCapability.READ,
+                    ConnectorCapability.WRITE,
+                    ConnectorCapability.IDEMPOTENCY,
+                )
             ),
-            max_page_records=0,
-            supports_cursors=False,
+            max_page_records=200,
+            supports_cursors=True,
         )
 
     def state(self) -> ConnectorState:
@@ -235,6 +240,26 @@ class _IdempotentFakeTarget:
             return None
         return TargetRecord(
             sku=sku, payload=stored[0], record_version=stored[1], target_version=self.target_version
+        )
+
+    async def list_records_async(
+        self, cursor: str | None, context: ConnectorCallContext
+    ) -> TargetRecordPage:
+        if cursor is not None:
+            raise AssertionError("fake target has one exhaustive page")
+        return TargetRecordPage(
+            records=tuple(
+                TargetRecord(
+                    sku=sku,
+                    payload=payload,
+                    record_version=version,
+                    target_version=self.target_version,
+                )
+                for sku, (payload, version) in sorted(self.records.items())
+            ),
+            next_cursor=None,
+            request_count=1,
+            byte_count=0,
         )
 
     async def state_snapshot_async(self, context: ConnectorCallContext) -> TargetStateSnapshot:

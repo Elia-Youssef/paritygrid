@@ -108,6 +108,21 @@ class RecordRepairActionApplied:
 
 
 @dataclass(frozen=True, slots=True, repr=False)
+class RecordRepairActionAttempt:
+    """Append bounded ambiguous-attempt evidence without terminalizing an action."""
+
+    run_id: RunId
+    reservation: RepairApplicationReservation
+    repair_action_id: RepairActionId
+    attempted_at: UtcTimestamp
+    companions: RepairCompanions
+
+    @property
+    def kind(self) -> WriterCommandKind:
+        return WriterCommandKind.RECORD_REPAIR_ACTION_ATTEMPT
+
+
+@dataclass(frozen=True, slots=True, repr=False)
 class RecordRepairActionFailed:
     run_id: RunId
     reservation: RepairApplicationReservation
@@ -174,6 +189,7 @@ __all__ = [
     "CompleteRepairApplication",
     "CreateRepairPlan",
     "RecordRepairActionApplied",
+    "RecordRepairActionAttempt",
     "RecordRepairActionFailed",
     "RejectRepairPlan",
     "RepairActionAppliedResult",

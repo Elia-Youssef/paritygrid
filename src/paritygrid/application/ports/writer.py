@@ -69,6 +69,7 @@ class WriterCommandKind(StrEnum):
     APPROVE_REPAIR_PLAN = "approve_repair_plan"
     REJECT_REPAIR_PLAN = "reject_repair_plan"
     BEGIN_REPAIR_APPLICATION = "begin_repair_application"
+    RECORD_REPAIR_ACTION_ATTEMPT = "record_repair_action_attempt"
     RECORD_REPAIR_ACTION_APPLIED = "record_repair_action_applied"
     RECORD_REPAIR_ACTION_FAILED = "record_repair_action_failed"
     COMPLETE_REPAIR_APPLICATION = "complete_repair_application"
