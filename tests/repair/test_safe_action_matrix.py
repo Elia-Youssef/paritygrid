@@ -15,11 +15,10 @@ from paritygrid.application.repair.identities import (
     derive_conflict_id,
     derive_plan_id,
 )
-from paritygrid.domain.models import RunId, StateFingerprint
 from paritygrid.domain.canonical import FingerprintScope, fingerprint_state
-from paritygrid.domain.repair import RepairPlan
+from paritygrid.domain.models import RunId, StateFingerprint
 from paritygrid.domain.reconciliation import ReconciliationClassification, SuggestedResolution
-from paritygrid.domain.repair import RepairActionKind
+from paritygrid.domain.repair import RepairActionKind, RepairPlan
 from tests.repair.conftest import analysis, wire_payload
 
 RUN_ID = RunId("run_safe-matrix")
@@ -242,7 +241,7 @@ def test_reconciliation_fingerprint_value_is_bound_into_the_plan() -> None:
 
 @pytest.mark.parametrize(
     "field",
-    (
+    [
         "source_input_identity",
         "target_input_identity",
         "policy_version",
@@ -250,13 +249,14 @@ def test_reconciliation_fingerprint_value_is_bound_into_the_plan() -> None:
         "rules_version",
         "analysis_version",
         "analytical_query_version",
-    ),
+    ],
 )
 def test_each_binding_identity_changes_the_plan_content_and_identity(field: str) -> None:
     generated = generate_repair_plan(
         run_id=RUN_ID, analysis=analysis([wire_payload("GRID-0001")], [])
     )
-    assert generated.plan is not None and generated.plan.binding is not None
+    assert generated.plan is not None
+    assert generated.plan.binding is not None
     binding = generated.plan.binding
     old_value = getattr(binding, field)
     changed = "f" * 64 if field.endswith("identity") else int(old_value) + 1
