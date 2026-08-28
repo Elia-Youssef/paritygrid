@@ -43,6 +43,7 @@ def upgrade() -> None:
         ("action_count", sa.Integer()),
     ):
         op.add_column("repair_plans", sa.Column(name, type_, nullable=True))
+    op.execute('DROP TRIGGER IF EXISTS "trg_repair_plans_protect_terminal_status"')
     op.execute(
         "UPDATE repair_plans AS p SET "
         "source_input_identity=(SELECT source_fingerprint FROM reconciliation_summaries s "
@@ -53,6 +54,11 @@ def upgrade() -> None:
         "action_count=(SELECT COUNT(*) FROM repair_actions a WHERE a.repair_plan_id=p.repair_plan_id), "
         "analytical_query_version=(SELECT analytical_query_version FROM reconciliation_summaries s "
         "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint)"
+    )
+    op.execute(
+        'CREATE TRIGGER "trg_repair_plans_protect_terminal_status" BEFORE UPDATE ON "repair_plans" '
+        "WHEN OLD.\"status\" IN ('applied', 'rejected', 'failed') "
+        "BEGIN SELECT RAISE(ABORT, 'repair_plans terminal rows cannot change'); END"
     )
     op.execute('DROP TRIGGER IF EXISTS "trg_repair_plans_protect_immutable_columns"')
     op.execute(

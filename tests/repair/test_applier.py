@@ -310,9 +310,10 @@ class TestHappyApplication:
             assert behavior.record_count == 3
             assert behavior.target_version == 3
             with database.transaction() as session:
-                assert session.scalar(select(func.count()).select_from(audit_entries)) == 8
+                assert session.scalar(select(func.count()).select_from(audit_entries)) == 11
                 kinds = session.execute(select(execution_events.c.event_kind)).scalars().all()
                 assert kinds.count("repair_application_started") == 1
+                assert kinds.count("repair_action_ambiguous") == 3
                 assert kinds.count("repair_action_applied") == 3
                 assert kinds.count("repair_application_completed") == 1
         finally:
@@ -422,6 +423,132 @@ class TestInterruptionAndReplay:
             assert report.effects[0].outcome in {"applied", "replayed"}
             assert warehouse.behavior.target_version == 3
             assert warehouse.behavior.record_count == 3
+        finally:
+            await warehouse.aclose()
+
+    async def test_ambiguous_attempt_and_resolution_are_audited(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        warehouse = SimulatedWarehouse(
+            FailureScript.from_entries(
+                (
+                    ScriptedFailure(
+                        sequence=1,
+                        kind=ScriptedFailureKind.CONNECTION_LOSS,
+                        partial_bytes=8,
+                    ),
+                )
+            )
+        )
+        await warehouse.start()
+        try:
+            await _prepare(database, writer, reader, clock)
+            target = await open_target(warehouse)
+            try:
+                report = await _apply(writer, reader, clock, target)
+            finally:
+                await target.aclose()
+            assert report.disposition.value == "completed"
+            with database.transaction() as session:
+                events = session.execute(
+                    select(execution_events.c.event_kind, execution_events.c.payload_json)
+                    .where(execution_events.c.event_kind == "repair_action_ambiguous")
+                    .order_by(execution_events.c.sequence)
+                ).all()
+            assert len(events) == 5
+            assert any("ambiguous_replay_resolved" in payload for _kind, payload in events)
+        finally:
+            await warehouse.aclose()
+
+
+class TestStaleTargetFencing:
+    async def test_stale_update_precondition_terminalizes_without_overwriting_target(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        warehouse = SimulatedWarehouse()
+        await warehouse.start()
+        try:
+            await _prepare(database, writer, reader, clock)
+            target = await open_target(warehouse)
+            try:
+                expected = wire_payload("GRID-0001", name="Different")
+                intervening = wire_payload("GRID-0001", name="Intervening")
+                await target.write_record_async(
+                    TargetWriteRequest(
+                        sku="GRID-0001", payload=expected, idempotency_key="seed-expected"
+                    ),
+                    ConnectorCallContext(correlation_id="seed"),
+                )
+                await target.write_record_async(
+                    TargetWriteRequest(
+                        sku="GRID-0001", payload=intervening, idempotency_key="intervening"
+                    ),
+                    ConnectorCallContext(correlation_id="intervening"),
+                )
+                with pytest.raises(TargetApplicationError, match="target_rejected"):
+                    await _apply(writer, reader, clock, target)
+                stored = await target.read_record_async("GRID-0001", ConnectorCallContext())
+            finally:
+                await target.aclose()
+            assert stored is not None
+            assert stored.payload == intervening
+            aggregate = reader.load_plan(_derived_plan_id(reader))
+            assert aggregate is not None
+            assert aggregate.plan.status is RepairPlanStatus.FAILED
+            assert aggregate.actions[0].status.value == "failed"
+            assert warehouse.behavior.target_version == 2
+        finally:
+            await warehouse.aclose()
+
+    async def test_stale_create_precondition_rejects_racing_record_without_overwrite(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        warehouse = SimulatedWarehouse()
+        await warehouse.start()
+        try:
+            await _prepare(database, writer, reader, clock)
+            target = await open_target(warehouse)
+            try:
+                await target.write_record_async(
+                    TargetWriteRequest(
+                        sku="GRID-0001",
+                        payload=wire_payload("GRID-0001", name="Different"),
+                        idempotency_key="seed-expected",
+                    ),
+                    ConnectorCallContext(correlation_id="seed"),
+                )
+                intervening = wire_payload("GRID-0002", name="Intervening")
+                await target.write_record_async(
+                    TargetWriteRequest(
+                        sku="GRID-0002", payload=intervening, idempotency_key="intervening"
+                    ),
+                    ConnectorCallContext(correlation_id="intervening"),
+                )
+                with pytest.raises(TargetApplicationError, match="target_rejected"):
+                    await _apply(writer, reader, clock, target)
+                stored = await target.read_record_async("GRID-0002", ConnectorCallContext())
+            finally:
+                await target.aclose()
+            assert stored is not None
+            assert stored.payload == intervening
+            aggregate = reader.load_plan(_derived_plan_id(reader))
+            assert aggregate is not None
+            assert aggregate.plan.status is RepairPlanStatus.FAILED
+            assert aggregate.actions[0].status.value == "applied"
+            assert aggregate.actions[1].status.value == "failed"
+            assert warehouse.behavior.target_version == 3
         finally:
             await warehouse.aclose()
 

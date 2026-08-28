@@ -17,6 +17,7 @@ from paritygrid.adapters.connectors import (
     ConnectorServerFailureError,
     ConnectorState,
     TargetEffectOutcome,
+    TargetWritePrecondition,
     TargetWriteRequest,
     WarehouseTargetConfig,
     WarehouseTargetConnector,
@@ -160,6 +161,102 @@ class TestIdempotency:
         finally:
             await connector.aclose()
         assert replay.outcome is TargetEffectOutcome.REPLAYED
+
+    async def test_derived_keys_bind_the_target_precondition(
+        self, warehouse: SimulatedWarehouse
+    ) -> None:
+        payload = {"sku": "GRID-1", "name": "Part"}
+        absent = TargetWriteRequest(
+            sku="GRID-1",
+            payload=payload,
+            idempotency_key="derive:absent",
+            precondition=TargetWritePrecondition.must_be_absent(),
+        )
+        expected = TargetWriteRequest(
+            sku="GRID-1",
+            payload=payload,
+            idempotency_key="derive:expected",
+            precondition=TargetWritePrecondition.expected_payload(payload),
+        )
+        assert derive_idempotency_key("pg", absent) != derive_idempotency_key("pg", expected)
+
+    async def test_create_precondition_rejects_a_racing_insert_without_mutation(
+        self, warehouse: SimulatedWarehouse
+    ) -> None:
+        connector = await _connector(warehouse.base_url)
+        try:
+            intervening = _request(
+                "GRID-1", {"sku": "GRID-1", "name": "Intervening"}, key="intervening"
+            )
+            await connector.write_record_async(intervening, _context())
+            guarded = TargetWriteRequest(
+                sku="GRID-1",
+                payload={"sku": "GRID-1", "name": "Repair proposal"},
+                idempotency_key="conditional-create",
+                precondition=TargetWritePrecondition.must_be_absent(),
+            )
+            with pytest.raises(ConnectorConflictError):
+                await connector.write_record_async(guarded, _context())
+            stored = await connector.read_record_async("GRID-1", _context())
+        finally:
+            await connector.aclose()
+        assert stored is not None
+        assert stored.payload == intervening.payload
+        assert warehouse.behavior.target_version == 1
+
+    async def test_update_precondition_rejects_a_stale_preimage_without_mutation(
+        self, warehouse: SimulatedWarehouse
+    ) -> None:
+        connector = await _connector(warehouse.base_url)
+        try:
+            expected_payload = {"sku": "GRID-1", "name": "Expected"}
+            await connector.write_record_async(
+                _request("GRID-1", expected_payload, key="expected"), _context()
+            )
+            intervening = _request(
+                "GRID-1", {"sku": "GRID-1", "name": "Intervening"}, key="intervening"
+            )
+            await connector.write_record_async(intervening, _context())
+            guarded = TargetWriteRequest(
+                sku="GRID-1",
+                payload={"sku": "GRID-1", "name": "Repair proposal"},
+                idempotency_key="conditional-update",
+                precondition=TargetWritePrecondition.expected_payload(expected_payload),
+            )
+            with pytest.raises(ConnectorConflictError):
+                await connector.write_record_async(guarded, _context())
+            stored = await connector.read_record_async("GRID-1", _context())
+        finally:
+            await connector.aclose()
+        assert stored is not None
+        assert stored.payload == intervening.payload
+        assert warehouse.behavior.target_version == 2
+
+    async def test_replay_resolves_stored_effect_before_rechecking_precondition(
+        self, warehouse: SimulatedWarehouse
+    ) -> None:
+        connector = await _connector(warehouse.base_url)
+        try:
+            guarded = TargetWriteRequest(
+                sku="GRID-1",
+                payload={"sku": "GRID-1", "name": "Repair proposal"},
+                idempotency_key="conditional-replay",
+                precondition=TargetWritePrecondition.must_be_absent(),
+            )
+            first = await connector.write_record_async(guarded, _context())
+            intervening = _request(
+                "GRID-1", {"sku": "GRID-1", "name": "Intervening"}, key="intervening"
+            )
+            await connector.write_record_async(intervening, _context())
+            replay = await connector.write_record_async(guarded, _context())
+            stored = await connector.read_record_async("GRID-1", _context())
+        finally:
+            await connector.aclose()
+        assert first.outcome is TargetEffectOutcome.APPLIED
+        assert replay.outcome is TargetEffectOutcome.REPLAYED
+        assert stored is not None
+        assert stored.payload == intervening.payload
+        assert warehouse.behavior.target_version == 2
 
 
 class TestAmbiguousOutcomes:
@@ -366,6 +463,23 @@ class TestReads:
             assert state.content_fingerprint == warehouse.behavior.content_fingerprint()
         finally:
             await connector.aclose()
+
+    async def test_list_records_pages_with_configured_bound(
+        self, warehouse: SimulatedWarehouse
+    ) -> None:
+        connector = await _connector(warehouse.base_url, ConnectorCallBounds(max_page_records=1))
+        try:
+            for sku in ("GRID-1", "GRID-2", "GRID-3"):
+                await connector.write_record_async(_request(sku), _context())
+            first = await connector.list_records_async(None, _context())
+            second = await connector.list_records_async(first.next_cursor, _context())
+            third = await connector.list_records_async(second.next_cursor, _context())
+        finally:
+            await connector.aclose()
+        assert [record.sku for record in first.records] == ["GRID-1"]
+        assert [record.sku for record in second.records] == ["GRID-2"]
+        assert [record.sku for record in third.records] == ["GRID-3"]
+        assert third.next_cursor is None
 
 
 class TestLifecycleAndRedaction:

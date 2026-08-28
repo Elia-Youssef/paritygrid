@@ -248,7 +248,7 @@ class TargetParityVerifier:
                 RuntimeError("the target changed while it was being observed"),
             )
         observed_digest = fingerprint_state(
-            tuple(sorted(observed_records, key=lambda record: record.sku)),
+            observed_records,
             scope=FingerprintScope.TARGET_OBSERVATION_STATE,
         )
         identity = TargetStateIdentity(
@@ -343,6 +343,37 @@ class TargetVerificationService:
         self._now = now
         self._timeout_seconds = timeout_seconds
 
+    async def verify_and_record(
+        self,
+        *,
+        run_id: RunId,
+        target: TargetConnector,
+        inventory: ExpectedInventory,
+        reconciliation_fingerprint: StateFingerprint,
+        repair_plan_id: RepairPlanId,
+        plan_content_fingerprint: StateFingerprint,
+        actor: str,
+        correlation_id: str,
+        cancellation: ConnectorCancellationToken = NEVER_CANCELLED,
+    ) -> TargetVerificationRecord:
+        """Independently observe and persist one repair-backed verification."""
+        report = await TargetParityVerifier(now=self._now).verify(
+            target=target,
+            inventory=inventory,
+            context_id=correlation_id,
+            cancellation=cancellation,
+        )
+        return self._record(
+            run_id=run_id,
+            report=report,
+            reconciliation_fingerprint=reconciliation_fingerprint,
+            repair_plan_id=repair_plan_id,
+            plan_content_fingerprint=plan_content_fingerprint,
+            actor=actor,
+            correlation_id=correlation_id,
+            owned_observation=True,
+        )
+
     def record(
         self,
         *,
@@ -355,6 +386,30 @@ class TargetVerificationService:
         correlation_id: str,
     ) -> TargetVerificationRecord:
         """Record the immutable verification fact for one observed target state."""
+        return self._record(
+            run_id=run_id,
+            report=report,
+            reconciliation_fingerprint=reconciliation_fingerprint,
+            repair_plan_id=repair_plan_id,
+            plan_content_fingerprint=plan_content_fingerprint,
+            actor=actor,
+            correlation_id=correlation_id,
+            owned_observation=False,
+        )
+
+    def _record(
+        self,
+        *,
+        run_id: RunId,
+        report: TargetVerificationReport,
+        reconciliation_fingerprint: StateFingerprint,
+        repair_plan_id: RepairPlanId | None,
+        plan_content_fingerprint: StateFingerprint | None,
+        actor: str,
+        correlation_id: str,
+        owned_observation: bool,
+    ) -> TargetVerificationRecord:
+        """Persist a report after the public ownership and plan fences."""
         if type(run_id) is not RunId:
             raise TypeError("verification recording requires RunId")
         if type(report) is not TargetVerificationReport:
@@ -391,6 +446,8 @@ class TargetVerificationService:
             if aggregate.plan.content_fingerprint != plan_content_fingerprint:
                 raise RepairPlanMismatchError("verified repair plan contents do not match")
         verdict = _recordable_verdict(report)
+        if verdict is TargetVerificationVerdict.PARITY_HOLDING and not owned_observation:
+            raise RepairPlanMismatchError("parity-holding verification must use verify_and_record")
         observed = report.observed
         if verdict is not TargetVerificationVerdict.OBSERVATION_FAILED and observed is None:
             raise RepairPlanMismatchError("verification report carries no observation")

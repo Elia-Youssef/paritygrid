@@ -256,7 +256,7 @@ _EXPECTED_SCHEMA_HASHES: dict[tuple[str, str, str], str] = {
         "table",
         "repair_plans",
         "repair_plans",
-    ): "17b1de1e714e0c99707ade4d9b5b78587e2c119fb957841b45bcef3e560955ae",
+    ): "54c38aeb0d5564c4c0d558ba95ff6fa67251ce1c5b9c10cf3cd97f4550feefb5",
     (
         "table",
         "run_event_counters",
@@ -447,7 +447,7 @@ _EXPECTED_SCHEMA_HASHES: dict[tuple[str, str, str], str] = {
         "trigger",
         "trg_repair_plans_protect_immutable_columns",
         "repair_plans",
-    ): "1a30f1cb5124f6bc7b20968d8ea7e6406f5507a3e1b53a68aabec246524741a9",
+    ): "bf0f699e44a4ae215be644a50e6e7172838439126b678b427ecf1bf0ec7f44cf",
     (
         "trigger",
         "trg_repair_plans_protect_terminal_status",

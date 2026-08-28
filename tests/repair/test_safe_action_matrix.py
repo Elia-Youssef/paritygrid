@@ -1,5 +1,7 @@
 """Safe-action matrix for the repair-plan generator (P11.1)."""
 
+from dataclasses import replace
+
 import pytest
 
 from paritygrid.application.repair import (
@@ -14,6 +16,8 @@ from paritygrid.application.repair.identities import (
     derive_plan_id,
 )
 from paritygrid.domain.models import RunId, StateFingerprint
+from paritygrid.domain.canonical import FingerprintScope, fingerprint_state
+from paritygrid.domain.repair import RepairPlan
 from paritygrid.domain.reconciliation import ReconciliationClassification, SuggestedResolution
 from paritygrid.domain.repair import RepairActionKind
 from tests.repair.conftest import analysis, wire_payload
@@ -136,7 +140,7 @@ def test_regeneration_reproduces_identical_identities_and_content() -> None:
     assert (
         first.plan.plan_id
         == second.plan.plan_id
-        == derive_plan_id(RUN_ID, result.summary.fingerprint)
+        == derive_plan_id(RUN_ID, result.summary.fingerprint, first.plan.binding)
     )
     assert first.content_fingerprint == second.content_fingerprint
     assert first.action_keys == second.action_keys
@@ -234,3 +238,36 @@ def test_reconciliation_fingerprint_value_is_bound_into_the_plan() -> None:
     assert generated.plan is not None
     assert generated.plan.state_fingerprint.value == result.summary.fingerprint.value
     assert len(StateFingerprint(generated.plan.state_fingerprint.value).value) == 64
+
+
+@pytest.mark.parametrize(
+    "field",
+    (
+        "source_input_identity",
+        "target_input_identity",
+        "policy_version",
+        "generation_version",
+        "rules_version",
+        "analysis_version",
+        "analytical_query_version",
+    ),
+)
+def test_each_binding_identity_changes_the_plan_content_and_identity(field: str) -> None:
+    generated = generate_repair_plan(
+        run_id=RUN_ID, analysis=analysis([wire_payload("GRID-0001")], [])
+    )
+    assert generated.plan is not None and generated.plan.binding is not None
+    binding = generated.plan.binding
+    old_value = getattr(binding, field)
+    changed = "f" * 64 if field.endswith("identity") else int(old_value) + 1
+    alternate_binding = replace(binding, **{field: changed})
+    alternate = RepairPlan(
+        plan_id=derive_plan_id(RUN_ID, generated.plan.state_fingerprint, alternate_binding),
+        state_fingerprint=generated.plan.state_fingerprint,
+        actions=generated.plan.actions,
+        binding=alternate_binding,
+    )
+    assert alternate.plan_id != generated.plan.plan_id
+    assert fingerprint_state((alternate,), scope=FingerprintScope.REPAIR_PLAN_CONTENT) != (
+        generated.content_fingerprint
+    )

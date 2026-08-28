@@ -33,6 +33,8 @@ material; an error or event that would carry a secret fails closed at
 construction instead of leaking.
 """
 
+from __future__ import annotations
+
 import asyncio
 import json
 import re
@@ -590,7 +592,7 @@ class TargetWriteRequest:
     sku: str
     payload: Mapping[str, object]
     idempotency_key: str
-    precondition: "TargetWritePrecondition | None" = None
+    precondition: TargetWritePrecondition | None = None
 
     def __post_init__(self) -> None:
         validate_sku(self.sku)

@@ -181,6 +181,9 @@ corrected bounded result may be submitted.
 ### `repair_plans`
 
 - Exact reconciliation fingerprint, immutable contents, and controlled status.
+- Immutable source and target input identities plus policy, generation, normalization,
+  analysis, and query-version identities; these fields are part of canonical plan content
+  and cannot be changed after creation.
 - Proposed, approved, applying, applied, rejected, or failed.
 
 ### `repair_approvals`

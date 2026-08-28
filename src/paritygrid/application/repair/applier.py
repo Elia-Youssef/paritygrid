@@ -77,6 +77,7 @@ from paritygrid.application.writes.repairs import (
     BeginRepairApplicationResult,
     CompleteRepairApplication,
     RecordRepairActionApplied,
+    RecordRepairActionAttempt,
     RecordRepairActionFailed,
     RepairActionAppliedResult,
     RepairMutationResult,
@@ -380,6 +381,16 @@ class RepairApplicationService:
                 context.raise_if_cancelled()
             except ConnectorCancelledError:
                 return _Suspended(RepairApplicationDisposition.INTERRUPTED, "cancelled")
+            dispatch_record = self._record_attempt(
+                action,
+                reservation,
+                run_id,
+                context_id,
+                attempt=attempts,
+                phase="target_dispatch_started",
+            )
+            if dispatch_record is not None:
+                return dispatch_record
             try:
                 outcome = await target.write_record_async(request, context)
             except ConnectorCancelledError as error:
@@ -449,9 +460,84 @@ class RepairApplicationService:
                 continue
             except ConnectorError as error:
                 return _Suspended(RepairApplicationDisposition.UNRESOLVED, redact_exception(error))
+            if ambiguous_replays:
+                resolution_record = self._record_attempt(
+                    action,
+                    reservation,
+                    run_id,
+                    context_id,
+                    attempt=attempts,
+                    phase="ambiguous_replay_resolved",
+                    outcome=outcome.outcome.value,
+                )
+                if resolution_record is not None:
+                    return resolution_record
             return await self._record_applied(
                 action, reservation, run_id, context_id, outcome, attempts
             )
+
+    def _record_attempt(
+        self,
+        action: RepairActionRecord,
+        reservation: RepairApplicationReservation,
+        run_id: RunId,
+        context_id: str,
+        *,
+        attempt: int,
+        phase: str,
+        outcome: str | None = None,
+    ) -> _Suspended | None:
+        """Durably describe a target dispatch that may have an unknown effect.
+
+        The attempt record is committed before a target call.  A process loss
+        after that point therefore leaves a bounded, redacted fact that the
+        pending effect may have reached the target.  If an ambiguous call later
+        resolves, a second fact records that resolution while the action is
+        still pending; only then does the normal applied-action mutation make
+        the plan terminal for that effect.
+        """
+        attempted_at = self._now()
+        payload: dict[str, object] = {
+            "attempt": attempt,
+            "canonical_key": action.effect.proposed.sku,
+            "phase": phase,
+        }
+        if outcome is not None:
+            payload["outcome"] = outcome
+        companions = build_companions(
+            frontier=frontier_from_evidence(self._reader.load(run_id)),
+            run_id=run_id,
+            operation="repair_action_ambiguous",
+            object_kind="repair_action",
+            object_id=action.effect.action_id.value,
+            actor="repair-operator",
+            correlation_id=context_id,
+            occurred_at=attempted_at,
+            payload=payload,
+        )
+        command = RecordRepairActionAttempt(
+            run_id=run_id,
+            reservation=reservation,
+            repair_action_id=action.effect.action_id,
+            attempted_at=attempted_at,
+            companions=companions,
+        )
+        try:
+            self._submit_with_replay(command)
+        except RepairWriterOutcomeUnknownError:
+            return _Suspended(
+                RepairApplicationDisposition.UNRESOLVED,
+                "the durable outcome of the target-attempt record is unknown",
+            )
+        except (
+            RepairApplicationConflictError,
+            RepairStaleRowVersionError,
+            AuditSequenceConflictError,
+        ) as error:
+            raise RepairPlanStateError(
+                "a concurrent application owns the durable plan frontier"
+            ) from error
+        return None
 
     async def _record_applied(
         self,
