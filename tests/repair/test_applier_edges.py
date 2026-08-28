@@ -19,6 +19,7 @@ from paritygrid.application.ports.connectors import (
     ConnectorTimeoutError,
     TargetConnector,
     TargetRecord,
+    TargetRecordPage,
     TargetStateSnapshot,
     TargetWriteOutcome,
     TargetWriteRequest,
@@ -124,16 +125,25 @@ class _TransientTarget(_IdempotentFakeTarget):
 
 
 class _GarbageReadTarget(_IdempotentFakeTarget):
-    """Return an unparsable payload for every read."""
+    """Return an unparsable payload from the full-inventory observation."""
 
-    async def read_record_async(
-        self, sku: str, context: ConnectorCallContext
-    ) -> TargetRecord | None:
-        return TargetRecord(
-            sku=sku,
-            payload={"sku": sku, "unexpected": True},
-            record_version=1,
-            target_version=1,
+    async def list_records_async(
+        self, cursor: str | None, context: ConnectorCallContext
+    ) -> TargetRecordPage:
+        if cursor is not None:
+            raise AssertionError("garbage target exposes one page")
+        return TargetRecordPage(
+            records=(
+                TargetRecord(
+                    sku="GRID-0001",
+                    payload={"sku": "GRID-0001", "unexpected": True},
+                    record_version=1,
+                    target_version=1,
+                ),
+            ),
+            next_cursor=None,
+            request_count=1,
+            byte_count=0,
         )
 
 
@@ -145,7 +155,7 @@ class _BareConnectorError(ConnectorError):
 
 
 class _CancelOnReadTarget(_IdempotentFakeTarget):
-    """Cancel during the per-key observation loop."""
+    """Cancel during the target-inventory page loop."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -153,11 +163,11 @@ class _CancelOnReadTarget(_IdempotentFakeTarget):
 
         self.token = EventCancellationToken()
 
-    async def read_record_async(
-        self, sku: str, context: ConnectorCallContext
-    ) -> TargetRecord | None:
+    async def list_records_async(
+        self, cursor: str | None, context: ConnectorCallContext
+    ) -> TargetRecordPage:
         self.token.cancel()
-        raise ConnectorCancelledError("cancelled mid-read")
+        raise ConnectorCancelledError("cancelled mid-page")
 
 
 class _FailingSnapshotTarget(_IdempotentFakeTarget):
@@ -842,11 +852,8 @@ class TestVerificationDefensiveBranches:
         verifier = TargetParityVerifier(now=clock.now)
         garbage = cast(TargetConnector, _GarbageReadTarget())
         report = await verifier.verify(target=garbage, inventory=inventory, context_id="corr")
-        assert report.verdict is not None
-        assert report.verdict.value == "parity_divergent"
-        assert any(
-            divergence.reason == "target record is unparsable" for divergence in report.divergences
-        )
+        assert report.disposition is TargetObservationDisposition.OBSERVATION_FAILED
+        assert report.verdict is None
 
         cancel_read = _CancelOnReadTarget()
         cancelled = await verifier.verify(

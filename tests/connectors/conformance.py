@@ -241,7 +241,8 @@ async def run_target_conformance(
     assert capabilities.kind.value == "warehouse_target"
     assert capabilities.supports(ConnectorCapability.WRITE)
     assert capabilities.supports(ConnectorCapability.IDEMPOTENCY)
-    assert capabilities.max_page_records == 0
+    assert 1 <= capabilities.max_page_records <= 200
+    assert capabilities.supports_cursors
 
     first = await connector.write_record_async(
         build_request("CONF-1", "key-conf-1"), harness.context

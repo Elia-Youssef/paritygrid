@@ -797,7 +797,6 @@ reconciliation_summaries = Table(
     _column("target_fingerprint", String(64)),
     _column("reconciliation_fingerprint", String(64)),
     _column("analytical_query_version", Integer),
-    _column("action_count", Integer),
     _column("created_at", String(27)),
     _pk("reconciliation_summaries", "run_id"),
     _uq("reconciliation_summaries", "run_id", "reconciliation_fingerprint"),
@@ -816,7 +815,6 @@ reconciliation_summaries = Table(
     _sha256("target_fingerprint", "target_fingerprint_shape"),
     _sha256("reconciliation_fingerprint", "reconciliation_fingerprint_shape"),
     _positive("analytical_query_version", "analytical_query_version_range"),
-    _nonnegative("action_count", "action_count_range"),
     _utc("created_at", "created_at_utc"),
 )
 
@@ -870,6 +868,7 @@ repair_plans = Table(
     _column("rules_version", Integer),
     _column("analysis_version", Integer),
     _column("analytical_query_version", Integer),
+    _column("action_count", Integer),
     _column("status", String(32)),
     _column("row_version", Integer, default="1"),
     _column("created_at", String(27)),
@@ -898,6 +897,7 @@ repair_plans = Table(
     _positive("rules_version", "rules_version_range"),
     _positive("analysis_version", "analysis_version_range"),
     _positive("analytical_query_version", "analytical_query_version_range"),
+    _nonnegative("action_count", "action_count_range"),
     _enum("status", (value.value for value in RepairPlanStatus), "status_values"),
     _positive("row_version", "row_version_range"),
     _utc("created_at", "created_at_utc"),
