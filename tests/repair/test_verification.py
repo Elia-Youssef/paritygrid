@@ -2,21 +2,25 @@
 """Independent target observation and parity verification (P11.4)."""
 
 import contextlib
+from dataclasses import replace
 from typing import cast
 
 import pytest
 from sqlalchemy import func, select
 
+from paritygrid.adapters.connectors import WarehouseTargetConfig, WarehouseTargetConnector
 from paritygrid.adapters.persistence.repair_workflow import SQLiteRepairWorkflowReader
 from paritygrid.adapters.persistence.schema import target_state_verifications
 from paritygrid.adapters.persistence.sqlite import SQLiteDatabase
 from paritygrid.adapters.persistence.writer.core import SQLiteTransactionalWriter
 from paritygrid.application.ports.connectors import (
+    ConnectorCallBounds,
     ConnectorCallContext,
     ConnectorPermanentError,
     ConnectorState,
     EventCancellationToken,
     TargetConnector,
+    TargetRecordPage,
     TargetWriteRequest,
 )
 from paritygrid.application.ports.consistency import RedactedDocument
@@ -151,6 +155,67 @@ async def _verify(
     return await _verifier(clock).verify(
         target=target, inventory=inventory, context_id="corr-verify"
     )
+
+
+async def _open_paged_target(
+    warehouse: SimulatedWarehouse, *, max_page_records: int
+) -> WarehouseTargetConnector:
+    target = WarehouseTargetConnector(
+        WarehouseTargetConfig(
+            warehouse.base_url,
+            bounds=ConnectorCallBounds(max_page_records=max_page_records),
+        )
+    )
+    await target.open_async()
+    return target
+
+
+class _CancelAfterFirstPageTarget:
+    """Cancel the shared token after receiving a first nonterminal page."""
+
+    def __init__(self, inner: WarehouseTargetConnector, token: EventCancellationToken) -> None:
+        self._inner = inner
+        self._token = token
+        self._cancelled = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def list_records_async(
+        self, cursor: str | None, context: ConnectorCallContext
+    ) -> TargetRecordPage:
+        page = await self._inner.list_records_async(cursor, context)
+        if not self._cancelled and page.next_cursor is not None:
+            self._cancelled = True
+            self._token.cancel()
+        return page
+
+
+class _MutationDuringEnumerationTarget:
+    """Introduce an out-of-band target mutation after the opening page."""
+
+    def __init__(self, inner: WarehouseTargetConnector) -> None:
+        self._inner = inner
+        self._mutated = False
+
+    def __getattr__(self, name: str) -> object:
+        return getattr(self._inner, name)
+
+    async def list_records_async(
+        self, cursor: str | None, context: ConnectorCallContext
+    ) -> TargetRecordPage:
+        page = await self._inner.list_records_async(cursor, context)
+        if not self._mutated:
+            self._mutated = True
+            await self._inner.write_record_async(
+                TargetWriteRequest(
+                    sku="GRID-0001",
+                    payload=wire_payload("GRID-0001", name="Changed during enumeration"),
+                    idempotency_key="enumeration-race",
+                ),
+                ConnectorCallContext(correlation_id="enumeration-race"),
+            )
+        return page
 
 
 class TestExpectedInventory:
@@ -324,6 +389,164 @@ class TestParityVerification:
             assert report.observed is not None
             assert report.observed.record_count == 5
             assert report.observed.fingerprint != report.expected_fingerprint
+        finally:
+            await warehouse.aclose()
+
+    async def test_extra_record_content_is_fingerprinted_by_full_inventory_enumeration(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        warehouse = SimulatedWarehouse()
+        await warehouse.start()
+        try:
+            result, plan = await _applied_state(database, writer, reader, clock, warehouse)
+            inventory = build_expected_inventory(result, plan)
+            target = await open_target(warehouse)
+            try:
+                await target.write_record_async(
+                    TargetWriteRequest(
+                        sku="GRID-0005",
+                        payload=wire_payload("GRID-0005", name="Unexpected first"),
+                        idempotency_key="extra-first",
+                    ),
+                    ConnectorCallContext(correlation_id="extra"),
+                )
+                first = await _verify(clock, target, inventory)
+                await target.write_record_async(
+                    TargetWriteRequest(
+                        sku="GRID-0005",
+                        payload=wire_payload("GRID-0005", name="Unexpected second"),
+                        idempotency_key="extra-second",
+                    ),
+                    ConnectorCallContext(correlation_id="extra"),
+                )
+                second = await _verify(clock, target, inventory)
+            finally:
+                await target.aclose()
+            assert first.verdict is TargetVerificationVerdict.PARITY_DIVERGENT
+            assert second.verdict is TargetVerificationVerdict.PARITY_DIVERGENT
+            assert first.observed is not None
+            assert second.observed is not None
+            assert first.observed.record_count == second.observed.record_count == 5
+            assert first.observed.fingerprint != second.observed.fingerprint
+            assert any(item.canonical_key == "GRID-0005" for item in second.divergences)
+        finally:
+            await warehouse.aclose()
+
+    async def test_same_count_missing_extra_replacement_is_divergent(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        from tests.repair.conftest import record_for
+
+        warehouse = SimulatedWarehouse()
+        await warehouse.start()
+        try:
+            result, plan = await _applied_state(database, writer, reader, clock, warehouse)
+            inventory = build_expected_inventory(result, plan)
+            replacement = (
+                *(record for record in inventory.records if record.sku != "GRID-0004"),
+                record_for("GRID-9999"),
+            )
+            swapped = replace(
+                inventory, records=tuple(sorted(replacement, key=lambda item: item.sku))
+            )
+            target = await open_target(warehouse)
+            try:
+                report = await _verify(clock, target, swapped)
+            finally:
+                await target.aclose()
+            assert report.verdict is TargetVerificationVerdict.PARITY_DIVERGENT
+            assert report.expected_record_count == report.observed_record_count == 4
+            assert {item.canonical_key for item in report.divergences} >= {
+                "GRID-0004",
+                "GRID-9999",
+            }
+            assert {item.reason for item in report.divergences} >= {
+                "target record is missing",
+                "unexpected target record is present",
+            }
+        finally:
+            await warehouse.aclose()
+
+    async def test_pagination_enumerates_every_page_before_accepting_parity(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        warehouse = SimulatedWarehouse()
+        await warehouse.start()
+        try:
+            result, plan = await _applied_state(database, writer, reader, clock, warehouse)
+            inventory = build_expected_inventory(result, plan)
+            target = await _open_paged_target(warehouse, max_page_records=1)
+            try:
+                report = await _verify(clock, target, inventory)
+            finally:
+                await target.aclose()
+            assert report.verdict is TargetVerificationVerdict.PARITY_HOLDING
+            assert report.observed_record_count == 4
+        finally:
+            await warehouse.aclose()
+
+    async def test_cancellation_between_target_pages_is_interrupted(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        warehouse = SimulatedWarehouse()
+        await warehouse.start()
+        try:
+            result, plan = await _applied_state(database, writer, reader, clock, warehouse)
+            inventory = build_expected_inventory(result, plan)
+            inner = await _open_paged_target(warehouse, max_page_records=1)
+            token = EventCancellationToken()
+            target = _CancelAfterFirstPageTarget(inner, token)
+            try:
+                report = await _verifier(clock).verify(
+                    target=cast(TargetConnector, target),
+                    inventory=inventory,
+                    context_id="corr-verify",
+                    cancellation=token,
+                )
+            finally:
+                await inner.aclose()
+            assert report.disposition.value == "interrupted"
+        finally:
+            await warehouse.aclose()
+
+    async def test_mutation_during_inventory_observation_fails_closed(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        warehouse = SimulatedWarehouse()
+        await warehouse.start()
+        try:
+            result, plan = await _applied_state(database, writer, reader, clock, warehouse)
+            inventory = build_expected_inventory(result, plan)
+            inner = await _open_paged_target(warehouse, max_page_records=1)
+            target = _MutationDuringEnumerationTarget(inner)
+            try:
+                report = await _verify(clock, cast(TargetConnector, target), inventory)
+            finally:
+                await inner.aclose()
+            assert report.disposition.value == "observation_failed"
+            assert report.verdict is None
+            assert report.detail is not None
+            assert "changed while" in report.detail
         finally:
             await warehouse.aclose()
 
