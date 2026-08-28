@@ -184,6 +184,14 @@ def plan_row(**overrides: object) -> dict[str, object]:
         "run_id": RUN_ID.value,
         "reconciliation_fingerprint": FINGERPRINT.value,
         "content_fingerprint": "5" * 64,
+        "source_input_identity": "1" * 64,
+        "target_input_identity": "2" * 64,
+        "policy_version": 1,
+        "generation_version": 1,
+        "rules_version": 1,
+        "analysis_version": 1,
+        "analytical_query_version": 1,
+        "action_count": 1,
         "status": "proposed",
         "row_version": 1,
         "created_at": str(timestamp(2)),
@@ -655,8 +663,9 @@ def test_mapping_action_terminal_shapes_and_aggregate_corruption() -> None:
     failed = action_from_row(failed_row)
     assert applied.status is RepairActionStatus.APPLIED
     assert failed.status is RepairActionStatus.FAILED
-    content = effect_content_fingerprint(PLAN_ID, FINGERPRINT, (base_effect,))
-    proposed = replace(plan_from_row(plan_row()), content_fingerprint=content)
+    proposed = plan_from_row(plan_row())
+    content = effect_content_fingerprint(PLAN_ID, FINGERPRINT, (base_effect,), proposed.binding)
+    proposed = replace(proposed, content_fingerprint=content)
     assert validate_aggregate(proposed, None, (action_from_row(base_row),)).plan == proposed
     corrupt_cases: tuple[
         tuple[RepairPlanRecord, RepairApprovalRecord | None, tuple[RepairActionRecord, ...]], ...
@@ -785,9 +794,10 @@ def test_encoding_translation_and_chronology_defenses(
         1,
         redacted(safe=True),
     )
-    content = effect_content_fingerprint(PLAN_ID, FINGERPRINT, (pending.effect,))
+    base_plan = plan_from_row(plan_row())
+    content = effect_content_fingerprint(PLAN_ID, FINGERPRINT, (pending.effect,), base_plan.binding)
     applying_too_early = replace(
-        plan_from_row(plan_row()),
+        base_plan,
         content_fingerprint=content,
         status=RepairPlanStatus.APPLYING,
         row_version=3,

@@ -552,6 +552,20 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
         aggregate = repairs.record_application_attempt(
             command.reservation, command.repair_action_id
         )
+        # An attempt intentionally leaves the repair action pending.  Unlike
+        # terminal action records, its replay cannot be inferred from action
+        # status, so fence it on the immutable companion frontier instead.
+        # This lets a committed transaction whose writer receipt was lost
+        # recover only when the exact audit/event/run advance already exists.
+        current_run = SqlAlchemyRunRepository(session).get(command.run_id)
+        if (
+            current_run is None
+            or current_run.row_version != command.companions.expected_run_row_version
+        ):
+            _verify_repair_replay(session, command.run_id, command.companions)
+            return DispatchOutcome(
+                RepairMutationResult(command.kind, aggregate, None, None, None), False
+            )
         audit, events, run = _repair_companions(session, command.run_id, command.companions)
         return DispatchOutcome(RepairMutationResult(command.kind, aggregate, audit, events, run))
     if isinstance(command, RecordRepairActionFailed):

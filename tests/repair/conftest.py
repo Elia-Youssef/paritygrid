@@ -284,9 +284,11 @@ def conflicts_from(
 
 
 def plan_id_for(run_id: RunId, analysis: ReconciliationAnalysis) -> RepairPlanId:
-    from paritygrid.application.repair.identities import derive_plan_id
+    from paritygrid.application.repair import generate_repair_plan
 
-    return derive_plan_id(run_id, analysis.summary.fingerprint)
+    generated = generate_repair_plan(run_id=run_id, analysis=analysis)
+    assert generated.plan is not None
+    return generated.plan.plan_id
 
 
 def count_actions(plan: RepairPlan | None) -> int:

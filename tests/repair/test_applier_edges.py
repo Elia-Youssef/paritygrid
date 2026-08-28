@@ -69,7 +69,6 @@ from paritygrid.application.repair.errors import (
 from paritygrid.application.repair.errors import (
     RepairReconciliationStaleError as WorkflowStaleError,
 )
-from paritygrid.application.repair.identities import derive_plan_id
 from paritygrid.application.repair.payloads import parse_observed_payload
 from paritygrid.domain.models import (
     RepairPlanId,
@@ -84,7 +83,7 @@ from tests.repair.conftest import (
     wire_payload,
 )
 from tests.repair.test_applier import _IdempotentFakeTarget, _no_sleep
-from tests.repair.test_service_branches import _result, _UnknownOutcomeProxy
+from tests.repair.test_service_branches import _plan_id, _result, _UnknownOutcomeProxy
 
 pytestmark = pytest.mark.anyio
 
@@ -241,7 +240,7 @@ class TestApplierDefensiveBranches:
         seed_terminal_run(database)
         service = _applier(writer, reader, clock)
         target = cast(TargetConnector, _IdempotentFakeTarget())
-        plan_id = derive_plan_id(RUN_ID, _result().summary.fingerprint)
+        plan_id = _plan_id()
         with pytest.raises(TypeError):
             await service.apply(
                 run_id="run_text",  # type: ignore[arg-type]
@@ -267,7 +266,7 @@ class TestApplierDefensiveBranches:
         with pytest.raises(WorkflowStaleError):
             await service.apply(
                 run_id=RUN_ID,
-                repair_plan_id=derive_plan_id(RUN_ID, _result().summary.fingerprint),
+                repair_plan_id=_plan_id(),
                 target=cast(TargetConnector, _IdempotentFakeTarget()),
                 context_id="corr",
             )
@@ -283,7 +282,7 @@ class TestApplierDefensiveBranches:
         # state, so the defensive applier branch is exercised through a
         # hand-built aggregate that carries it.
         await _approved(database, writer, reader, clock)
-        plan_id = derive_plan_id(RUN_ID, _result().summary.fingerprint)
+        plan_id = _plan_id()
         corrupt_reader = _FailedActionReader(reader, plan_id)
         with pytest.raises(RepairPlanStateError, match="failed action"):
             await _applier(writer, corrupt_reader, clock).apply(
@@ -304,7 +303,7 @@ class TestApplierDefensiveBranches:
         fake = _CancelOnWriteTarget()
         report = await _applier(writer, reader, clock).apply(
             run_id=RUN_ID,
-            repair_plan_id=derive_plan_id(RUN_ID, _result().summary.fingerprint),
+            repair_plan_id=_plan_id(),
             target=cast(TargetConnector, fake),
             context_id="corr",
             cancellation=fake.token,
@@ -324,7 +323,7 @@ class TestApplierDefensiveBranches:
         )
         report = await _applier(writer, reader, clock).apply(
             run_id=RUN_ID,
-            repair_plan_id=derive_plan_id(RUN_ID, _result().summary.fingerprint),
+            repair_plan_id=_plan_id(),
             target=cast(TargetConnector, fake),
             context_id="corr",
         )
@@ -345,7 +344,7 @@ class TestApplierDefensiveBranches:
         with pytest.raises(TargetApplicationError, match="retry_exhausted"):
             await _applier(writer, reader, clock).apply(
                 run_id=RUN_ID,
-                repair_plan_id=derive_plan_id(RUN_ID, _result().summary.fingerprint),
+                repair_plan_id=_plan_id(),
                 target=cast(TargetConnector, fake),
                 context_id="corr",
             )
@@ -361,7 +360,7 @@ class TestApplierDefensiveBranches:
         fake = _TransientTarget(99, _BareConnectorError())
         report = await _applier(writer, reader, clock).apply(
             run_id=RUN_ID,
-            repair_plan_id=derive_plan_id(RUN_ID, _result().summary.fingerprint),
+            repair_plan_id=_plan_id(),
             target=cast(TargetConnector, fake),
             context_id="corr",
         )
@@ -480,7 +479,7 @@ class TestCompetingApplicationRaces:
     ) -> None:
         await _approved(database, writer, reader, clock)
         result = _result()
-        plan_id = derive_plan_id(RUN_ID, result.summary.fingerprint)
+        plan_id = _plan_id(result=result)
         aggregate = reader.load_plan(plan_id)
         assert aggregate is not None
 
@@ -533,7 +532,7 @@ class TestCompetingApplicationRaces:
     ) -> None:
         await _approved(database, writer, reader, clock)
         result = _result()
-        plan_id = derive_plan_id(RUN_ID, result.summary.fingerprint)
+        plan_id = _plan_id(result=result)
         aggregate = reader.load_plan(plan_id)
         assert aggregate is not None
         assert aggregate.plan.applying_at is None
@@ -962,7 +961,7 @@ class TestVerificationDefensiveBranches:
                 report=report,
                 reconciliation_fingerprint=result.summary.fingerprint,
                 repair_plan_id=RepairPlanId("rpl_missing"),
-                plan_content_fingerprint=None,
+                plan_content_fingerprint=StateFingerprint("e" * 64),
                 actor="a",
                 correlation_id="c",
             )
@@ -1181,7 +1180,7 @@ def _aggregate_stub(
 
     moment = UtcTimestamp(datetime(2026, 8, 27, 12, 0, 0, tzinfo=UTC))
     plan = RepairPlanRecord(
-        repair_plan_id=derive_plan_id(RUN_ID, _result().summary.fingerprint),
+        repair_plan_id=_plan_id(),
         run_id=RUN_ID,
         reconciliation_fingerprint=_result().summary.fingerprint,
         content_fingerprint=_result().summary.fingerprint,

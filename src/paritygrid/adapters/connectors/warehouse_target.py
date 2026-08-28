@@ -553,6 +553,12 @@ class WarehouseTargetConnector:
                 secrets=secrets,
             )
         if status == 409:
+            if _target_error_code(response.body) == "target_precondition_failed":
+                return ConnectorConflictError(
+                    "the target no longer satisfies the write precondition",
+                    detail=detail,
+                    secrets=secrets,
+                )
             return ConnectorConflictError(
                 "the idempotency key was reused with a different request",
                 detail=detail,
@@ -615,6 +621,25 @@ def _parse_retry_after(retry_after_text: str | None) -> int | None:
     return value
 
 
+def _target_error_code(body: bytes) -> str | None:
+    """Return one known bounded target error code without trusting its message."""
+    try:
+        document = json.loads(body.decode("utf-8"))
+    except UnicodeDecodeError, json.JSONDecodeError:
+        return None
+    if not isinstance(document, dict):
+        return None
+    error = cast("dict[str, object]", document).get("error")
+    if not isinstance(error, dict):
+        return None
+    code = cast("dict[str, object]", error).get("code")
+    return (
+        code
+        if isinstance(code, str) and code in {"idempotency_conflict", "target_precondition_failed"}
+        else None
+    )
+
+
 def _decode_write_document(document: object) -> tuple[str, int, int, bool]:
     if not isinstance(document, dict):
         raise ConnectorUnknownError("the target write document is malformed")
@@ -664,13 +689,14 @@ def _decode_target_page(document: object, *, byte_count: int) -> TargetRecordPag
     if not isinstance(records_value, list) or not isinstance(cursor_value, str):
         raise ConnectorValidationError("target record page is malformed")
     records: list[TargetRecord] = []
-    for record_document in records_value:
+    for record_document in cast("list[object]", records_value):
         if not isinstance(record_document, dict):
             raise ConnectorValidationError("target record page is malformed")
-        sku = record_document.get("sku")
+        record_mapping = cast("dict[str, object]", record_document)
+        sku = record_mapping.get("sku")
         if not isinstance(sku, str):
             raise ConnectorValidationError("target record page is malformed")
-        records.append(_decode_target_record(sku, record_document))
+        records.append(_decode_target_record(sku, record_mapping))
     return TargetRecordPage(
         records=tuple(records),
         next_cursor=None if cursor_value == "" else cursor_value,

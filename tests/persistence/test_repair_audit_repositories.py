@@ -88,7 +88,7 @@ from paritygrid.domain.models import (
     StateFingerprint,
     UtcTimestamp,
 )
-from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan
+from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan, RepairPlanBinding
 
 PIPELINE_ID = PipelineId("pip_repair-tests")
 RUN_ID = RunId("run_repair-tests")
@@ -131,6 +131,23 @@ def record(*, sku: str = "HARBOR-LAMP", name: str = "Harbor Lamp") -> InventoryR
     )
 
 
+def binding(
+    count: int, reconciliation_fingerprint: StateFingerprint = RECONCILIATION
+) -> RepairPlanBinding:
+    return RepairPlanBinding(
+        run_id=RUN_ID,
+        reconciliation_fingerprint=reconciliation_fingerprint,
+        source_input_identity="1" * 64,
+        target_input_identity="2" * 64,
+        policy_version=1,
+        generation_version=1,
+        rules_version=1,
+        analysis_version=1,
+        analytical_query_version=1,
+        action_count=count,
+    )
+
+
 def plan() -> RepairPlan:
     return RepairPlan(
         plan_id=PLAN_ID,
@@ -144,6 +161,7 @@ def plan() -> RepairPlan:
                 proposed_record=record(),
             ),
         ),
+        binding=binding(1),
     )
 
 
@@ -283,6 +301,7 @@ def second_plan() -> RepairPlan:
                 record(sku="SECOND-LAMP", name="Second Lamp"),
             ),
         ),
+        binding=binding(1),
     )
 
 
@@ -300,6 +319,7 @@ def update_plan() -> RepairPlan:
                 record(sku="UPDATE-LAMP", name="Old Lamp"),
             ),
         ),
+        binding=binding(1),
     )
 
 
@@ -308,17 +328,18 @@ def multi_plan() -> RepairPlan:
         RepairPlanId("rpl_multi-repair"),
         RECONCILIATION,
         (plan().actions[0], second_plan().actions[0]),
+        binding=binding(2),
     )
 
 
 def test_canonical_effect_projection_matches_original_plan_protocol() -> None:
     domain_plan = plan()
     effect = RepairActionEffect.from_action(domain_plan.actions[0])
-    assert effect_content_fingerprint(PLAN_ID, RECONCILIATION, (effect,)) == (
-        plan_content_fingerprint(domain_plan)
-    )
+    assert effect_content_fingerprint(
+        PLAN_ID, RECONCILIATION, (effect,), binding=domain_plan.binding
+    ) == (plan_content_fingerprint(domain_plan))
     assert plan_content_fingerprint(domain_plan).value == (
-        "cdf2fb7065338c116f6ebbf6cc3f19189743c1e42578f7d7d3b611ee813bcaf9"
+        "5c09a475f6c25deb9665361b4aaa6e1737116b71154daf0ebbafead6e594fa95"
     )
 
 
@@ -650,7 +671,7 @@ def test_plan_creation_classifies_invalid_and_duplicate_requests(
                 created_at=timestamp(3),
             )
         alternate_identity = RepairPlan(
-            RepairPlanId("rpl_same-content"), RECONCILIATION, plan().actions
+            RepairPlanId("rpl_same-content"), RECONCILIATION, plan().actions, binding=binding(1)
         )
         with pytest.raises(RepairPlanContentConflictError):
             repository.create_plan(
@@ -869,6 +890,7 @@ def test_missing_and_mismatched_reconciliation_parents_are_typed(
                 record(sku="MISSING-LAMP"),
             ),
         ),
+        binding=binding(1),
     )
     mismatched_conflict_plan = RepairPlan(
         RepairPlanId("rpl_wrong-conflict"),
@@ -882,6 +904,7 @@ def test_missing_and_mismatched_reconciliation_parents_are_typed(
                 record(),
             ),
         ),
+        binding=binding(1),
     )
     stale_fingerprint = StateFingerprint("8" * 64)
     stale_plan = RepairPlan(
@@ -896,6 +919,7 @@ def test_missing_and_mismatched_reconciliation_parents_are_typed(
                 record(),
             ),
         ),
+        binding=binding(1, stale_fingerprint),
     )
     with database.transaction() as session:
         repository = SqlAlchemyRepairRepository(session)

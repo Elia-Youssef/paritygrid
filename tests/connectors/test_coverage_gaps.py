@@ -1,6 +1,7 @@
 """Targeted branch tests lifting the connectors package over 90% coverage."""
 
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -79,6 +80,21 @@ class TestTargetTransportClassification:
         await connector.aclose()
         with pytest.raises(ConnectorLifecycleError, match="closed"):
             await connector.open_async()
+
+    @pytest.mark.parametrize(
+        "kind",
+        [
+            HttpTransportErrorKind.CONNECT,
+            HttpTransportErrorKind.CONNECT_TIMEOUT,
+            HttpTransportErrorKind.READ_TIMEOUT,
+            HttpTransportErrorKind.CONNECTION_LOST,
+            HttpTransportErrorKind.PROTOCOL,
+        ],
+    )
+    async def test_write_transport_kinds_classify(self, kind: HttpTransportErrorKind) -> None:
+        connector = WarehouseTargetConnector(WarehouseTargetConfig("http://127.0.0.1:1"))
+        error = connector._classify_write_transport_error(HttpTransportError(kind, "unit"), _SECRET)
+        assert "target" in str(error)
 
 
 class TestSourcePageValidation:
@@ -281,6 +297,71 @@ class TestAsyncSourceEdges:
 
 
 class TestWarehouseHelpers:
+    def test_target_error_and_page_helpers_reject_malformed_wire_documents(self) -> None:
+        from paritygrid.adapters.connectors.warehouse_target import (
+            _decode_target_page,
+            _target_error_code,
+        )
+
+        assert _target_error_code(b'{"error":{"code":"target_precondition_failed"}}') == (
+            "target_precondition_failed"
+        )
+        assert _target_error_code(b'{"error":{"code":"untrusted"}}') is None
+        assert _target_error_code(b"not-json") is None
+        assert _target_error_code(b"[]") is None
+        assert _target_error_code(b'{"error":"not-an-object"}') is None
+        invalid_documents: tuple[object, ...] = (
+            None,
+            cast(object, {"records": "not-a-list", "next_cursor": ""}),
+            cast(object, {"records": ["not-an-object"], "next_cursor": ""}),
+            cast(object, {"records": [{}], "next_cursor": ""}),
+        )
+        for document in invalid_documents:
+            with pytest.raises(ConnectorValidationError):
+                _decode_target_page(document, byte_count=1)
+
+    @pytest.mark.parametrize("status", [503, 400, 418])
+    def test_target_read_status_classes_are_explicit(self, status: int) -> None:
+        from paritygrid.adapters.connectors.http_clients import HttpResponse
+
+        connector = WarehouseTargetConnector(WarehouseTargetConfig("http://127.0.0.1:1"))
+        error = connector._classify_read_status(HttpResponse(status, {}, b"{}"), _SECRET)
+        assert isinstance(error, (ConnectorUnknownError, ConnectorTimeoutError)) is False
+
+    def test_target_write_status_distinguishes_precondition_conflict(self) -> None:
+        from paritygrid.adapters.connectors.http_clients import HttpResponse
+
+        connector = WarehouseTargetConnector(WarehouseTargetConfig("http://127.0.0.1:1"))
+        error = connector._classify_write_status(
+            HttpResponse(409, {}, b'{"error":{"code":"target_precondition_failed"}}'),
+            _SECRET,
+        )
+        assert "precondition" in str(error)
+
+    @pytest.mark.parametrize("status", [500, 400, 200])
+    def test_target_write_status_handles_every_remaining_status_class(self, status: int) -> None:
+        from paritygrid.adapters.connectors.http_clients import HttpResponse
+
+        connector = WarehouseTargetConnector(WarehouseTargetConfig("http://127.0.0.1:1"))
+        error = connector._classify_write_status(HttpResponse(status, {}, b"{}"), _SECRET)
+        assert "target" in str(error)
+
+    @pytest.mark.parametrize(
+        "document",
+        [
+            None,
+            {"outcome": "invalid", "replayed": False, "record_version": 1, "target_version": 1},
+            {"outcome": "applied", "replayed": "false", "record_version": 1, "target_version": 1},
+            {"outcome": "applied", "replayed": False, "record_version": "1", "target_version": 1},
+            {"outcome": "applied", "replayed": False, "record_version": 1, "target_version": "1"},
+        ],
+    )
+    def test_write_document_rejects_each_untrusted_field(self, document: object) -> None:
+        from paritygrid.adapters.connectors.warehouse_target import _decode_write_document
+
+        with pytest.raises(ConnectorUnknownError):
+            _decode_write_document(document)
+
     def test_parse_retry_after_accepts_only_bounded_integers(self) -> None:
         from paritygrid.adapters.connectors.warehouse_target import _parse_retry_after
 

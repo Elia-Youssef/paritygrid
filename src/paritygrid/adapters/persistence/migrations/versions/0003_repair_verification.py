@@ -7,7 +7,6 @@ compared against, the verdict, and bounded redacted evidence. Rows are
 append-only; triggers installed by this revision reject delete and update.
 """
 
-import sqlalchemy as sa
 from alembic import op
 
 revision: str = "0003_repair_verification"
@@ -26,57 +25,94 @@ _TRIGGERS: tuple[str, ...] = (
     'CREATE TRIGGER "trg_target_state_verifications_prohibit_update" BEFORE UPDATE ON "target_state_verifications" BEGIN SELECT RAISE(ABORT, \'target_state_verifications does not permit update\'); END',
 )
 
+# This is intentionally frozen rather than compiled from current metadata.
+# Migrations must remain runnable from a packaged historical revision even if
+# application schema definitions are later changed or cannot be imported.
+_REPAIR_PLANS_TABLE = "\nCREATE TABLE repair_plans (\n\trepair_plan_id VARCHAR(68) NOT NULL, \n\trun_id VARCHAR(68) NOT NULL, \n\treconciliation_fingerprint VARCHAR(64) NOT NULL, \n\tcontent_fingerprint VARCHAR(64) NOT NULL, \n\tsource_input_identity VARCHAR(64) NOT NULL, \n\ttarget_input_identity VARCHAR(64) NOT NULL, \n\tpolicy_version INTEGER NOT NULL, \n\tgeneration_version INTEGER NOT NULL, \n\trules_version INTEGER NOT NULL, \n\tanalysis_version INTEGER NOT NULL, \n\tanalytical_query_version INTEGER NOT NULL, \n\taction_count INTEGER NOT NULL, \n\tstatus VARCHAR(32) NOT NULL, \n\trow_version INTEGER DEFAULT '1' NOT NULL, \n\tcreated_at VARCHAR(27) NOT NULL, \n\tapplying_at VARCHAR(27), \n\tapplied_at VARCHAR(27), \n\trejected_at VARCHAR(27), \n\tfailed_at VARCHAR(27), \n\tfailure_detail TEXT, \n\tCONSTRAINT pk_repair_plans PRIMARY KEY (repair_plan_id), \n\tCONSTRAINT uq_repair_plans_repair_plan_id_run_id UNIQUE (repair_plan_id, run_id), \n\tCONSTRAINT uq_repair_plans_repair_plan_id_reconciliation_fingerprint UNIQUE (repair_plan_id, reconciliation_fingerprint), \n\tCONSTRAINT uq_repair_plans_run_id_content_fingerprint UNIQUE (run_id, content_fingerprint), \n\tCONSTRAINT fk_repair_plans_run_id_reconciliation_fingerprint_reconciliation_summaries FOREIGN KEY(run_id, reconciliation_fingerprint) REFERENCES reconciliation_summaries (run_id, reconciliation_fingerprint), \n\tCONSTRAINT ck_repair_plans_repair_plan_id_shape CHECK (typeof(repair_plan_id) = 'text' AND length(repair_plan_id) BETWEEN 7 AND 68 AND substr(repair_plan_id, 1, 4) = 'rpl_' AND substr(repair_plan_id, 5) NOT GLOB '*[^a-z0-9-]*' AND substr(repair_plan_id, 5) NOT LIKE '-%' AND substr(repair_plan_id, -1) <> '-' AND repair_plan_id NOT LIKE '%--%'), \n\tCONSTRAINT ck_repair_plans_reconciliation_fingerprint_shape CHECK (typeof(reconciliation_fingerprint) = 'text' AND length(reconciliation_fingerprint) = 64 AND reconciliation_fingerprint NOT GLOB '*[^0-9a-f]*'), \n\tCONSTRAINT ck_repair_plans_content_fingerprint_shape CHECK (typeof(content_fingerprint) = 'text' AND length(content_fingerprint) = 64 AND content_fingerprint NOT GLOB '*[^0-9a-f]*'), \n\tCONSTRAINT ck_repair_plans_source_input_identity_shape CHECK (typeof(source_input_identity) = 'text' AND length(source_input_identity) = 64 AND source_input_identity NOT GLOB '*[^0-9a-f]*'), \n\tCONSTRAINT ck_repair_plans_target_input_identity_shape CHECK (typeof(target_input_identity) = 'text' AND length(target_input_identity) = 64 AND target_input_identity NOT GLOB '*[^0-9a-f]*'), \n\tCONSTRAINT ck_repair_plans_policy_version_range CHECK (typeof(policy_version) = 'integer' AND policy_version BETWEEN 1 AND 2147483647), \n\tCONSTRAINT ck_repair_plans_generation_version_range CHECK (typeof(generation_version) = 'integer' AND generation_version BETWEEN 1 AND 2147483647), \n\tCONSTRAINT ck_repair_plans_rules_version_range CHECK (typeof(rules_version) = 'integer' AND rules_version BETWEEN 1 AND 2147483647), \n\tCONSTRAINT ck_repair_plans_analysis_version_range CHECK (typeof(analysis_version) = 'integer' AND analysis_version BETWEEN 1 AND 2147483647), \n\tCONSTRAINT ck_repair_plans_analytical_query_version_range CHECK (typeof(analytical_query_version) = 'integer' AND analytical_query_version BETWEEN 1 AND 2147483647), \n\tCONSTRAINT ck_repair_plans_action_count_range CHECK (typeof(action_count) = 'integer' AND action_count >= 0), \n\tCONSTRAINT ck_repair_plans_status_values CHECK (status IN ('proposed', 'approved', 'applying', 'applied', 'rejected', 'failed')), \n\tCONSTRAINT ck_repair_plans_row_version_range CHECK (typeof(row_version) = 'integer' AND row_version BETWEEN 1 AND 2147483647), \n\tCONSTRAINT ck_repair_plans_created_at_utc CHECK (typeof(created_at) = 'text' AND length(created_at) = 27 AND substr(created_at, 5, 1) = '-' AND substr(created_at, 8, 1) = '-' AND substr(created_at, 11, 1) = 'T' AND substr(created_at, 14, 1) = ':' AND substr(created_at, 17, 1) = ':' AND substr(created_at, 20, 1) = '.' AND substr(created_at, 27, 1) = 'Z' AND substr(created_at, 1, 4) NOT GLOB '*[^0-9]*' AND substr(created_at, 6, 2) NOT GLOB '*[^0-9]*' AND substr(created_at, 9, 2) NOT GLOB '*[^0-9]*' AND substr(created_at, 12, 2) NOT GLOB '*[^0-9]*' AND substr(created_at, 15, 2) NOT GLOB '*[^0-9]*' AND substr(created_at, 18, 2) NOT GLOB '*[^0-9]*' AND substr(created_at, 21, 6) NOT GLOB '*[^0-9]*' AND substr(created_at, 1, 4) BETWEEN '0001' AND '9999' AND substr(created_at, 6, 2) BETWEEN '01' AND '12' AND substr(created_at, 9, 2) BETWEEN '01' AND '31' AND substr(created_at, 12, 2) BETWEEN '00' AND '23' AND substr(created_at, 15, 2) BETWEEN '00' AND '59' AND substr(created_at, 18, 2) BETWEEN '00' AND '59'), \n\tCONSTRAINT ck_repair_plans_applying_at_utc CHECK (applying_at IS NULL OR (typeof(applying_at) = 'text' AND length(applying_at) = 27 AND substr(applying_at, 5, 1) = '-' AND substr(applying_at, 8, 1) = '-' AND substr(applying_at, 11, 1) = 'T' AND substr(applying_at, 14, 1) = ':' AND substr(applying_at, 17, 1) = ':' AND substr(applying_at, 20, 1) = '.' AND substr(applying_at, 27, 1) = 'Z' AND substr(applying_at, 1, 4) NOT GLOB '*[^0-9]*' AND substr(applying_at, 6, 2) NOT GLOB '*[^0-9]*' AND substr(applying_at, 9, 2) NOT GLOB '*[^0-9]*' AND substr(applying_at, 12, 2) NOT GLOB '*[^0-9]*' AND substr(applying_at, 15, 2) NOT GLOB '*[^0-9]*' AND substr(applying_at, 18, 2) NOT GLOB '*[^0-9]*' AND substr(applying_at, 21, 6) NOT GLOB '*[^0-9]*' AND substr(applying_at, 1, 4) BETWEEN '0001' AND '9999' AND substr(applying_at, 6, 2) BETWEEN '01' AND '12' AND substr(applying_at, 9, 2) BETWEEN '01' AND '31' AND substr(applying_at, 12, 2) BETWEEN '00' AND '23' AND substr(applying_at, 15, 2) BETWEEN '00' AND '59' AND substr(applying_at, 18, 2) BETWEEN '00' AND '59')), \n\tCONSTRAINT ck_repair_plans_applied_at_utc CHECK (applied_at IS NULL OR (typeof(applied_at) = 'text' AND length(applied_at) = 27 AND substr(applied_at, 5, 1) = '-' AND substr(applied_at, 8, 1) = '-' AND substr(applied_at, 11, 1) = 'T' AND substr(applied_at, 14, 1) = ':' AND substr(applied_at, 17, 1) = ':' AND substr(applied_at, 20, 1) = '.' AND substr(applied_at, 27, 1) = 'Z' AND substr(applied_at, 1, 4) NOT GLOB '*[^0-9]*' AND substr(applied_at, 6, 2) NOT GLOB '*[^0-9]*' AND substr(applied_at, 9, 2) NOT GLOB '*[^0-9]*' AND substr(applied_at, 12, 2) NOT GLOB '*[^0-9]*' AND substr(applied_at, 15, 2) NOT GLOB '*[^0-9]*' AND substr(applied_at, 18, 2) NOT GLOB '*[^0-9]*' AND substr(applied_at, 21, 6) NOT GLOB '*[^0-9]*' AND substr(applied_at, 1, 4) BETWEEN '0001' AND '9999' AND substr(applied_at, 6, 2) BETWEEN '01' AND '12' AND substr(applied_at, 9, 2) BETWEEN '01' AND '31' AND substr(applied_at, 12, 2) BETWEEN '00' AND '23' AND substr(applied_at, 15, 2) BETWEEN '00' AND '59' AND substr(applied_at, 18, 2) BETWEEN '00' AND '59')), \n\tCONSTRAINT ck_repair_plans_rejected_at_utc CHECK (rejected_at IS NULL OR (typeof(rejected_at) = 'text' AND length(rejected_at) = 27 AND substr(rejected_at, 5, 1) = '-' AND substr(rejected_at, 8, 1) = '-' AND substr(rejected_at, 11, 1) = 'T' AND substr(rejected_at, 14, 1) = ':' AND substr(rejected_at, 17, 1) = ':' AND substr(rejected_at, 20, 1) = '.' AND substr(rejected_at, 27, 1) = 'Z' AND substr(rejected_at, 1, 4) NOT GLOB '*[^0-9]*' AND substr(rejected_at, 6, 2) NOT GLOB '*[^0-9]*' AND substr(rejected_at, 9, 2) NOT GLOB '*[^0-9]*' AND substr(rejected_at, 12, 2) NOT GLOB '*[^0-9]*' AND substr(rejected_at, 15, 2) NOT GLOB '*[^0-9]*' AND substr(rejected_at, 18, 2) NOT GLOB '*[^0-9]*' AND substr(rejected_at, 21, 6) NOT GLOB '*[^0-9]*' AND substr(rejected_at, 1, 4) BETWEEN '0001' AND '9999' AND substr(rejected_at, 6, 2) BETWEEN '01' AND '12' AND substr(rejected_at, 9, 2) BETWEEN '01' AND '31' AND substr(rejected_at, 12, 2) BETWEEN '00' AND '23' AND substr(rejected_at, 15, 2) BETWEEN '00' AND '59' AND substr(rejected_at, 18, 2) BETWEEN '00' AND '59')), \n\tCONSTRAINT ck_repair_plans_failed_at_utc CHECK (failed_at IS NULL OR (typeof(failed_at) = 'text' AND length(failed_at) = 27 AND substr(failed_at, 5, 1) = '-' AND substr(failed_at, 8, 1) = '-' AND substr(failed_at, 11, 1) = 'T' AND substr(failed_at, 14, 1) = ':' AND substr(failed_at, 17, 1) = ':' AND substr(failed_at, 20, 1) = '.' AND substr(failed_at, 27, 1) = 'Z' AND substr(failed_at, 1, 4) NOT GLOB '*[^0-9]*' AND substr(failed_at, 6, 2) NOT GLOB '*[^0-9]*' AND substr(failed_at, 9, 2) NOT GLOB '*[^0-9]*' AND substr(failed_at, 12, 2) NOT GLOB '*[^0-9]*' AND substr(failed_at, 15, 2) NOT GLOB '*[^0-9]*' AND substr(failed_at, 18, 2) NOT GLOB '*[^0-9]*' AND substr(failed_at, 21, 6) NOT GLOB '*[^0-9]*' AND substr(failed_at, 1, 4) BETWEEN '0001' AND '9999' AND substr(failed_at, 6, 2) BETWEEN '01' AND '12' AND substr(failed_at, 9, 2) BETWEEN '01' AND '31' AND substr(failed_at, 12, 2) BETWEEN '00' AND '23' AND substr(failed_at, 15, 2) BETWEEN '00' AND '59' AND substr(failed_at, 18, 2) BETWEEN '00' AND '59')), \n\tCONSTRAINT ck_repair_plans_applied_time CHECK (status <> 'applied' OR applied_at IS NOT NULL), \n\tCONSTRAINT ck_repair_plans_rejected_time CHECK (status <> 'rejected' OR rejected_at IS NOT NULL), \n\tCONSTRAINT ck_repair_plans_failed_time CHECK (status <> 'failed' OR failed_at IS NOT NULL), \n\tCONSTRAINT ck_repair_plans_failure_detail_size CHECK (failure_detail IS NULL OR (typeof(failure_detail) = 'text' AND length(failure_detail) BETWEEN 1 AND 4096))\n)\n\n"
+_REPAIR_PLANS_STAGING_NAME = "repair_plans_phase11"
+_REPAIR_PLANS_STAGING_PREFIX = f"CREATE TABLE {_REPAIR_PLANS_STAGING_NAME} ("
+_REPAIR_PLANS_COLUMNS = (
+    "repair_plan_id, run_id, reconciliation_fingerprint, content_fingerprint, "
+    "source_input_identity, target_input_identity, policy_version, generation_version, "
+    "rules_version, analysis_version, analytical_query_version, action_count, status, "
+    "row_version, created_at, applying_at, applied_at, rejected_at, failed_at, failure_detail"
+)
+_REPAIR_PLAN_ADDED_COLUMNS: tuple[str, ...] = (
+    "ALTER TABLE repair_plans ADD COLUMN source_input_identity VARCHAR(64)",
+    "ALTER TABLE repair_plans ADD COLUMN target_input_identity VARCHAR(64)",
+    "ALTER TABLE repair_plans ADD COLUMN policy_version INTEGER",
+    "ALTER TABLE repair_plans ADD COLUMN generation_version INTEGER",
+    "ALTER TABLE repair_plans ADD COLUMN rules_version INTEGER",
+    "ALTER TABLE repair_plans ADD COLUMN analysis_version INTEGER",
+    "ALTER TABLE repair_plans ADD COLUMN analytical_query_version INTEGER",
+    "ALTER TABLE repair_plans ADD COLUMN action_count INTEGER",
+)
+_REPAIR_PLAN_BACKFILL = (
+    "UPDATE repair_plans AS p SET "
+    "source_input_identity=(SELECT source_fingerprint FROM reconciliation_summaries s "
+    "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint), "
+    "target_input_identity=(SELECT target_fingerprint FROM reconciliation_summaries s "
+    "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint), "
+    "policy_version=1, generation_version=1, rules_version=1, analysis_version=1, "
+    "action_count=(SELECT COUNT(*) FROM repair_actions a WHERE a.repair_plan_id=p.repair_plan_id), "
+    "analytical_query_version=(SELECT analytical_query_version FROM reconciliation_summaries s "
+    "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint)"
+)
+_COPY_REPAIR_PLANS_TO_STAGING = (
+    f"INSERT INTO {_REPAIR_PLANS_STAGING_NAME} ({_REPAIR_PLANS_COLUMNS}) "
+    f"SELECT {_REPAIR_PLANS_COLUMNS} FROM repair_plans"
+)
+_COPY_REPAIR_PLANS_FROM_STAGING = (
+    f"INSERT INTO repair_plans ({_REPAIR_PLANS_COLUMNS}) "
+    f"SELECT {_REPAIR_PLANS_COLUMNS} FROM {_REPAIR_PLANS_STAGING_NAME}"
+)
+_REPAIR_PLANS_INDEX = (
+    "CREATE INDEX ix_repair_plans_run_id_reconciliation_fingerprint "
+    "ON repair_plans (run_id, reconciliation_fingerprint)"
+)
+_REPAIR_PLANS_TRIGGERS: tuple[str, ...] = (
+    'CREATE TRIGGER "trg_repair_plans_prohibit_delete" BEFORE DELETE ON "repair_plans" '
+    "BEGIN SELECT RAISE(ABORT, 'repair_plans does not permit delete'); END",
+    'CREATE TRIGGER "trg_repair_plans_protect_immutable_columns" BEFORE UPDATE ON "repair_plans" '
+    'WHEN NEW."repair_plan_id" IS NOT OLD."repair_plan_id" OR NEW."run_id" IS NOT OLD."run_id" '
+    'OR NEW."reconciliation_fingerprint" IS NOT OLD."reconciliation_fingerprint" '
+    'OR NEW."content_fingerprint" IS NOT OLD."content_fingerprint" '
+    'OR NEW."source_input_identity" IS NOT OLD."source_input_identity" '
+    'OR NEW."target_input_identity" IS NOT OLD."target_input_identity" '
+    'OR NEW."policy_version" IS NOT OLD."policy_version" '
+    'OR NEW."generation_version" IS NOT OLD."generation_version" '
+    'OR NEW."rules_version" IS NOT OLD."rules_version" '
+    'OR NEW."analysis_version" IS NOT OLD."analysis_version" '
+    'OR NEW."analytical_query_version" IS NOT OLD."analytical_query_version" '
+    'OR NEW."action_count" IS NOT OLD."action_count" '
+    'OR NEW."created_at" IS NOT OLD."created_at" '
+    "BEGIN SELECT RAISE(ABORT, 'repair_plans immutable columns cannot change'); END",
+    'CREATE TRIGGER "trg_repair_plans_protect_terminal_status" BEFORE UPDATE ON "repair_plans" '
+    "WHEN OLD.\"status\" IN ('applied', 'rejected', 'failed') "
+    "BEGIN SELECT RAISE(ABORT, 'repair_plans terminal rows cannot change'); END",
+)
+
 
 def upgrade() -> None:
-    """Create the append-only verification table with its guards."""
+    """Rebuild repair plans and create append-only verification evidence."""
     # Phase 3's historical repair rows predate explicit generation binding.
     # Backfill their immutable reconciliation parents before new Phase 11
     # writes make every binding field mandatory at the repository boundary.
-    for name, type_ in (
-        ("source_input_identity", sa.String(length=64)),
-        ("target_input_identity", sa.String(length=64)),
-        ("policy_version", sa.Integer()),
-        ("generation_version", sa.Integer()),
-        ("rules_version", sa.Integer()),
-        ("analysis_version", sa.Integer()),
-        ("analytical_query_version", sa.Integer()),
-        ("action_count", sa.Integer()),
-    ):
-        op.add_column("repair_plans", sa.Column(name, type_, nullable=True))
+    for statement in _REPAIR_PLAN_ADDED_COLUMNS:
+        op.execute(statement)
     op.execute('DROP TRIGGER IF EXISTS "trg_repair_plans_protect_terminal_status"')
+    op.execute(_REPAIR_PLAN_BACKFILL)
     op.execute(
-        "UPDATE repair_plans AS p SET "
-        "source_input_identity=(SELECT source_fingerprint FROM reconciliation_summaries s "
-        "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint), "
-        "target_input_identity=(SELECT target_fingerprint FROM reconciliation_summaries s "
-        "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint), "
-        "policy_version=1, generation_version=1, rules_version=1, analysis_version=1, "
-        "action_count=(SELECT COUNT(*) FROM repair_actions a WHERE a.repair_plan_id=p.repair_plan_id), "
-        "analytical_query_version=(SELECT analytical_query_version FROM reconciliation_summaries s "
-        "WHERE s.run_id=p.run_id AND s.reconciliation_fingerprint=p.reconciliation_fingerprint)"
+        _REPAIR_PLANS_TABLE.replace("CREATE TABLE repair_plans (", _REPAIR_PLANS_STAGING_PREFIX, 1)
     )
-    op.execute(
-        'CREATE TRIGGER "trg_repair_plans_protect_terminal_status" BEFORE UPDATE ON "repair_plans" '
-        "WHEN OLD.\"status\" IN ('applied', 'rejected', 'failed') "
-        "BEGIN SELECT RAISE(ABORT, 'repair_plans terminal rows cannot change'); END"
-    )
-    op.execute('DROP TRIGGER IF EXISTS "trg_repair_plans_protect_immutable_columns"')
-    op.execute(
-        'CREATE TRIGGER "trg_repair_plans_protect_immutable_columns" BEFORE UPDATE ON "repair_plans" '
-        'WHEN NEW."repair_plan_id" IS NOT OLD."repair_plan_id" OR NEW."run_id" IS NOT OLD."run_id" '
-        'OR NEW."reconciliation_fingerprint" IS NOT OLD."reconciliation_fingerprint" '
-        'OR NEW."content_fingerprint" IS NOT OLD."content_fingerprint" '
-        'OR NEW."source_input_identity" IS NOT OLD."source_input_identity" '
-        'OR NEW."target_input_identity" IS NOT OLD."target_input_identity" '
-        'OR NEW."policy_version" IS NOT OLD."policy_version" '
-        'OR NEW."generation_version" IS NOT OLD."generation_version" '
-        'OR NEW."rules_version" IS NOT OLD."rules_version" '
-        'OR NEW."analysis_version" IS NOT OLD."analysis_version" '
-        'OR NEW."analytical_query_version" IS NOT OLD."analytical_query_version" '
-        'OR NEW."action_count" IS NOT OLD."action_count" '
-        'OR NEW."created_at" IS NOT OLD."created_at" '
-        "BEGIN SELECT RAISE(ABORT, 'repair_plans immutable columns cannot change'); END"
-    )
+    op.execute(_COPY_REPAIR_PLANS_TO_STAGING)
+    op.execute("DROP TABLE repair_plans")
+    op.execute(_REPAIR_PLANS_TABLE)
+    op.execute(_COPY_REPAIR_PLANS_FROM_STAGING)
+    op.execute(f"DROP TABLE {_REPAIR_PLANS_STAGING_NAME}")
+    op.execute(_REPAIR_PLANS_INDEX)
+    for statement in _REPAIR_PLANS_TRIGGERS:
+        op.execute(statement)
     op.execute(_TABLE)
     for statement in (*_INDEXES, *_TRIGGERS):
         op.execute(statement)

@@ -57,6 +57,7 @@ from paritygrid.application.writes.repairs import (
     CompleteRepairApplication,
     CreateRepairPlan,
     RecordRepairActionApplied,
+    RecordRepairActionAttempt,
     RecordRepairActionFailed,
     RejectRepairPlan,
     RepairActionAppliedResult,
@@ -78,7 +79,7 @@ from paritygrid.domain.models import (
     StateFingerprint,
     UtcTimestamp,
 )
-from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan
+from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan, RepairPlanBinding
 
 PIPELINE_ID = PipelineId("pip_writerrepair")
 RUN_ID = RunId("run_writerrepair")
@@ -112,6 +113,21 @@ def redacted(**values: object) -> RedactedDocument:
     return RedactedDocument.from_mapping(values)
 
 
+def binding() -> RepairPlanBinding:
+    return RepairPlanBinding(
+        run_id=RUN_ID,
+        reconciliation_fingerprint=FINGERPRINT,
+        source_input_identity="1" * 64,
+        target_input_identity="2" * 64,
+        policy_version=1,
+        generation_version=1,
+        rules_version=1,
+        analysis_version=1,
+        analytical_query_version=1,
+        action_count=1,
+    )
+
+
 def repair_plan() -> RepairPlan:
     record = InventoryRecord.create(
         sku="WRITER-LAMP",
@@ -135,6 +151,7 @@ def repair_plan() -> RepairPlan:
                 record,
             ),
         ),
+        binding=binding(),
     )
 
 
@@ -340,6 +357,68 @@ def test_full_application_and_exact_replays_have_no_duplicate_companions(
         assert session.scalar(select(runs.c.row_version).where(runs.c.run_id == str(RUN_ID))) == 8
         counter = session.execute(select(run_event_counters)).mappings().one()
         assert (counter["next_sequence_number"], counter["row_version"]) == (6, 6)
+
+
+def test_action_attempt_replays_only_its_exact_committed_companions(
+    database: SQLiteDatabase,
+) -> None:
+    """A lost attempt receipt must not advance the durable frontier twice."""
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        dispatch_command(session, create_command())
+        dispatch_command(session, approve_command())
+        begun = dispatch_command(
+            session,
+            BeginRepairApplication(
+                RUN_ID,
+                PLAN_ID,
+                2,
+                FINGERPRINT,
+                timestamp(4),
+                companions(3, "repair_application_started", 4),
+            ),
+        )
+    reservation = cast(
+        RepairApplicationReservation,
+        cast(BeginRepairApplicationResult, begun.result).operation.reservation,
+    )
+    original = RecordRepairActionAttempt(
+        RUN_ID,
+        reservation,
+        ACTION_ID,
+        timestamp(5),
+        companions(4, "repair_action_ambiguous", 5),
+    )
+
+    # This transaction represents a commit whose writer receipt was lost.
+    with database.transaction() as session:
+        committed = dispatch_command(session, original)
+    assert committed.mutated
+
+    with database.transaction() as session:
+        replay = dispatch_command(session, original)
+        assert not replay.mutated
+        assert session.scalar(select(func.count()).select_from(audit_entries)) == 4
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 4
+        assert session.scalar(select(runs.c.row_version).where(runs.c.run_id == str(RUN_ID))) == 7
+        counter = session.execute(select(run_event_counters)).mappings().one()
+        assert (counter["next_sequence_number"], counter["row_version"]) == (5, 5)
+
+    altered = replace(
+        original,
+        companions=replace(
+            original.companions,
+            audit=replace(original.companions.audit, detail=redacted(operation="altered")),
+        ),
+    )
+    with (
+        pytest.raises(AuditSequenceConflictError, match="differs"),
+        database.transaction() as session,
+    ):
+        dispatch_command(session, altered)
+    with database.transaction() as session:
+        assert session.scalar(select(func.count()).select_from(audit_entries)) == 4
+        assert session.scalar(select(func.count()).select_from(execution_events)) == 4
 
 
 def test_repair_commands_reject_cross_run_plan_hybrids_and_roll_back(

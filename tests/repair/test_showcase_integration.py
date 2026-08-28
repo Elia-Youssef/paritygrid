@@ -268,9 +268,12 @@ class TestShowcaseIntegration:
                 # The warehouse counts mutating requests only, so the read
                 # bound is structural: one bounded read per expected record.
 
-                recorded = TargetVerificationService(writer, reader, now=clock.now).record(
+                recorded = await TargetVerificationService(
+                    writer, reader, now=clock.now
+                ).verify_and_record(
                     run_id=RUN_ID,
-                    report=report,
+                    target=target,
+                    inventory=inventory,
                     reconciliation_fingerprint=analysis.summary.fingerprint,
                     repair_plan_id=created.aggregate.plan.repair_plan_id,
                     plan_content_fingerprint=created.aggregate.plan.content_fingerprint,
@@ -326,16 +329,19 @@ class TestShowcaseIntegration:
                     == 1
                 )
                 audit_total = session.scalar(select(func.count()).select_from(audit_entries))
-                # persist, plan creation, approval, begin, complete, verify.
-                assert audit_total == 6 + action_count
+                # Persist, plan creation, approval, begin, attempt, applied,
+                # completion, and verification. Each target effect now emits
+                # both its pre-dispatch ambiguity evidence and terminal fact.
+                assert audit_total == 6 + (2 * action_count)
                 events_total = session.scalar(select(func.count()).select_from(execution_events))
-                assert events_total == 6 + action_count
+                assert events_total == 6 + (2 * action_count)
                 kinds = session.execute(select(execution_events.c.event_kind)).scalars().all()
                 for kind in (
                     "reconciliation_persisted",
                     "repair_plan_created",
                     "repair_plan_approved",
                     "repair_application_started",
+                    "repair_action_ambiguous",
                     "repair_action_applied",
                     "repair_application_completed",
                     "target_state_verified",

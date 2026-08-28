@@ -13,7 +13,7 @@ from paritygrid.application.ports.connectors import (
     ConnectorCallContext,
     ConnectorPermanentError,
     TargetConnector,
-    TargetRecord,
+    TargetRecordPage,
     TargetStateSnapshot,
     TargetWriteRequest,
 )
@@ -53,7 +53,6 @@ from paritygrid.application.repair.errors import (
     RepairPlanStateError,
     RepairWriterOutcomeUnknownError,
 )
-from paritygrid.application.repair.identities import derive_plan_id
 from paritygrid.domain.models import (
     RepairPlanId,
     RunId,
@@ -74,7 +73,7 @@ from tests.repair.test_applier_edges import (
     _companions_for,
     _StaleSummaryReader,
 )
-from tests.repair.test_service_branches import _result
+from tests.repair.test_service_branches import _plan_id, _result
 
 pytestmark = pytest.mark.anyio
 
@@ -230,7 +229,7 @@ class TestPlanningRaceMappings:
         ReconciliationResultService(writer, reader, now=clock.now).persist(
             run_id=RUN_ID, analysis=result, actor="o", correlation_id="c"
         )
-        plan_id = derive_plan_id(RUN_ID, result.summary.fingerprint)
+        plan_id = _plan_id(result=result)
 
         class _CompetingCreateProxy:
             def __init__(self) -> None:
@@ -450,7 +449,7 @@ class TestApplicationRaceMappings:
 
         await _approved(database, writer, reader, clock)
         result = _result()
-        plan_id = derive_plan_id(RUN_ID, result.summary.fingerprint)
+        plan_id = _plan_id(result=result)
         aggregate = reader.load_plan(plan_id)
         assert aggregate is not None
 
@@ -592,7 +591,7 @@ class TestApplicationRaceMappings:
         from tests.repair.test_service_branches import _UnknownOutcomeProxy
 
         await _approved(database, writer, reader, clock)
-        plan_id = derive_plan_id(RUN_ID, _result().summary.fingerprint)
+        plan_id = _plan_id()
         failing = _IdempotentFakeTarget(failures={"GRID-0001": ConnectorPermanentError("rejected")})
         proxy = _UnknownOutcomeProxy(
             writer, lose_receipts={WriterCommandKind.RECORD_REPAIR_ACTION_FAILED: 99}
@@ -621,7 +620,7 @@ class TestApplicationRaceMappings:
         clock: DeterministicClock,
     ) -> None:
         await _approved(database, writer, reader, clock)
-        plan_id = derive_plan_id(RUN_ID, _result().summary.fingerprint)
+        plan_id = _plan_id()
 
         class _CompetingFailureProxy:
             def __init__(self) -> None:
@@ -698,9 +697,9 @@ class TestVerificationRemainingBranches:
         verifier = TargetParityVerifier(now=clock.now)
 
         class _ExplodingReadTarget(_IdempotentFakeTarget):
-            async def read_record_async(
-                self, sku: str, context: ConnectorCallContext
-            ) -> TargetRecord | None:
+            async def list_records_async(
+                self, cursor: str | None, context: ConnectorCallContext
+            ) -> TargetRecordPage:
                 raise _BareConnectorError()
 
         exploded = await verifier.verify(
@@ -793,15 +792,16 @@ class TestVerificationRemainingBranches:
                 actor="o",
                 correlation_id="c",
             )
-        other_plan_run = RUN_ID
-        del other_plan_run
+        foreign_plan_id = _foreign_plan(database, writer, reader, clock, result)
+        foreign_plan = reader.load_plan(foreign_plan_id)
+        assert foreign_plan is not None
         with pytest.raises(RepairPlanMismatchError, match="another run"):
             service.record(
                 run_id=RUN_ID,
                 report=failed,
                 reconciliation_fingerprint=result.summary.fingerprint,
-                repair_plan_id=_foreign_plan(database, writer, reader, clock, result),
-                plan_content_fingerprint=None,
+                repair_plan_id=foreign_plan_id,
+                plan_content_fingerprint=foreign_plan.plan.content_fingerprint,
                 actor="o",
                 correlation_id="c",
             )

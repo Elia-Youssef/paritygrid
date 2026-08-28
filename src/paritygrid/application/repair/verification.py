@@ -12,7 +12,7 @@ any execution-evidence digest.
 """
 
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import StrEnum
 from typing import cast
 
@@ -157,7 +157,17 @@ def build_expected_inventory(
         outcome = key.outcome
         action = repairs.get(outcome.sku)
         if action is not None:
-            records.append(action.proposed_record)
+            # Application writes the provenance-free effect through the
+            # canonical repair target payload, whose source key is stable
+            # ``repair:<sku>``.  Parity compares exact observed records, so
+            # expected repaired rows must use that same target provenance
+            # instead of retaining the source-observation key in the plan.
+            records.append(
+                replace(
+                    action.proposed_record,
+                    source_record_key=f"repair:{action.proposed_record.sku.lower()}",
+                )
+            )
             continue
         if not outcome.target_records:
             absent.append(outcome.sku)

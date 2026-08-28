@@ -195,7 +195,7 @@ class TestIdempotency:
                 idempotency_key="conditional-create",
                 precondition=TargetWritePrecondition.must_be_absent(),
             )
-            with pytest.raises(ConnectorConflictError):
+            with pytest.raises(ConnectorConflictError, match="write precondition"):
                 await connector.write_record_async(guarded, _context())
             stored = await connector.read_record_async("GRID-1", _context())
         finally:
@@ -209,7 +209,7 @@ class TestIdempotency:
     ) -> None:
         connector = await _connector(warehouse.base_url)
         try:
-            expected_payload = {"sku": "GRID-1", "name": "Expected"}
+            expected_payload: dict[str, object] = {"sku": "GRID-1", "name": "Expected"}
             await connector.write_record_async(
                 _request("GRID-1", expected_payload, key="expected"), _context()
             )
@@ -223,7 +223,7 @@ class TestIdempotency:
                 idempotency_key="conditional-update",
                 precondition=TargetWritePrecondition.expected_payload(expected_payload),
             )
-            with pytest.raises(ConnectorConflictError):
+            with pytest.raises(ConnectorConflictError, match="write precondition"):
                 await connector.write_record_async(guarded, _context())
             stored = await connector.read_record_async("GRID-1", _context())
         finally:

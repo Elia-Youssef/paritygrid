@@ -5,15 +5,21 @@ from dataclasses import replace
 from typing import cast
 
 import pytest
+from sqlalchemy import func, select
 
 from paritygrid.adapters.persistence.repair_workflow import SQLiteRepairWorkflowReader
+from paritygrid.adapters.persistence.schema import execution_events
 from paritygrid.adapters.persistence.sqlite import SQLiteDatabase
 from paritygrid.adapters.persistence.writer.core import (
     SQLiteTransactionalWriter,
 )
 from paritygrid.application.ports.connectors import TargetConnector
 from paritygrid.application.ports.execution import RunRecord
-from paritygrid.application.ports.repair_audit import RepairPlanStatus
+from paritygrid.application.ports.repair_audit import (
+    RepairApplicationBeginDisposition,
+    RepairApplicationBeginResult,
+    RepairPlanStatus,
+)
 from paritygrid.application.ports.writer import (
     TransactionalWriter,
     WriterCommand,
@@ -57,8 +63,9 @@ from paritygrid.application.repair.payloads import (
     render_effect_payload,
     render_target_payload,
 )
-from paritygrid.application.repair.planning import validate_safe_action_matrix
-from paritygrid.domain.models import RepairPlanId, StateFingerprint
+from paritygrid.application.repair.planning import generate_repair_plan, validate_safe_action_matrix
+from paritygrid.application.writes.repairs import BeginRepairApplicationResult
+from paritygrid.domain.models import RepairPlanId, RunId, StateFingerprint
 from tests.repair.conftest import (
     RUN_ID,
     DeterministicClock,
@@ -69,6 +76,63 @@ from tests.repair.conftest import (
 from tests.repair.test_applier import _IdempotentFakeTarget, _no_sleep
 
 pytestmark = pytest.mark.anyio
+
+
+class TestBoundPlanIdentity:
+    def test_binding_must_match_the_plan_run_and_reconciliation(self) -> None:
+        result = _result()
+        generated = generate_repair_plan(run_id=RUN_ID, analysis=result)
+        assert generated.binding is not None
+        with pytest.raises(ValueError, match="does not match"):
+            derive_plan_id(RunId("run_other"), result.summary.fingerprint, generated.binding)
+        with pytest.raises(ValueError, match="does not match"):
+            derive_plan_id(RUN_ID, StateFingerprint("a" * 64), generated.binding)
+
+
+class TestTerminalBeginReplays:
+    @pytest.mark.parametrize(
+        ("disposition", "message"),
+        [
+            (RepairApplicationBeginDisposition.APPLIED_REPLAY, "completed application"),
+            (RepairApplicationBeginDisposition.FAILED_REPLAY, "failed application"),
+        ],
+    )
+    async def test_terminal_begin_replay_is_not_resumable(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+        monkeypatch: pytest.MonkeyPatch,
+        disposition: RepairApplicationBeginDisposition,
+        message: str,
+    ) -> None:
+        await _prepared(database, writer, reader, clock)
+        aggregate = reader.load_plan(_plan_id())
+        assert aggregate is not None
+        replay = BeginRepairApplicationResult(
+            RepairApplicationBeginResult(disposition, aggregate, None), None, None, None
+        )
+
+        def replay_submission(
+            _service: RepairApplicationService, _command: WriterCommand
+        ) -> tuple[object, object, bool]:
+            return None, replay, False
+
+        monkeypatch.setattr(
+            RepairApplicationService,
+            "_submit_with_replay",
+            replay_submission,
+        )
+        service = RepairApplicationService(writer, reader, now=clock.now, sleep=_no_sleep)
+        with pytest.raises(RepairPlanStateError, match=message):
+            await service._begin(  # pyright: ignore[reportPrivateUsage]
+                RUN_ID,
+                aggregate.plan.repair_plan_id,
+                aggregate,
+                _result().summary.fingerprint,
+                "corr-terminal-replay",
+            )
 
 
 class _RaisingTicket:
@@ -133,6 +197,12 @@ def _result() -> ReconciliationAnalysis:
     )
 
 
+def _plan_id(run_id: RunId = RUN_ID, result: ReconciliationAnalysis | None = None) -> RepairPlanId:
+    generated = generate_repair_plan(run_id=run_id, analysis=result or _result())
+    assert generated.plan is not None
+    return generated.plan.plan_id
+
+
 async def _prepared(
     database: SQLiteDatabase,
     writer: TransactionalWriter,
@@ -175,7 +245,7 @@ class TestUnknownWriterOutcomes:
         proxy = _UnknownOutcomeProxy(
             writer, lose_receipts={WriterCommandKind.BEGIN_REPAIR_APPLICATION: 1}
         )
-        plan_id = derive_plan_id(RUN_ID, _result().summary.fingerprint)
+        plan_id = _plan_id()
         report = await RepairApplicationService(
             writer=cast("TransactionalWriter", proxy),
             reader=reader,
@@ -191,6 +261,44 @@ class TestUnknownWriterOutcomes:
         assert report.disposition.value in {"already_applied", "completed"}
         aggregate = reader.load_plan(plan_id)
         assert aggregate is not None
+
+    async def test_lost_action_attempt_receipt_replays_without_duplicate_evidence(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        await _prepared(database, writer, reader, clock)
+        proxy = _UnknownOutcomeProxy(
+            writer,
+            lose_receipts={WriterCommandKind.RECORD_REPAIR_ACTION_ATTEMPT: 1},
+        )
+        report = await RepairApplicationService(
+            writer=cast("TransactionalWriter", proxy),
+            reader=reader,
+            now=clock.now,
+            policy=RepairApplicationPolicy(
+                delay_seconds=0.0, max_writer_replays=2, timeout_seconds=10.0
+            ),
+            sleep=_no_sleep,
+        ).apply(
+            run_id=RUN_ID,
+            repair_plan_id=_plan_id(),
+            target=cast(TargetConnector, _IdempotentFakeTarget()),
+            context_id="corr",
+        )
+        assert report.disposition.value == "completed"
+        # The first pre-dispatch attempt committed, but its receipt was lost
+        # and recovered by an exact replay.  Each logical target action still
+        # has exactly one durable attempt fact.
+        with database.transaction() as session:
+            attempts = session.scalar(
+                select(func.count())
+                .select_from(execution_events)
+                .where(execution_events.c.event_kind == "repair_action_ambiguous")
+            )
+        assert attempts == len(report.effects)
 
     async def test_persisting_an_unknown_receipt_replays_identically(
         self,
@@ -247,7 +355,7 @@ class TestUnknownWriterOutcomes:
             writer,
             lose_receipts={WriterCommandKind.RECORD_REPAIR_ACTION_APPLIED: 99},
         )
-        plan_id = derive_plan_id(RUN_ID, _result().summary.fingerprint)
+        plan_id = _plan_id()
         report = await RepairApplicationService(
             writer=cast("TransactionalWriter", proxy),
             reader=reader,
@@ -552,7 +660,7 @@ class TestPayloadAndIdentityEdges:
         assert len(conflict.value) <= 68
         assert conflict.value.startswith("cnf_")
         assert "-" in conflict.value.removeprefix("cnf_")
-        plan = derive_plan_id(long_run, fingerprint)
+        plan = _plan_id(long_run, _result())
         assert len(plan.value) <= 68
         action = derive_action_id(long_run, fingerprint, "GRID-1")
         assert action.value.startswith("rac_")

@@ -45,6 +45,7 @@ from paritygrid.application.repair.errors import (
     RepairPlanStateError,
     TargetApplicationError,
 )
+from paritygrid.application.repair.payloads import render_target_payload
 from paritygrid.demo.failures import FailureScript, ScriptedFailure, ScriptedFailureKind
 from paritygrid.demo.simulators.warehouse import SimulatedWarehouse
 from paritygrid.domain.models import RepairPlanId
@@ -100,11 +101,12 @@ async def _prepare(
 
 
 def _derived_plan_id(reader: SQLiteRepairWorkflowReader) -> RepairPlanId:
-    from paritygrid.application.repair.identities import derive_plan_id
+    del reader
+    from paritygrid.application.repair import generate_repair_plan
 
-    summary = reader.load(RUN_ID).summary
-    assert summary is not None
-    return derive_plan_id(RUN_ID, summary.reconciliation_fingerprint)
+    generated = generate_repair_plan(run_id=RUN_ID, analysis=_analysis())
+    assert generated.plan is not None
+    return generated.plan.plan_id
 
 
 def _service(
@@ -152,6 +154,19 @@ async def _apply(
         target=target,
         context_id="corr-apply",
         cancellation=cast("EventCancellationToken", cancellation),
+    )
+
+
+async def _seed_planned_update_preimage(target: TargetConnector) -> None:
+    """Install the exact update preimage represented by ``_analysis``."""
+    expected = _analysis().classification.keys[0].outcome.target_records[0]
+    await target.write_record_async(
+        TargetWriteRequest(
+            sku="GRID-0001",
+            payload=render_target_payload(expected),
+            idempotency_key="seed-planned-update-preimage",
+        ),
+        ConnectorCallContext(correlation_id="seed-preimage"),
     )
 
 
@@ -297,6 +312,7 @@ class TestHappyApplication:
             await _prepare(database, writer, reader, clock)
             target = await open_target(warehouse)
             try:
+                await _seed_planned_update_preimage(target)
                 report = await _apply(writer, reader, clock, target)
             finally:
                 await target.aclose()
@@ -308,7 +324,7 @@ class TestHappyApplication:
                 assert effect.attempts == 1
             behavior = warehouse.behavior
             assert behavior.record_count == 3
-            assert behavior.target_version == 3
+            assert behavior.target_version == 4
             with database.transaction() as session:
                 assert session.scalar(select(func.count()).select_from(audit_entries)) == 11
                 kinds = session.execute(select(execution_events.c.event_kind)).scalars().all()
@@ -332,6 +348,7 @@ class TestHappyApplication:
             await _prepare(database, writer, reader, clock)
             target = await open_target(warehouse)
             try:
+                await _seed_planned_update_preimage(target)
                 await _apply(writer, reader, clock, target)
                 requests_before = warehouse.request_count()
                 second = await _apply(writer, reader, clock, target)
@@ -340,7 +357,7 @@ class TestHappyApplication:
             assert second.disposition.value == "already_applied"
             assert second.effects == ()
             assert warehouse.request_count() == requests_before
-            assert warehouse.behavior.target_version == 3
+            assert warehouse.behavior.target_version == 4
         finally:
             await warehouse.aclose()
 
@@ -403,7 +420,7 @@ class TestInterruptionAndReplay:
             FailureScript.from_entries(
                 (
                     ScriptedFailure(
-                        sequence=1,
+                        sequence=2,
                         kind=ScriptedFailureKind.CONNECTION_LOSS,
                         partial_bytes=8,
                     ),
@@ -415,13 +432,14 @@ class TestInterruptionAndReplay:
             await _prepare(database, writer, reader, clock)
             target = await open_target(warehouse)
             try:
+                await _seed_planned_update_preimage(target)
                 report = await _apply(writer, reader, clock, target)
             finally:
                 await target.aclose()
             assert report.disposition.value == "completed"
             assert report.effects[0].attempts == 2
             assert report.effects[0].outcome in {"applied", "replayed"}
-            assert warehouse.behavior.target_version == 3
+            assert warehouse.behavior.target_version == 4
             assert warehouse.behavior.record_count == 3
         finally:
             await warehouse.aclose()
@@ -437,7 +455,7 @@ class TestInterruptionAndReplay:
             FailureScript.from_entries(
                 (
                     ScriptedFailure(
-                        sequence=1,
+                        sequence=2,
                         kind=ScriptedFailureKind.CONNECTION_LOSS,
                         partial_bytes=8,
                     ),
@@ -449,6 +467,7 @@ class TestInterruptionAndReplay:
             await _prepare(database, writer, reader, clock)
             target = await open_target(warehouse)
             try:
+                await _seed_planned_update_preimage(target)
                 report = await _apply(writer, reader, clock, target)
             finally:
                 await target.aclose()
@@ -457,7 +476,7 @@ class TestInterruptionAndReplay:
                 events = session.execute(
                     select(execution_events.c.event_kind, execution_events.c.payload_json)
                     .where(execution_events.c.event_kind == "repair_action_ambiguous")
-                    .order_by(execution_events.c.sequence)
+                    .order_by(execution_events.c.sequence_number)
                 ).all()
             assert len(events) == 5
             assert any("ambiguous_replay_resolved" in payload for _kind, payload in events)
@@ -479,7 +498,9 @@ class TestStaleTargetFencing:
             await _prepare(database, writer, reader, clock)
             target = await open_target(warehouse)
             try:
-                expected = wire_payload("GRID-0001", name="Different")
+                expected = render_target_payload(
+                    _analysis().classification.keys[0].outcome.target_records[0]
+                )
                 intervening = wire_payload("GRID-0001", name="Intervening")
                 await target.write_record_async(
                     TargetWriteRequest(
@@ -524,7 +545,9 @@ class TestStaleTargetFencing:
                 await target.write_record_async(
                     TargetWriteRequest(
                         sku="GRID-0001",
-                        payload=wire_payload("GRID-0001", name="Different"),
+                        payload=render_target_payload(
+                            _analysis().classification.keys[0].outcome.target_records[0]
+                        ),
                         idempotency_key="seed-expected",
                     ),
                     ConnectorCallContext(correlation_id="seed"),
@@ -563,7 +586,7 @@ class TestStaleTargetFencing:
             FailureScript.from_entries(
                 (
                     ScriptedFailure(
-                        sequence=1,
+                        sequence=2,
                         kind=ScriptedFailureKind.RATE_LIMIT,
                         retry_after_seconds=1,
                     ),
@@ -575,12 +598,13 @@ class TestStaleTargetFencing:
             await _prepare(database, writer, reader, clock)
             target = await open_target(warehouse)
             try:
+                await _seed_planned_update_preimage(target)
                 report = await _apply(writer, reader, clock, target)
             finally:
                 await target.aclose()
             assert report.disposition.value == "completed"
             assert report.effects[0].attempts == 2
-            assert warehouse.behavior.target_version == 3
+            assert warehouse.behavior.target_version == 4
         finally:
             await warehouse.aclose()
 

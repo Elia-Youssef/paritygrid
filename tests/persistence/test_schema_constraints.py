@@ -368,8 +368,26 @@ def test_exact_reconciliation_fingerprint_binds_plan_and_approval(
     connection.exec_driver_sql(
         "INSERT INTO repair_plans "
         "(repair_plan_id, run_id, reconciliation_fingerprint, content_fingerprint, "
-        "status, row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("rpl_alpha", "run_alpha", HASH_A, HASH_B, "proposed", 1, UTC),
+        "source_input_identity, target_input_identity, policy_version, generation_version, "
+        "rules_version, analysis_version, analytical_query_version, action_count, status, "
+        "row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "rpl_alpha",
+            "run_alpha",
+            HASH_A,
+            HASH_B,
+            HASH_A,
+            HASH_A,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            "proposed",
+            1,
+            UTC,
+        ),
     )
     with rejected(connection):
         connection.exec_driver_sql(
@@ -411,8 +429,26 @@ def test_repair_action_composite_keys_reject_cross_run_hybrids(connection: Conne
         connection.exec_driver_sql(
             "INSERT INTO repair_plans "
             "(repair_plan_id, run_id, reconciliation_fingerprint, content_fingerprint, "
-            "status, row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (plan_id, run_id, digest, HASH_B if digest == HASH_A else HASH_A, "proposed", 1, UTC),
+            "source_input_identity, target_input_identity, policy_version, generation_version, "
+            "rules_version, analysis_version, analytical_query_version, action_count, status, "
+            "row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                plan_id,
+                run_id,
+                digest,
+                HASH_B if digest == HASH_A else HASH_A,
+                digest,
+                digest,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                "proposed",
+                1,
+                UTC,
+            ),
         )
 
     with rejected(connection):
@@ -467,8 +503,26 @@ def test_repair_action_conflict_reference_cannot_cross_canonical_keys(
     connection.exec_driver_sql(
         "INSERT INTO repair_plans "
         "(repair_plan_id, run_id, reconciliation_fingerprint, content_fingerprint, "
-        "status, row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-        ("rpl_alpha", "run_alpha", HASH_A, HASH_B, "proposed", 1, UTC),
+        "source_input_identity, target_input_identity, policy_version, generation_version, "
+        "rules_version, analysis_version, analytical_query_version, action_count, status, "
+        "row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            "rpl_alpha",
+            "run_alpha",
+            HASH_A,
+            HASH_B,
+            HASH_A,
+            HASH_A,
+            1,
+            1,
+            1,
+            1,
+            1,
+            0,
+            "proposed",
+            1,
+            UTC,
+        ),
     )
 
     with rejected(connection):

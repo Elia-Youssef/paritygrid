@@ -27,6 +27,7 @@ from paritygrid.application.ports.consistency import RedactedDocument
 from paritygrid.application.ports.reconciliation_persistence import (
     TargetVerificationVerdict,
 )
+from paritygrid.application.ports.repair_audit import RepairPlanAggregate
 from paritygrid.application.reconciliation.analysis import ReconciliationAnalysis
 from paritygrid.application.repair import (
     ExpectedInventory,
@@ -36,19 +37,25 @@ from paritygrid.application.repair import (
     RepairApprovalRequest,
     RepairApprovalService,
     RepairPlanningService,
+    TargetObservationDisposition,
     TargetParityVerifier,
     TargetVerificationReport,
     TargetVerificationService,
     build_expected_inventory,
 )
-from paritygrid.application.repair.errors import RepairPlanMismatchError
+from paritygrid.application.repair.errors import (
+    RepairPlanMismatchError,
+    RepairReconciliationMissingError,
+)
 from paritygrid.demo.simulators.warehouse import SimulatedWarehouse
+from paritygrid.domain.models import StateFingerprint
 from paritygrid.domain.repair import RepairPlan
 from tests.repair.conftest import (
     RUN_ID,
     DeterministicClock,
     analysis,
     open_target,
+    record_for,
     seed_terminal_run,
     wire_payload,
 )
@@ -242,7 +249,10 @@ class TestExpectedInventory:
         }
         actions = {action.sku: action for action in generated.plan.actions}
         for sku, record in repaired.items():
-            assert record is actions[sku].proposed_record
+            assert record == replace(
+                actions[sku].proposed_record,
+                source_record_key=f"repair:{sku.lower()}",
+            )
         target_only = [record for record in inventory.records if record.sku == "GRID-0004"]
         assert len(target_only) == 1
 
@@ -651,7 +661,7 @@ class TestParityVerification:
 
 
 class TestVerificationRecording:
-    async def test_recording_persists_the_immutable_fact_and_replays(
+    async def test_direct_parity_holding_report_is_rejected_even_with_exact_plan(
         self,
         database: SQLiteDatabase,
         writer: SQLiteTransactionalWriter,
@@ -665,33 +675,351 @@ class TestVerificationRecording:
             inventory = build_expected_inventory(result, plan)
             target = await open_target(warehouse)
             try:
-                report = await _verify(clock, target, inventory)
+                forged = await _verify(clock, target, inventory)
             finally:
                 await target.aclose()
-            from paritygrid.application.repair.identities import derive_plan_id
+            assert forged.verdict is TargetVerificationVerdict.PARITY_HOLDING
+            aggregate = reader.load_plan(plan.plan_id)
+            assert aggregate is not None
+            with pytest.raises(RepairPlanMismatchError, match="must use verify_and_record"):
+                TargetVerificationService(writer, reader, now=clock.now).record(
+                    run_id=RUN_ID,
+                    report=forged,
+                    reconciliation_fingerprint=result.summary.fingerprint,
+                    repair_plan_id=aggregate.plan.repair_plan_id,
+                    plan_content_fingerprint=aggregate.plan.content_fingerprint,
+                    actor="operator-1",
+                    correlation_id="corr-forged",
+                )
+        finally:
+            await warehouse.aclose()
 
-            plan_id = derive_plan_id(RUN_ID, result.summary.fingerprint)
-            content = reader.load_plan(plan_id)
+
+class TestVerificationEnumerationEdges:
+    def test_record_rejects_runs_without_a_reconciliation_snapshot(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        seed_terminal_run(database)
+        report = TargetVerificationReport(
+            disposition=TargetObservationDisposition.OBSERVATION_FAILED,
+            verdict=None,
+            observed=None,
+            expected_fingerprint=StateFingerprint("a" * 64),
+            expected_record_count=0,
+            observed_record_count=None,
+            divergences=(),
+            observed_target_version=None,
+            observed_at=clock.now(),
+            detail="target unavailable",
+        )
+        with pytest.raises(RepairReconciliationMissingError, match="no reconciliation snapshot"):
+            TargetVerificationService(writer, reader, now=clock.now).record(
+                run_id=RUN_ID,
+                report=report,
+                reconciliation_fingerprint=StateFingerprint("a" * 64),
+                repair_plan_id=None,
+                plan_content_fingerprint=None,
+                actor="operator-1",
+                correlation_id="corr-no-summary",
+            )
+
+    def test_expected_inventory_rejects_overlapping_or_unordered_keys(self) -> None:
+        with pytest.raises(ValueError, match="sorted unique"):
+            ExpectedInventory(records=(), absent_keys=("B", "A"), ambiguous_keys=())
+        with pytest.raises(ValueError, match="must not overlap"):
+            ExpectedInventory(
+                records=(record_for("GRID-1"),), absent_keys=("GRID-1",), ambiguous_keys=()
+            )
+
+    async def test_large_target_and_repeated_cursor_fail_closed(
+        self, clock: DeterministicClock
+    ) -> None:
+        from paritygrid.application.ports.connectors import TargetStateSnapshot
+        from paritygrid.application.repair import ExpectedInventory
+
+        class _LargeTarget(_IdempotentFakeTarget):
+            async def state_snapshot_async(
+                self, context: ConnectorCallContext
+            ) -> TargetStateSnapshot:
+                return TargetStateSnapshot(100_001, 1, "a" * 64, 100_001)
+
+        inventory = ExpectedInventory(records=(), absent_keys=(), ambiguous_keys=())
+        report = await _verifier(clock).verify(
+            target=cast(TargetConnector, _LargeTarget()), inventory=inventory, context_id="large"
+        )
+        assert report.disposition.value == "observation_failed"
+
+        class _RepeatedCursorTarget(_IdempotentFakeTarget):
+            async def state_snapshot_async(
+                self, context: ConnectorCallContext
+            ) -> TargetStateSnapshot:
+                return TargetStateSnapshot(0, 1, "a" * 64, 10)
+
+            async def list_records_async(
+                self, cursor: str | None, context: ConnectorCallContext
+            ) -> TargetRecordPage:
+                return TargetRecordPage(
+                    records=(), next_cursor="again", request_count=1, byte_count=0
+                )
+
+        repeated = await _verifier(clock).verify(
+            target=cast(TargetConnector, _RepeatedCursorTarget()),
+            inventory=inventory,
+            context_id="cursor",
+        )
+        assert repeated.disposition.value == "observation_failed"
+
+    @pytest.mark.parametrize("payload", [{"sku": "GRID-1"}, {"not": "inventory"}])
+    async def test_enumeration_rejects_duplicate_or_unparseable_target_records(
+        self, clock: DeterministicClock, payload: dict[str, object]
+    ) -> None:
+        from paritygrid.application.ports.connectors import TargetRecord
+
+        class _BadRecords(_IdempotentFakeTarget):
+            async def list_records_async(
+                self, cursor: str | None, context: ConnectorCallContext
+            ) -> TargetRecordPage:
+                records = (
+                    (TargetRecord("GRID-1", payload, 1, 1),)
+                    if "not" in payload
+                    else (
+                        TargetRecord("GRID-1", wire_payload("GRID-1"), 1, 1),
+                        TargetRecord("GRID-1", wire_payload("GRID-1"), 1, 1),
+                    )
+                )
+                return TargetRecordPage(records, None, 1, 0)
+
+        with pytest.raises(RuntimeError):
+            await _verifier(clock)._observe_inventory(  # pyright: ignore[reportPrivateUsage]
+                cast(TargetConnector, _BadRecords()), ConnectorCallContext()
+            )
+
+    @pytest.mark.parametrize("changed_field", ["record_count", "target_version", "fingerprint"])
+    async def test_changed_snapshot_component_fails_the_observation(
+        self, clock: DeterministicClock, changed_field: str
+    ) -> None:
+        from paritygrid.application.ports.connectors import TargetStateSnapshot
+
+        class _ChangingSnapshotTarget(_IdempotentFakeTarget):
+            def __init__(self) -> None:
+                super().__init__()
+                self._calls = 0
+
+            async def state_snapshot_async(
+                self, context: ConnectorCallContext
+            ) -> TargetStateSnapshot:
+                self._calls += 1
+                changed = {
+                    "record_count": (1, 1, "a" * 64),
+                    "target_version": (0, 2, "a" * 64),
+                    "fingerprint": (0, 1, "b" * 64),
+                }[changed_field]
+                if self._calls == 1:
+                    return TargetStateSnapshot(0, 1, "a" * 64, 10)
+                return TargetStateSnapshot(*changed, capacity=10)
+
+            async def list_records_async(
+                self, cursor: str | None, context: ConnectorCallContext
+            ) -> TargetRecordPage:
+                return TargetRecordPage((), None, 1, 0)
+
+        report = await _verifier(clock).verify(
+            target=cast(TargetConnector, _ChangingSnapshotTarget()),
+            inventory=ExpectedInventory(records=(), absent_keys=(), ambiguous_keys=()),
+            context_id="snapshot-change",
+        )
+        assert report.disposition.value == "observation_failed"
+
+    async def test_closing_snapshot_failure_fails_the_observation(
+        self, clock: DeterministicClock
+    ) -> None:
+        from paritygrid.application.ports.connectors import TargetStateSnapshot
+
+        class _ClosingFailureTarget(_IdempotentFakeTarget):
+            def __init__(self) -> None:
+                super().__init__()
+                self._snapshots = 0
+
+            async def state_snapshot_async(
+                self, context: ConnectorCallContext
+            ) -> TargetStateSnapshot:
+                self._snapshots += 1
+                if self._snapshots > 1:
+                    raise RuntimeError("target state became unavailable")
+                return TargetStateSnapshot(0, 1, "a" * 64, 10)
+
+            async def list_records_async(
+                self, cursor: str | None, context: ConnectorCallContext
+            ) -> TargetRecordPage:
+                return TargetRecordPage((), None, 1, 0)
+
+        report = await _verifier(clock).verify(
+            target=cast(TargetConnector, _ClosingFailureTarget()),
+            inventory=ExpectedInventory(records=(), absent_keys=(), ambiguous_keys=()),
+            context_id="closing-failure",
+        )
+        assert report.disposition.value == "observation_failed"
+
+    async def test_verify_and_record_requires_an_applied_exact_plan(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        seed_terminal_run(database)
+        result = _analysis()
+        ReconciliationResultService(writer, reader, now=clock.now).persist(
+            run_id=RUN_ID, analysis=result, actor="operator-1", correlation_id="corr-preapply"
+        )
+        created = RepairPlanningService(writer, reader, now=clock.now).create(
+            run_id=RUN_ID, analysis=result, actor="operator-1", correlation_id="corr-preapply"
+        )
+        assert created.aggregate is not None
+        assert created.generated.plan is not None
+        service = TargetVerificationService(writer, reader, now=clock.now)
+        inventory = build_expected_inventory(result, created.generated.plan)
+        target = _IdempotentFakeTarget()
+        observed_report = await _verify(clock, cast(TargetConnector, target), inventory)
+        assert observed_report.verdict is TargetVerificationVerdict.PARITY_DIVERGENT
+        with pytest.raises(RepairPlanMismatchError, match="plan content requires"):
+            service.record(
+                run_id=RUN_ID,
+                report=observed_report,
+                reconciliation_fingerprint=result.summary.fingerprint,
+                repair_plan_id=None,
+                plan_content_fingerprint=StateFingerprint("d" * 64),
+                actor="operator-1",
+                correlation_id="corr-orphan-content",
+            )
+        with pytest.raises(RepairPlanMismatchError, match="requires its content"):
+            service.record(
+                run_id=RUN_ID,
+                report=observed_report,
+                reconciliation_fingerprint=result.summary.fingerprint,
+                repair_plan_id=created.aggregate.plan.repair_plan_id,
+                plan_content_fingerprint=None,
+                actor="operator-1",
+                correlation_id="corr-missing-content",
+            )
+        with pytest.raises(RepairPlanMismatchError, match="has not been applied"):
+            await service.verify_and_record(
+                run_id=RUN_ID,
+                target=cast(TargetConnector, target),
+                inventory=inventory,
+                reconciliation_fingerprint=result.summary.fingerprint,
+                repair_plan_id=created.aggregate.plan.repair_plan_id,
+                plan_content_fingerprint=created.aggregate.plan.content_fingerprint,
+                actor="operator-1",
+                correlation_id="corr-preapply",
+            )
+        RepairApprovalService(writer, reader, now=clock.now).approve(
+            RepairApprovalRequest(
+                run_id=RUN_ID,
+                repair_plan_id=created.aggregate.plan.repair_plan_id,
+                approved_by="approver-1",
+                correlation_id="corr-approve",
+                approved_content_fingerprint=created.aggregate.plan.content_fingerprint,
+                approved_reconciliation_fingerprint=result.summary.fingerprint,
+                detail=RedactedDocument.from_mapping({"decision": "reviewed"}),
+            )
+        )
+        applied = await RepairApplicationService(
+            writer,
+            reader,
+            now=clock.now,
+            policy=RepairApplicationPolicy(delay_seconds=0.0, timeout_seconds=10.0),
+            sleep=_no_sleep,
+        ).apply(
+            run_id=RUN_ID,
+            repair_plan_id=created.aggregate.plan.repair_plan_id,
+            target=cast(TargetConnector, target),
+            context_id="corr-apply",
+        )
+        assert applied.disposition.value == "completed"
+        aggregate = reader.load_plan(created.aggregate.plan.repair_plan_id)
+        assert aggregate is not None
+        with pytest.raises(RepairPlanMismatchError, match="contents do not match"):
+            await service.verify_and_record(
+                run_id=RUN_ID,
+                target=cast(TargetConnector, target),
+                inventory=inventory,
+                reconciliation_fingerprint=result.summary.fingerprint,
+                repair_plan_id=aggregate.plan.repair_plan_id,
+                plan_content_fingerprint=StateFingerprint("e" * 64),
+                actor="operator-1",
+                correlation_id="corr-wrong-content",
+            )
+        stale_plan = replace(
+            aggregate.plan,
+            reconciliation_fingerprint=StateFingerprint("f" * 64),
+        )
+
+        def load_stale_plan(
+            _reader: SQLiteRepairWorkflowReader, _plan_id: object
+        ) -> RepairPlanAggregate:
+            return replace(aggregate, plan=stale_plan)
+
+        monkeypatch.setattr(
+            SQLiteRepairWorkflowReader,
+            "load_plan",
+            load_stale_plan,
+        )
+        with pytest.raises(RepairPlanMismatchError, match="another reconciliation"):
+            service.record(
+                run_id=RUN_ID,
+                report=observed_report,
+                reconciliation_fingerprint=result.summary.fingerprint,
+                repair_plan_id=aggregate.plan.repair_plan_id,
+                plan_content_fingerprint=aggregate.plan.content_fingerprint,
+                actor="operator-1",
+                correlation_id="corr-wrong-reconciliation",
+            )
+
+    async def test_recording_persists_the_immutable_fact_and_replays(
+        self,
+        database: SQLiteDatabase,
+        writer: SQLiteTransactionalWriter,
+        reader: SQLiteRepairWorkflowReader,
+        clock: DeterministicClock,
+    ) -> None:
+        warehouse = SimulatedWarehouse()
+        await warehouse.start()
+        try:
+            result, plan = await _applied_state(database, writer, reader, clock, warehouse)
+            inventory = build_expected_inventory(result, plan)
+            content = reader.load_plan(plan.plan_id)
             assert content is not None
             service = TargetVerificationService(writer, reader, now=clock.now)
-            record = service.record(
-                run_id=RUN_ID,
-                report=report,
-                reconciliation_fingerprint=result.summary.fingerprint,
-                repair_plan_id=plan_id,
-                plan_content_fingerprint=content.plan.content_fingerprint,
-                actor="operator-1",
-                correlation_id="corr-verify",
-            )
-            replayed = service.record(
-                run_id=RUN_ID,
-                report=report,
-                reconciliation_fingerprint=result.summary.fingerprint,
-                repair_plan_id=plan_id,
-                plan_content_fingerprint=content.plan.content_fingerprint,
-                actor="operator-1",
-                correlation_id="corr-verify",
-            )
+            target = await open_target(warehouse)
+            try:
+                record = await service.verify_and_record(
+                    run_id=RUN_ID,
+                    target=target,
+                    inventory=inventory,
+                    reconciliation_fingerprint=result.summary.fingerprint,
+                    repair_plan_id=content.plan.repair_plan_id,
+                    plan_content_fingerprint=content.plan.content_fingerprint,
+                    actor="operator-1",
+                    correlation_id="corr-verify",
+                )
+                replayed = await service.verify_and_record(
+                    run_id=RUN_ID,
+                    target=target,
+                    inventory=inventory,
+                    reconciliation_fingerprint=result.summary.fingerprint,
+                    repair_plan_id=content.plan.repair_plan_id,
+                    plan_content_fingerprint=content.plan.content_fingerprint,
+                    actor="operator-1",
+                    correlation_id="corr-verify",
+                )
+            finally:
+                await target.aclose()
             assert replayed == record
             with database.transaction() as session:
                 assert (
@@ -714,8 +1042,20 @@ class TestVerificationRecording:
             result, plan = await _applied_state(database, writer, reader, clock, warehouse)
             inventory = build_expected_inventory(result, plan)
             target = await open_target(warehouse)
+            service = TargetVerificationService(writer, reader, now=clock.now)
             try:
-                holding = await _verify(clock, target, inventory)
+                content = reader.load_plan(plan.plan_id)
+                assert content is not None
+                first = await service.verify_and_record(
+                    run_id=RUN_ID,
+                    target=target,
+                    inventory=inventory,
+                    reconciliation_fingerprint=result.summary.fingerprint,
+                    repair_plan_id=content.plan.repair_plan_id,
+                    plan_content_fingerprint=content.plan.content_fingerprint,
+                    actor="operator-1",
+                    correlation_id="corr-verify",
+                )
                 await target.write_record_async(
                     TargetWriteRequest(
                         sku="GRID-0006",
@@ -727,16 +1067,6 @@ class TestVerificationRecording:
                 divergent = await _verify(clock, target, inventory)
             finally:
                 await target.aclose()
-            service = TargetVerificationService(writer, reader, now=clock.now)
-            first = service.record(
-                run_id=RUN_ID,
-                report=holding,
-                reconciliation_fingerprint=result.summary.fingerprint,
-                repair_plan_id=None,
-                plan_content_fingerprint=None,
-                actor="operator-1",
-                correlation_id="corr-verify",
-            )
             second = service.record(
                 run_id=RUN_ID,
                 report=divergent,

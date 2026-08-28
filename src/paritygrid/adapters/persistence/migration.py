@@ -256,7 +256,7 @@ _EXPECTED_SCHEMA_HASHES: dict[tuple[str, str, str], str] = {
         "table",
         "repair_plans",
         "repair_plans",
-    ): "54c38aeb0d5564c4c0d558ba95ff6fa67251ce1c5b9c10cf3cd97f4550feefb5",
+    ): "b7909f8bc66224e362c340648a95507b78ba3c57f8959b7c168a134a4ac48a10",
     (
         "table",
         "run_event_counters",
