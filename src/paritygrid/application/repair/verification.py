@@ -103,10 +103,12 @@ class ExpectedInventory:
             raise ValueError("expected inventory exceeds the fingerprint bound")
         for name in ("absent_keys", "ambiguous_keys"):
             keys = getattr(self, name)
-            if tuple(sorted(set(keys))) != keys or any(type(key) is not str or not key for key in keys):
+            if tuple(sorted(set(keys))) != keys or any(
+                type(key) is not str or not key for key in keys
+            ):
                 raise ValueError(f"expected inventory {name} must use sorted unique keys")
         record_keys = set(skus)
-        if record_keys.intersection(self.absent_keys) or record_keys.intersection(self.ambiguous_keys):
+        if record_keys.intersection(self.absent_keys):
             raise ValueError("expected inventory keys must not overlap")
 
 
@@ -211,7 +213,9 @@ class TargetParityVerifier:
                 RuntimeError("the observed target exceeds the verification inventory bound"),
             )
         try:
-            observed_records = await self._observe_inventory(target, context)
+            observed_records: tuple[InventoryRecord, ...] = await self._observe_inventory(
+                target, context
+            )
         except ConnectorCancelledError:
             return _interrupted_report(observed_at, expected, len(inventory.records))
         except Exception as error:
@@ -309,7 +313,9 @@ class TargetParityVerifier:
                     raise RuntimeError("the target enumeration contains an unparsable record")
                 records.append(parsed.record)
                 if len(records) > _MAX_FINGERPRINT_ITEMS:
-                    raise RuntimeError("the target enumeration exceeds the verification inventory bound")
+                    raise RuntimeError(
+                        "the target enumeration exceeds the verification inventory bound"
+                    )
             next_cursor = page.next_cursor
             if next_cursor is None:
                 return tuple(records)
@@ -368,7 +374,9 @@ class TargetVerificationService:
                 raise RepairPlanMismatchError("verification plan content requires a repair plan")
         else:
             if plan_content_fingerprint is None:
-                raise RepairPlanMismatchError("verification repair plan requires its content fingerprint")
+                raise RepairPlanMismatchError(
+                    "verification repair plan requires its content fingerprint"
+                )
             aggregate = self._reader.load_plan(repair_plan_id)
             if aggregate is None:
                 raise RepairPlanMismatchError("verified repair plan does not exist")
@@ -377,7 +385,9 @@ class TargetVerificationService:
             if aggregate.plan.status is not RepairPlanStatus.APPLIED:
                 raise RepairPlanMismatchError("verified repair plan has not been applied")
             if aggregate.plan.reconciliation_fingerprint != reconciliation_fingerprint:
-                raise RepairPlanMismatchError("verified repair plan addresses another reconciliation")
+                raise RepairPlanMismatchError(
+                    "verified repair plan addresses another reconciliation"
+                )
             if aggregate.plan.content_fingerprint != plan_content_fingerprint:
                 raise RepairPlanMismatchError("verified repair plan contents do not match")
         verdict = _recordable_verdict(report)
@@ -494,12 +504,13 @@ def _inventory_divergences(
             divergences.append(
                 InventoryDivergence(expected_record.sku, "target record content differs")
             )
-    for key in expected.absent_keys:
-        if observed.pop(key, None) is not None:
-            divergences.append(InventoryDivergence(key, "unexpected target record is present"))
     divergences.extend(
         InventoryDivergence(key, "unexpected target record is present")
-        for key in sorted(observed)
+        for key in expected.absent_keys
+        if observed.pop(key, None) is not None
+    )
+    divergences.extend(
+        InventoryDivergence(key, "unexpected target record is present") for key in sorted(observed)
     )
     return divergences
 

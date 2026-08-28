@@ -1,9 +1,9 @@
 """Safe repair actions bound to an exact reconciliation state."""
 
+import re
 from collections.abc import Hashable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
-import re
 from typing import ClassVar, cast
 
 from paritygrid.domain.errors import StaleRepairPlanError
@@ -41,7 +41,10 @@ class RepairPlanBinding:
     action_count: int
 
     def __post_init__(self) -> None:
-        if type(self.run_id) is not RunId or type(self.reconciliation_fingerprint) is not StateFingerprint:
+        if (
+            type(self.run_id) is not RunId
+            or type(self.reconciliation_fingerprint) is not StateFingerprint
+        ):
             raise TypeError("repair-plan binding identities are invalid")
         for value in (self.source_input_identity, self.target_input_identity):
             if type(value) is not str or _SHA256.fullmatch(value) is None:
@@ -55,7 +58,10 @@ class RepairPlanBinding:
         ):
             if type(value) is not int or value < 1:
                 raise ValueError("repair-plan binding version is invalid")
-        if type(self.action_count) is not int or not 0 <= self.action_count <= RepairPlan.MAX_ACTIONS:
+        if (
+            type(self.action_count) is not int
+            or not 0 <= self.action_count <= RepairPlan.MAX_ACTIONS
+        ):
             raise ValueError("repair-plan binding action count is invalid")
 
 

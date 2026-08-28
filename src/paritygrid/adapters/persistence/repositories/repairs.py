@@ -117,7 +117,10 @@ class SqlAlchemyRepairRepository(RepairRepository):
         binding = domain_plan.binding
         if binding is None:
             raise RepairInvalidRequestError("repair plan requires an immutable generation binding")
-        if binding.run_id != run or binding.reconciliation_fingerprint != domain_plan.state_fingerprint:
+        if (
+            binding.run_id != run
+            or binding.reconciliation_fingerprint != domain_plan.state_fingerprint
+        ):
             raise RepairInvalidRequestError("repair plan binding does not match command identities")
         self._validate_summary(run, domain_plan.state_fingerprint, timestamp, binding)
         effects = tuple(RepairActionEffect.from_action(action) for action in domain_plan.actions)
@@ -200,7 +203,9 @@ class SqlAlchemyRepairRepository(RepairRepository):
     ) -> RepairPlanAggregate:
         """Fence a nonterminal external-attempt audit fact on the current reservation."""
         self._require_transaction()
-        claim = require_exact(reservation, RepairApplicationReservation, "repair application reservation")
+        claim = require_exact(
+            reservation, RepairApplicationReservation, "repair application reservation"
+        )
         action = require_exact(repair_action_id, RepairActionId, "repair action identifier")
         aggregate = self._require_claim(claim)
         self._require_claim_frontier(aggregate.plan, claim)
@@ -762,7 +767,9 @@ class SqlAlchemyRepairRepository(RepairRepository):
         if (
             stored_fingerprint(row["source_fingerprint"], "reconciliation source fingerprint").value
             != binding.source_input_identity
-            or stored_fingerprint(row["target_fingerprint"], "reconciliation target fingerprint").value
+            or stored_fingerprint(
+                row["target_fingerprint"], "reconciliation target fingerprint"
+            ).value
             != binding.target_input_identity
             or row["analytical_query_version"] != binding.analytical_query_version
         ):

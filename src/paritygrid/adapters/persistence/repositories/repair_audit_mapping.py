@@ -79,9 +79,13 @@ def plan_from_row(row: Mapping[str, object]) -> RepairPlanRecord:
                 row["target_input_identity"], "repair target identity"
             ).value,
             policy_version=stored_positive_int(row["policy_version"], "repair policy version"),
-            generation_version=stored_positive_int(row["generation_version"], "repair generation version"),
+            generation_version=stored_positive_int(
+                row["generation_version"], "repair generation version"
+            ),
             rules_version=stored_positive_int(row["rules_version"], "repair rules version"),
-            analysis_version=stored_positive_int(row["analysis_version"], "repair analysis version"),
+            analysis_version=stored_positive_int(
+                row["analysis_version"], "repair analysis version"
+            ),
             analytical_query_version=stored_positive_int(
                 row["analytical_query_version"], "repair analytical query version"
             ),

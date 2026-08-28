@@ -22,6 +22,7 @@ from paritygrid.domain.canonical import FingerprintScope, fingerprint_state
 from paritygrid.domain.models import RepairActionId, RunId, StateFingerprint
 from paritygrid.domain.reconciliation import (
     ReconciliationClassification,
+    ReconciliationOutcome,
     SuggestedResolution,
     suggested_resolution_for,
 )
@@ -79,7 +80,7 @@ def generate_repair_plan(
         analytical_query_version=summary.analytical_query_version,
         action_count=0,
     )
-    repairable_outcomes = []
+    repairable_outcomes: list[ReconciliationOutcome] = []
     repairable_keys: list[str] = []
     review_only: list[str] = []
     for key in analysis.classification.keys:

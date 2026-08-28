@@ -166,7 +166,7 @@ def _require_matching_plan(existing: RepairPlanAggregate, generated: GeneratedRe
     if plan is None or content is None:
         raise RepairPlanMismatchError("regeneration produced no plan for a durable identity")
     if (
-            existing.plan.reconciliation_fingerprint != plan.state_fingerprint
+        existing.plan.reconciliation_fingerprint != plan.state_fingerprint
         or existing.plan.content_fingerprint != content
         or existing.plan.binding != plan.binding
         or len(existing.actions) != len(plan.actions)

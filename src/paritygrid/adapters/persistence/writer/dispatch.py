@@ -100,8 +100,8 @@ from paritygrid.application.writes.repairs import (
     BeginRepairApplicationResult,
     CompleteRepairApplication,
     CreateRepairPlan,
-    RecordRepairActionAttempt,
     RecordRepairActionApplied,
+    RecordRepairActionAttempt,
     RecordRepairActionFailed,
     RejectRepairPlan,
     RepairActionAppliedResult,
@@ -553,9 +553,7 @@ def _dispatch_repair(session: Session, command: RepairCommand) -> DispatchOutcom
             command.reservation, command.repair_action_id
         )
         audit, events, run = _repair_companions(session, command.run_id, command.companions)
-        return DispatchOutcome(
-            RepairMutationResult(command.kind, aggregate, audit, events, run)
-        )
+        return DispatchOutcome(RepairMutationResult(command.kind, aggregate, audit, events, run))
     if isinstance(command, RecordRepairActionFailed):
         prior = repairs.get_action(command.repair_action_id)
         replay = prior is not None and prior.status is RepairActionStatus.FAILED
@@ -918,7 +916,10 @@ def _validate_repair_command(command: RepairCommand) -> None:
         occurred_at = command.applied_at
     object_id = (
         command.repair_action_id
-        if isinstance(command, (RecordRepairActionAttempt, RecordRepairActionApplied, RecordRepairActionFailed))
+        if isinstance(
+            command,
+            (RecordRepairActionAttempt, RecordRepairActionApplied, RecordRepairActionFailed),
+        )
         else plan_id
     )
     _validate_repair_companions(

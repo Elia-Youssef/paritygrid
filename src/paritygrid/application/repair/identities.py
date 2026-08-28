@@ -44,7 +44,12 @@ def derive_plan_id(
                 binding.analytical_query_version,
             )
         )
-        pieces = (*pieces, binding.source_input_identity[:12], binding.target_input_identity[:12], policy)
+        pieces = (
+            *pieces,
+            binding.source_input_identity[:12],
+            binding.target_input_identity[:12],
+            policy,
+        )
     return RepairPlanId(f"rpl_{_slug(pieces)}")
 
 
