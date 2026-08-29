@@ -1,68 +1,52 @@
-import { useEffect, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 
+import { fetchHealth } from "../api/client";
+import { queryKeys } from "../api/query-keys";
 import { Button } from "../components/ui/button";
 import { StatusBadge } from "../components/ui/status-badge";
 
-type ApiConnection = "connecting" | "online" | "unavailable";
-
-async function probeHealth(signal: AbortSignal): Promise<void> {
-  const response = await fetch("/healthz", {
-    cache: "no-store",
-    headers: { Accept: "application/json" },
-    signal,
-  });
-
-  if (!response.ok) {
-    throw new Error(`Health probe returned ${String(response.status)}`);
-  }
-}
-
 /**
- * Global API reachability for the shell. Connection loss never mutates
- * durable state; it only informs the operator.
+ * Global API reachability for the shell, served by the shared query cache.
+ * Connection loss never mutates durable state; it only informs the
+ * operator. The probe itself does not auto-retry — the operator's Retry
+ * control is the explicit recovery action, which keeps the badge states
+ * deterministic for users and tests.
  */
 export function ApiConnectionStatus() {
-  const [connection, setConnection] = useState<ApiConnection>("connecting");
-  const [probeRevision, setProbeRevision] = useState(0);
+  const health = useQuery({
+    queryKey: queryKeys.health(),
+    queryFn: ({ signal }) => fetchHealth({ signal }),
+    staleTime: 10_000,
+    retry: 0,
+  });
 
-  useEffect(() => {
-    const controller = new AbortController();
-
-    void probeHealth(controller.signal).then(
-      () => setConnection("online"),
-      () => {
-        if (!controller.signal.aborted) {
-          setConnection("unavailable");
-        }
-      },
+  if (health.isPending) {
+    return (
+      <StatusBadge state="warning" aria-live="polite">
+        API connecting
+      </StatusBadge>
     );
-
-    return () => controller.abort();
-  }, [probeRevision]);
-
-  const retry = (): void => {
-    setConnection("connecting");
-    setProbeRevision((revision) => revision + 1);
-  };
-
-  if (connection === "online") {
-    return <StatusBadge state="verified">API online</StatusBadge>;
   }
 
-  if (connection === "unavailable") {
+  if (health.isError) {
     return (
       <div className="flex items-center gap-1">
-        <StatusBadge state="failure">API unavailable</StatusBadge>
-        <Button type="button" variant="ghost" size="compact" onClick={retry}>
+        <StatusBadge state="failure" aria-live="polite">
+          API unavailable
+        </StatusBadge>
+        <Button
+          type="button"
+          variant="ghost"
+          size="compact"
+          onClick={() => {
+            void health.refetch();
+          }}
+        >
           Retry
         </Button>
       </div>
     );
   }
 
-  return (
-    <StatusBadge state="warning" aria-live="polite">
-      API connecting
-    </StatusBadge>
-  );
+  return <StatusBadge state="verified">API online</StatusBadge>;
 }

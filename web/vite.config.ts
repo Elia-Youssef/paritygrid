@@ -28,13 +28,25 @@ export default defineConfig({
       reporter: ["text", "json-summary", "lcov"],
       reportsDirectory: "./coverage",
       include: ["src/**/*.{ts,tsx}"],
-      exclude: ["src/main.tsx", "src/test/**"],
+      exclude: ["src/main.tsx", "src/test/**", "src/api/generated/**"],
       thresholds: {
         branches: 75,
         functions: 75,
         lines: 75,
         statements: 75,
         "src/lib/**": {
+          branches: 85,
+          functions: 85,
+          lines: 85,
+          statements: 85,
+        },
+        "src/live/**": {
+          branches: 85,
+          functions: 85,
+          lines: 85,
+          statements: 85,
+        },
+        "src/api/**": {
           branches: 85,
           functions: 85,
           lines: 85,

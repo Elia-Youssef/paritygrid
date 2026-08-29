@@ -3,13 +3,19 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import { appQueryClient } from "../api/query-client";
 
 function stubHealthApi(): void {
   vi.stubGlobal(
     "fetch",
     vi
       .fn<typeof fetch>()
-      .mockResolvedValue(new Response('{"status":"ok"}', { status: 200 })),
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ status: "ok", service: "ParityGrid", version: "0.1.0" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
   );
 }
 
@@ -29,6 +35,7 @@ function currentNavigationLabels(): string[] {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  appQueryClient.clear();
   load("/");
   document.title = "";
 });
