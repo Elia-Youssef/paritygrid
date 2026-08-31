@@ -45,7 +45,9 @@ test("keeps one accessible navigation, supports the skip link, and focuses a key
   await expect(skipLink).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/#main-content$/);
-  await expect(page.locator("#main-content")).toBeVisible();
+  const mainContent = page.locator("#main-content");
+  await expect(mainContent).toBeVisible();
+  await expect(mainContent).toBeFocused();
 
   const runs = page.getByRole("link", { name: "Runs", exact: true });
   await runs.focus();
