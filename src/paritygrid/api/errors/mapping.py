@@ -55,12 +55,45 @@ from paritygrid.application.ports.execution import (
     ExecutionStorageUnavailableError,
 )
 from paritygrid.application.ports.operations import OperationalStoreUnavailableError
+from paritygrid.application.ports.reconciliation_persistence import (
+    ReconciliationInvalidRequestError,
+    ReconciliationPersistenceError,
+    ReconciliationRecordNotFoundError,
+    ReconciliationResultConflictError,
+    ReconciliationStorageError,
+    ReconciliationStorageUnavailableError,
+)
+from paritygrid.application.ports.repair_audit import (
+    RepairCorruptionError,
+    RepairDuplicateError,
+    RepairInvalidRequestError,
+    RepairRecordNotFoundError,
+    RepairRepositoryError,
+    RepairStaleRowVersionError,
+    RepairStateConflictError,
+    RepairStorageError,
+    RepairStorageUnavailableError,
+)
 from paritygrid.application.ports.writer import (
     PersistenceContentionError,
     WriterAdmissionTimeoutError,
     WriterCommitOutcomeUnknownError,
     WriterError,
     WriterResultTimeoutError,
+)
+from paritygrid.application.repair.errors import (
+    RepairApprovalConflictError,
+    RepairPlanMismatchError,
+    RepairPlanStateError,
+    RepairReconciliationMissingError,
+    RepairReconciliationStaleError,
+    RepairRunNotFoundError,
+    RepairWorkflowError,
+    RepairWriterOutcomeUnknownError,
+    RepairWriterUnavailableError,
+    TargetApplicationError,
+    TargetApplicationInterruptedError,
+    TargetApplicationUnresolvedError,
 )
 from paritygrid.application.services.errors import (
     IdempotencyInProgressError,
@@ -72,6 +105,7 @@ from paritygrid.application.services.errors import (
     OperationalUnavailableError,
     RunInvalidTransitionError,
 )
+from paritygrid.application.services.telemetry import TelemetrySubscriberLimitError
 from paritygrid.domain.errors import DomainError, InvalidTransitionError
 
 
@@ -117,6 +151,86 @@ def translate_error(error: Exception) -> ProblemError:
             "stored idempotent evidence conflicts with this request",
             code="idempotency_replay_conflict",
         )
+    if isinstance(error, RepairRunNotFoundError):
+        return not_found_problem("run", "the addressed run")
+    if isinstance(error, RepairReconciliationMissingError):
+        return ProblemError(
+            type_slug="reconciliation-missing",
+            title="Reconciliation result is missing",
+            status=409,
+            detail=str(error),
+            code="reconciliation_missing",
+        )
+    if isinstance(error, RepairReconciliationStaleError):
+        return _conflict(str(error), code="reconciliation_stale")
+    if isinstance(error, (RepairPlanMismatchError, RepairApprovalConflictError)):
+        return _conflict(str(error), code="repair_plan_mismatch")
+    if isinstance(error, RepairPlanStateError):
+        return _conflict(str(error), code="repair_plan_state")
+    if isinstance(error, RepairWriterOutcomeUnknownError):
+        return _unavailable(
+            "the repair write outcome is unknown; retry the same request",
+            code="writer_outcome_unknown",
+        )
+    if isinstance(error, RepairWriterUnavailableError):
+        return _unavailable("the repair boundary is busy; retry the same request")
+    if isinstance(error, TargetApplicationInterruptedError):
+        return _unavailable(
+            "repair application was interrupted; retry the same request",
+            code="repair_application_interrupted",
+        )
+    if isinstance(error, TargetApplicationUnresolvedError):
+        return _unavailable(
+            "the target application outcome is unresolved; retry the same request",
+            code="repair_outcome_unresolved",
+        )
+    if isinstance(error, TargetApplicationError):
+        return ProblemError(
+            type_slug="target-application-failed",
+            title="Target application failed",
+            status=409,
+            detail=str(error)[:512],
+            code="target_application_failed",
+        )
+    if isinstance(error, RepairWorkflowError):
+        return _conflict(str(error), code="repair_workflow_conflict")
+    if isinstance(error, ReconciliationRecordNotFoundError):
+        return not_found_problem("reconciliation", "the addressed reconciliation")
+    if isinstance(error, ReconciliationResultConflictError):
+        return _conflict(str(error), code="reconciliation_conflict")
+    if isinstance(error, ReconciliationInvalidRequestError):
+        return _validation(str(error))
+    if isinstance(error, TelemetrySubscriberLimitError):
+        return ProblemError(
+            type_slug="telemetry-capacity",
+            title="Telemetry channel is at capacity",
+            status=503,
+            detail=str(error),
+            code="telemetry_capacity",
+        )
+    if isinstance(error, RepairInvalidRequestError):
+        return _validation(str(error))
+    if isinstance(error, RepairRecordNotFoundError):
+        return not_found_problem("repair plan", "the addressed repair plan")
+    if isinstance(error, RepairDuplicateError):
+        return _conflict("the addressed identity already exists", code="duplicate_record")
+    if isinstance(error, RepairStaleRowVersionError):
+        return _conflict(
+            "the repair plan changed concurrently; retry the request",
+            code="stale_row_version",
+        )
+    if isinstance(error, RepairStateConflictError):
+        return _conflict(str(error), code="repair_state_conflict")
+    if isinstance(error, RepairCorruptionError):
+        return _integrity()
+    if isinstance(error, RepairStorageUnavailableError):
+        return _unavailable("repair storage is temporarily unavailable")
+    if isinstance(error, (RepairStorageError, RepairRepositoryError)):
+        return _unavailable("repair storage failed while serving the request")
+    if isinstance(error, ReconciliationStorageUnavailableError):
+        return _unavailable("reconciliation storage is temporarily unavailable")
+    if isinstance(error, (ReconciliationStorageError, ReconciliationPersistenceError)):
+        return _unavailable("reconciliation storage failed while serving the request")
     if isinstance(error, ConsistencyInvalidRequestError):
         return _validation(str(error))
     if isinstance(error, OperationalUnavailableError):

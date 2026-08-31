@@ -64,6 +64,10 @@ jobs:
         run: uv run pyright
       - name: Enforce import boundaries
         run: uv run paritygrid-check-boundaries
+      - name: Check generated OpenAPI contract drift
+        run: uv run python scripts/export_openapi.py --check
+      - name: Check generated TypeScript boundary drift
+        run: uv run python scripts/generate_api_types.py --check
       - name: Run Python tests and coverage
         run: uv run pytest --cov=paritygrid --cov-report=term-missing
       - name: Enforce scoped Python branch coverage
@@ -97,10 +101,15 @@ jobs:
         run: npm run lint
       - name: Check frontend types
         run: npm run typecheck
+      - name: Compile generated TypeScript declaration
+        run: npm run generate:api:compile
       - name: Run frontend tests and coverage
         run: npm run test:coverage
       - name: Build production frontend
         run: npm run build
+      - name: Verify committed frontend distribution drift
+        working-directory: .
+        run: python scripts/verify_frontend_dist.py
       - name: Audit frontend dependencies
         run: npm audit --audit-level=high
 

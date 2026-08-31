@@ -61,7 +61,7 @@ Runs on each proposed change:
 - API contract tests.
 - Frontend component tests.
 - Production frontend build.
-- Generated contract drift check.
+- Generated contract drift check (`scripts/export_openapi.py --check`, `scripts/generate_api_types.py --check`, and `scripts/verify_frontend_dist.py`).
 - Chromium canonical browser test.
 - Sequential headless smoke test.
 

@@ -16,7 +16,10 @@
     "test": "vitest run",
     "test:coverage": "vitest run --coverage",
     "format": "prettier --write .",
-    "format:check": "prettier --check ."
+    "format:check": "prettier --check .",
+    "generate:api": "uv run --project .. python ../scripts/generate_api_types.py",
+    "generate:api:check": "uv run --project .. python ../scripts/generate_api_types.py --check",
+    "generate:api:compile": "tsc --ignoreConfig --noEmit --strict --skipLibCheck false src/api/generated/schema.d.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "1.3.3",

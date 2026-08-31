@@ -11,8 +11,15 @@ from paritygrid.application.ports.configuration import (
     ConnectorRepository,
     PipelineRepository,
 )
-from paritygrid.application.ports.consistency import IdempotencyRepository
+from paritygrid.application.ports.consistency import (
+    ExecutionEventRepository,
+    IdempotencyRepository,
+)
 from paritygrid.application.ports.execution import RunRepository
+from paritygrid.application.ports.reconciliation_persistence import (
+    ReconciliationResultRepository,
+)
+from paritygrid.application.ports.repair_audit import RepairRepository
 
 
 class OperationalStoreUnavailableError(Exception):
@@ -29,6 +36,9 @@ class OperationalRepositories:
     idempotency: IdempotencyRepository
     artifact_manifests: ArtifactManifestRepository
     artifact_stream: ArtifactStreamReader
+    events: ExecutionEventRepository
+    reconciliation: ReconciliationResultRepository
+    repair: RepairRepository
 
 
 class OperationalUnitOfWork(Protocol):

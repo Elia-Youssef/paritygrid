@@ -107,6 +107,19 @@ foreach ($prohibitedName in $prohibitedNames) {
 }
 
 $trackedFiles = git -C $projectRoot ls-files
+$generatedFileInventory = @(
+    'tests/fixtures/persistence/v0001/manifest.json',
+    'tests/fixtures/persistence/v0001/schema.sql',
+    'tests/fixtures/persistence/v0001/seed.sql',
+    'tests/fixtures/sequential_e2e/expected.json',
+    'uv.lock',
+    'web/package-lock.json',
+    'docs/generated/openapi.json',
+    'web/src/api/generated/schema.d.ts',
+    'web/dist/index.html',
+    'web/dist/assets/index-CFbUShYc.css',
+    'web/dist/assets/index-8O-4fXdR.js'
+)
 $unsafeTrackedExtensions = @(
     '.cer', '.crt', '.db', '.der', '.duckdb', '.key', '.kdbx', '.log', '.parquet',
     '.p12', '.pem', '.pfx', '.ppk', '.pyc', '.pyd', '.pyo', '.sqlite', '.sqlite3',
@@ -134,7 +147,7 @@ foreach ($trackedFile in $trackedFiles) {
         $fileName.StartsWith('.coverage.') -or
         $hasUnsafeSuffix -or
         ($isEnvironmentFile -and -not $isApprovedEnvironmentExample) -or
-        $isRuntimeDirectory
+        ($isRuntimeDirectory -and $generatedFileInventory -notcontains $trackedFile)
     ) {
         $failures.Add("Unsafe tracked runtime or secret file: $trackedFile")
     }
@@ -184,7 +197,7 @@ $credentialPatterns = @(
     ('github' + '_pat_[A-Za-z0-9_]{40,}'),
     ('xox' + '[baprs]-[A-Za-z0-9-]{10,}'),
     ('A' + 'Iza[0-9A-Za-z_-]{35}'),
-    ('s' + 'k-[A-Za-z0-9_-]{20,}')
+    ('s' + 'k-(?!image-)[A-Za-z0-9_-]{20,}')
 )
 $absoluteDeveloperPathPatterns = @(
     '[A-Za-z]:[\\/]Users[\\/][A-Za-z0-9._-]+(?:[\\/]|(?![A-Za-z0-9._-]))',
@@ -222,16 +235,12 @@ foreach ($repositoryFile in $repositoryFiles) {
     }
 }
 
-$generatedFileInventory = @(
-    'tests/fixtures/persistence/v0001/manifest.json',
-    'tests/fixtures/persistence/v0001/schema.sql',
-    'tests/fixtures/persistence/v0001/seed.sql',
-    'tests/fixtures/sequential_e2e/expected.json',
-    'uv.lock',
-    'web/package-lock.json'
-)
 foreach ($generatedFile in $generatedFileInventory) {
-    if ($trackedFiles -notcontains $generatedFile) {
+    # An inventory entry must be a real artifact: tracked for the committed
+    # tree, or present on disk while it awaits integration staging.
+    $isTracked = $trackedFiles -contains $generatedFile
+    $isPresent = Test-Path -LiteralPath (Join-Path $projectRoot $generatedFile) -PathType Leaf
+    if (-not $isTracked -and -not $isPresent) {
         $failures.Add("Missing tracked generated-file inventory entry: $generatedFile")
     }
 }

@@ -39,6 +39,14 @@ class Settings(BaseSettings):
     artifact_chunk_bytes: int = Field(default=1_048_576, ge=1, le=_MAX_ARTIFACT_CHUNK_BYTES)
     writer_queue_capacity: int = Field(default=64, ge=1, le=10_000)
 
+    frontend_dist: Path | None = None
+    stream_heartbeat_seconds: float = Field(default=15.0, ge=0.1, le=300.0)
+    stream_poll_seconds: float = Field(default=0.25, ge=0.05, le=30.0)
+    telemetry_queue_capacity: int = Field(default=256, ge=1, le=1_024)
+    telemetry_max_subscribers_per_run: int = Field(default=16, ge=1, le=128)
+    telemetry_send_timeout_seconds: float = Field(default=10.0, ge=0.1, le=60.0)
+    telemetry_poll_seconds: float = Field(default=0.25, ge=0.05, le=30.0)
+
     @model_validator(mode="after")
     def _validate_lease_covers_request_budget(self) -> Self:
         # The idempotency lease must outlive the request timeout so a live
