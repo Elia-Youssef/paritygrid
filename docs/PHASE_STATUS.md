@@ -21,14 +21,15 @@ This document is the durable index of accepted phases, their integration commits
 | 11 — Repair and target verification | Accepted | [`169b538`](https://github.com/Elia-Youssef/paritygrid/commit/169b538eac347f014a1142552bfce9305f27cda7) | [Phase pull request #104](https://github.com/Elia-Youssef/paritygrid/pull/104) | Deterministic safety-limited repair planning, explicit approval and fencing, idempotent application with ambiguous-outcome recovery, independent target verification, and durable audit evidence | HTTP routes and UI workflows remain deferred; target behavior remains bounded to the accepted synthetic loopback warehouse contract, and target-state, reconciliation, and execution-evidence fingerprints remain distinct. |
 | 12 — Core HTTP API | Accepted | [`3ca6125`](https://github.com/Elia-Youssef/paritygrid/commit/3ca61251bc03b71d74de5e28b71c2202469ac70e) | [Phase pull request #107](https://github.com/Elia-Youssef/paritygrid/pull/107) | Versioned operational HTTP composition, Problem Details, correlation, durable command idempotency, pipeline, connector, run, artifact, capability, health, and readiness routes, plus request limits and security headers | Reconciliation and repair routes, live transports, generated API clients, and packaged frontend serving remain Phase 13 work. |
 | 13 — Live and generated API boundary | Accepted | [`c0011ed`](https://github.com/Elia-Youssef/paritygrid/commit/c0011edbec409ba132c4323a09a7b4a15d655441) | [Phase pull request #109](https://github.com/Elia-Youssef/paritygrid/pull/109) | Reconciliation and repair routes, durable SSE replay, advisory WebSocket telemetry, deterministic OpenAPI and TypeScript generation, and confined packaged frontend serving | Typed frontend data ownership, durable/live state precedence, application routing, and the accessible product shell remain Phase 14 and 15 work. |
+| 14 — UI design system and shell | Accepted | [`05d1724`](https://github.com/Elia-Youssef/paritygrid/commit/05d1724f64c049022457fe2d3012f1b0640dcbe8) | [Phase pull request #111](https://github.com/Elia-Youssef/paritygrid/pull/111) | Semantic design tokens, owned accessible primitives, stable routing, keyboard navigation shell, shared async states, responsive and reduced-motion behavior, and safe render-error recovery | Routes intentionally contain shell-level placeholders; typed API ownership, caching, durable/live reducers, and reconnecting browser transports remain Phase 15 work. |
 
 ## Active boundary
 
-Phase 14 is the next delivery boundary. No Phase 14 implementation has been accepted.
+Phase 15 is the next delivery boundary. No Phase 15 implementation has been accepted.
 
-- Accepted Phase 13 integration: [`c0011ed`](https://github.com/Elia-Youssef/paritygrid/commit/c0011edbec409ba132c4323a09a7b4a15d655441).
-- Phase 13 acceptance evidence: [pull request #109](https://github.com/Elia-Youssef/paritygrid/pull/109) and its exact-head Windows, Ubuntu, policy, frontend, and smoke checks.
-- Phase 14 must begin from accepted Phase 13 and satisfy its own complete gate before acceptance.
+- Accepted Phase 14 integration: [`05d1724`](https://github.com/Elia-Youssef/paritygrid/commit/05d1724f64c049022457fe2d3012f1b0640dcbe8).
+- Phase 14 acceptance evidence: [pull request #111](https://github.com/Elia-Youssef/paritygrid/pull/111) and its exact-head Windows, Ubuntu, policy, frontend, Chromium, and smoke checks.
+- Phase 15 must begin from accepted Phase 14 and satisfy its own complete gate before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -435,9 +436,65 @@ confined, and the packaged application serves its frontend without Node.js.
 - Product-specific pipeline, overview, live execution, reconciliation, and
   repair interfaces remain assigned to later phases.
 
+## Phase 14 acceptance record
+
+Phase 14 establishes the owned accessible visual system and application shell
+that later product workflows reuse. All seven packages were accepted through
+[pull request #111](https://github.com/Elia-Youssef/paritygrid/pull/111) at
+merge commit
+[`05d1724`](https://github.com/Elia-Youssef/paritygrid/commit/05d1724f64c049022457fe2d3012f1b0640dcbe8).
+
+### Phase 14 package status
+
+| Package | Status | Evidence |
+|---|---|---|
+| P14.1 — semantic design tokens | Accepted | Named color, typography, spacing, elevation, focus, motion, status, and layout tokens are centralized; contrast and raw-color guards prevent feature-level palette bypass. |
+| P14.2 — owned primitive components | Accepted | Buttons, badges, breadcrumbs, skip links, and the command palette use owned typed components, bounded variants, keyboard behavior, and text-only rendering. |
+| P14.3 — application routing | Accepted | Stable public and console routes include nested direct-entry handling, not-found behavior, document titles, breadcrumbs, and route-focus ownership. |
+| P14.4 — accessible navigation shell | Accepted | Landmarks, active-route semantics, wide and compact navigation, skip-link focus, keyboard route changes, and command-palette navigation have unit, axe, and Chromium evidence. |
+| P14.5 — shared async state components | Accepted | Loading, empty, error, stale, disconnected, and unavailable states render hostile strings and bounded Problem Details without unsafe HTML. |
+| P14.6 — responsive layout rules | Accepted | The shell supports 320-pixel layouts, zoom-safe wrapping, touch targets, overflow control, narrow navigation, and reduced-motion overrides. |
+| P14.7 — frontend error boundary | Accepted | Root and route boundaries catch render failures, retain bounded diagnostics, expose safe recovery, and restore useful focus without leaking protected details. |
+
+### Phase 14 acceptance evidence
+
+The accepted candidate `e3e766dab154b4b270675ef6381db79912e8e22e`
+passed the complete local lane and both exact-head
+[push](https://github.com/Elia-Youssef/paritygrid/actions/runs/33391061455)
+and [pull-request](https://github.com/Elia-Youssef/paritygrid/actions/runs/33391102299)
+workflow matrices. The local Windows run passed 6,507 Python tests with seven
+environment-only filesystem-link skips and 95.58% aggregate coverage; every
+scoped coverage gate passed, including 90.53% for the API. Locked dependency
+audits, Ruff, strict Pyright, import boundaries, generated-contract drift,
+isolated wheel and spawned-process verification, packaged frontend probing,
+backend smoke, API proxy smoke, instruction validation, and whitespace
+validation passed.
+
+The frontend lane passed formatting, lint, types, generated declaration
+compilation, 211 unit and component tests, 95.95% statement coverage, 93.68%
+branch coverage, the production build, exact three-file distribution
+reproduction, and the high-severity dependency audit with zero reported
+vulnerabilities. All four Chromium shell tests passed: nested SPA entry,
+wide and narrow navigation, reduced motion, and keyboard skip-link focus on
+the main landmark.
+
+An independent exact-head review assessed Phase 14 at 100/100 and found no
+open hard gate. It confirmed P14.1–P14.7, token confinement, safe text-only
+rendering, shell-only placeholder scope, clean current history, and the real
+browser focus proof that closed the final reserved accessibility point.
+
+### Phase 14 known limitations
+
+- Console destinations are deliberate shell placeholders and do not claim
+  the product workflows assigned to Phases 16 through 18.
+- Typed API ownership, normalized query keys, cache invalidation, durable/live
+  reducers, reconnecting SSE, and advisory telemetry clients remain Phase 15.
+- The required browser acceptance lane is Chromium; the broader release
+  browser matrix remains assigned to later release verification.
+
 ## Advancement rule
 
-Phase 13 is accepted on top of accepted Phase 12. Phase 14 may begin from the
-accepted Phase 13 integration commit and may merge only after its own
+Phase 14 is accepted on top of accepted Phase 13. Phase 15 may begin from the
+accepted Phase 14 integration commit and may merge only after its own
 complete gate and remote CI pass; acceptance of a later phase does not bypass
 acceptance of its prerequisites.
