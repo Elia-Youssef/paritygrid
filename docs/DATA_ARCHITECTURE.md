@@ -160,6 +160,11 @@ corrected bounded result may be submitted.
 
 - Scope, key, canonical request hash, status, and stored logical response.
 - Reusing a key with a different request hash is a conflict.
+- An in-progress reservation reuses mutable `updated_at` as its durable lease
+  generation. After the bounded lease expires, exactly one identical retry
+  atomically advances that generation and becomes the exclusive reclaimer;
+  concurrent losers fail closed. Terminalization compares the exact claimed
+  generation, and terminal rows remain immutable and replay byte-for-byte.
 
 ### `artifact_manifests`
 

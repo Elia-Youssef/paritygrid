@@ -48,6 +48,7 @@ from paritygrid.application.execution.concurrent_lifecycle import (
     ConcurrentLifecycleCoordinator,
     ConcurrentLifecycleError,
     ConcurrentLifecycleRejectedError,
+    ConcurrentLifecycleReport,
     ConcurrentPausedProof,
     ConcurrentPauseSignal,
 )
@@ -409,6 +410,16 @@ class ConcurrentRunEngine:
         return self._scheduler.frontier
 
     @property
+    def run_id(self) -> RunId:
+        """Return the exact durable run identity this engine owns."""
+        return RunId(self._run_id)
+
+    @property
+    def last_lifecycle_report(self) -> ConcurrentLifecycleReport | None:
+        """Return the latest durable lifecycle receipt from this owner."""
+        return self._lifecycle.last_report
+
+    @property
     def in_flight_identities(self) -> tuple[WorkIdentity, ...]:
         """Return every currently admitted identity in deterministic order."""
         return tuple(sorted(self._in_flight, key=WorkIdentity.sort_key))
@@ -434,10 +445,11 @@ class ConcurrentRunEngine:
             raise ConcurrentEngineStateError("a started engine cannot restore its frontier")
         self._scheduler.restore(frontier)
 
-    def request_pause(self) -> None:
+    def request_pause(self, *, correlation_id: str | None = None) -> None:
         """Install one pause request from any thread."""
         if self._shutdown_done:
             raise ConcurrentEngineStateError("a shut-down engine cannot pause")
+        self._lifecycle.set_correlation_id(correlation_id)
         generation = self._scheduler.frontier.control_generation.value
         self._pause_signal.request(generation)
 
@@ -506,11 +518,17 @@ class ConcurrentRunEngine:
                             )
                     self._drain_results(block=True)
 
-    def resume(self, proof: ConcurrentPausedProof) -> None:
+    def resume(
+        self,
+        proof: ConcurrentPausedProof,
+        *,
+        correlation_id: str | None = None,
+    ) -> None:
         """Resume one durably paused engine run."""
         reservation = self._pause_reservation
         if reservation is None:
             raise ConcurrentEngineStateError("resume requires the engine's pause reservation")
+        self._lifecycle.set_correlation_id(correlation_id)
         self._lifecycle.resume(
             proof,
             lease_service=self._lease_service,
@@ -519,6 +537,13 @@ class ConcurrentRunEngine:
         )
         self._scheduler.resume()
         self._pause_reservation = None
+
+    def request_cancellation(self, *, correlation_id: str | None = None) -> None:
+        """Request owned cancellation with the request correlation identity."""
+        if self._shutdown_done:
+            raise ConcurrentEngineStateError("a shut-down engine cannot cancel")
+        self._lifecycle.set_correlation_id(correlation_id)
+        self._cancel.request()
 
     def cleanup(self) -> None:
         """Run the bounded idempotent cleanup for every owned resource."""

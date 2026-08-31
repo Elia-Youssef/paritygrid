@@ -64,9 +64,20 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
         started_at: UtcTimestamp,
     ) -> IdempotencyBeginResult:
         self._require_transaction()
-        identity = _require_identity(scope, key)
+        return self._start_or_replay(
+            _require_identity(scope, key),
+            request=request,
+            started_at=require_timestamp(started_at, "idempotency start time"),
+        )
+
+    def _start_or_replay(
+        self,
+        identity: tuple[str, str],
+        *,
+        request: ConfigurationDocument,
+        started_at: UtcTimestamp,
+    ) -> IdempotencyBeginResult:
         request_value = require_document(request, "idempotency request")
-        started = require_timestamp(started_at, "idempotency start time")
         digest = request_digest(request_value)
         row = (
             self._session.execute(
@@ -78,8 +89,8 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
                     status=IdempotencyStatus.IN_PROGRESS.value,
                     response_schema_version=None,
                     response_json=None,
-                    created_at=str(started),
-                    updated_at=str(started),
+                    created_at=str(started_at),
+                    updated_at=str(started_at),
                     completed_at=None,
                 )
                 .on_conflict_do_nothing(
@@ -106,6 +117,84 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
         if existing.request_sha256 != digest:
             raise IdempotencyConflictError("idempotency identity has a different request")
         return IdempotencyBeginResult(_DISPOSITIONS[existing.record.status], existing.record, None)
+
+    @translate_consistency_storage_errors
+    def reclaim(
+        self,
+        *,
+        scope: str,
+        key: str,
+        request: ConfigurationDocument,
+        lease_expires_after_seconds: float,
+        now: UtcTimestamp,
+    ) -> IdempotencyBeginResult:
+        """Begin, replay, or reclaim one reservation under the bounded lease policy.
+
+        An expired in-progress row is claimed by atomically advancing its
+        ``updated_at`` lease generation. Exactly one concurrent reclaimer wins
+        that compare-and-set; every loser observes the new live generation and
+        fails closed. Terminalization is fenced by the winning generation.
+        """
+        self._require_transaction()
+        if (
+            type(lease_expires_after_seconds) is not float
+            or not lease_expires_after_seconds > 0.0
+            or lease_expires_after_seconds > 86_400.0
+        ):
+            raise ConsistencyInvalidRequestError("idempotency lease window is invalid")
+        observed_now = require_timestamp(now, "idempotency lease observation time")
+        identity = _require_identity(scope, key)
+        existing = self._get_stored(identity)
+        if existing is None:
+            return self._start_or_replay(
+                identity,
+                request=request,
+                started_at=require_timestamp(now, "idempotency start time"),
+            )
+        digest = request_digest(require_document(request, "idempotency request"))
+        if existing.request_sha256 != digest:
+            raise IdempotencyConflictError("idempotency identity has a different request")
+        record = existing.record
+        if record.status is not IdempotencyStatus.IN_PROGRESS:
+            return IdempotencyBeginResult(_DISPOSITIONS[record.status], record, None)
+        age_seconds = (observed_now.to_datetime() - record.updated_at.to_datetime()).total_seconds()
+        if age_seconds < lease_expires_after_seconds:
+            return IdempotencyBeginResult(
+                IdempotencyBeginDisposition.IN_PROGRESS_REPLAY, record, None
+            )
+        claimed = (
+            self._session.execute(
+                update(idempotency_records)
+                .where(
+                    idempotency_records.c.scope == identity[0],
+                    idempotency_records.c.idempotency_key == identity[1],
+                    idempotency_records.c.request_sha256 == digest,
+                    idempotency_records.c.status == IdempotencyStatus.IN_PROGRESS.value,
+                    idempotency_records.c.updated_at == str(record.updated_at),
+                )
+                .values(updated_at=str(observed_now))
+                .returning(*idempotency_records.c)
+            )
+            .mappings()
+            .one_or_none()
+        )
+        if claimed is not None:
+            stored = stored_idempotency_from_row(claimed)
+            return IdempotencyBeginResult(
+                IdempotencyBeginDisposition.RECLAIMED,
+                stored.record,
+                _reservation(stored),
+            )
+        # A concurrent terminalizer or reclaimer won the compare-and-set.
+        # Classify its durable result rather than admitting a second owner.
+        winner = self._require_stored(identity)
+        if winner.request_sha256 != digest:
+            raise IdempotencyConflictError("idempotency identity has a different request")
+        return IdempotencyBeginResult(
+            _DISPOSITIONS[winner.record.status],
+            winner.record,
+            None,
+        )
 
     @translate_consistency_storage_errors
     def get(self, *, scope: str, key: str) -> IdempotencyRecord | None:
@@ -221,8 +310,6 @@ class SqlAlchemyIdempotencyRepository(IdempotencyRepository):
         expected_update = require_timestamp(
             capability.updated_at, "idempotency reservation update time"
         )
-        if created != expected_update:
-            raise IdempotencyConflictError("idempotency reservation is not initial")
         schema_version = positive_int(
             response_schema_version, "idempotency response schema version"
         )

@@ -808,7 +808,7 @@ def test_idempotency_missing_pagination_stale_and_nonmonotonic_paths(
         tail = repository.list_in_progress(limit=1, after=page.next_cursor)
         assert len(tail.items) == 1
         assert tail.next_cursor is None
-        with pytest.raises(IdempotencyConflictError, match="not initial"):
+        with pytest.raises(ConsistencyStaleRowVersionError, match="update time is stale"):
             repository.complete(
                 IdempotencyReservation(
                     "scope-a",
@@ -1410,7 +1410,9 @@ def test_idempotency_reads_reject_raw_identity_and_in_progress_touch(
         SqlAlchemyIdempotencyRepository(session).list_in_progress(limit=10)
 
 
-def test_idempotency_reads_reject_touched_in_progress_record(database: SQLiteDatabase) -> None:
+def test_idempotency_reads_accept_advanced_in_progress_lease_generation(
+    database: SQLiteDatabase,
+) -> None:
     with database.transaction() as session:
         SqlAlchemyIdempotencyRepository(session).begin(
             scope="safe", key="safe-key", request=document(safe=True), started_at=timestamp(1)
@@ -1421,8 +1423,11 @@ def test_idempotency_reads_reject_touched_in_progress_record(database: SQLiteDat
             (str(timestamp(2)), "safe", "safe-key"),
         )
         connection.commit()
-    with database.transaction() as session, pytest.raises(ConsistencyCorruptionError):
-        SqlAlchemyIdempotencyRepository(session).get(scope="safe", key="safe-key")
+    with database.transaction() as session:
+        record = SqlAlchemyIdempotencyRepository(session).get(scope="safe", key="safe-key")
+    assert record is not None
+    assert record.status is IdempotencyStatus.IN_PROGRESS
+    assert record.updated_at == timestamp(2)
 
 
 def test_repository_row_version_capacity_is_rejected_before_sql(
