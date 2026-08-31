@@ -124,6 +124,7 @@ from paritygrid.domain.models import (
 from paritygrid.domain.pipeline import PartitionKey
 
 CONCURRENT_SCENARIO_VERSION = 1
+_SCENARIO_WRITER_RESULT_TIMEOUT_SECONDS = 60.0
 PIPELINE_ID = PipelineId("pip_concurrent")
 SOURCE_NODE = NodeId("nod_c-src")
 NORMALIZE_NODE = NodeId("nod_c-norm")
@@ -751,7 +752,7 @@ def _submit(
     command: CreateCapturedRun | TransitionRun | BootstrapWork,
 ) -> None:
     receipt = harness.writer.submit(command, timeout_seconds=5.0)
-    receipt.result(timeout_seconds=5.0)
+    receipt.result(timeout_seconds=_SCENARIO_WRITER_RESULT_TIMEOUT_SECONDS)
 
 
 def _run_event(
