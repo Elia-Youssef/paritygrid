@@ -181,6 +181,9 @@ corrected bounded result may be submitted.
 ### `repair_plans`
 
 - Exact reconciliation fingerprint, immutable contents, and controlled status.
+- Immutable source and target input identities plus policy, generation, normalization,
+  analysis, and query-version identities; these fields are part of canonical plan content
+  and cannot be changed after creation.
 - Proposed, approved, applying, applied, rejected, or failed.
 
 ### `repair_approvals`
@@ -200,6 +203,13 @@ corrected bounded result may be submitted.
 
 - Append-only administrative and security events.
 - Actor, operation, object, correlation ID, timestamp, and redacted structured detail.
+
+### `target_state_verifications`
+
+- One immutable independently observed target-state verification fact per observation.
+- Verification identity, run, optional repair plan, reconciliation fingerprint, and optional plan content fingerprint.
+- Observed fingerprint with its own explicit kind and version, expected fingerprint, verdict, observed and expected record counts, observed target version, timestamp, and redacted divergence evidence.
+- Verdicts are parity-holding, parity-divergent, or observation-failed; rows never update or delete.
 
 ## Required database constraints
 
@@ -238,8 +248,11 @@ Fingerprint fields name the fact they identify and store an explicit kind-specif
 fingerprint belongs to immutable planning metadata. `runs.execution_evidence_fingerprint` and
 `runs.execution_evidence_fingerprint_version` identify execution finalization evidence. Reconciliation
 summaries retain the independently computed reconciliation fingerprint and analytical query version.
-Target-state verification stores its own canonical fingerprint and input identity when Phase 11 adds
-that fact. These values are not aliases and must not be copied between kinds.
+Target-state verification stores its own canonical fingerprint and input identity in
+`target_state_verifications` with an explicit kind, fingerprint version, and observation version.
+These values are not aliases and must not be copied between kinds. Repair fencing requires that a run
+finalized its execution evidence, but it never compares or equates the execution-evidence and
+reconciliation fingerprints.
 
 The current Phase 6 finalization document is execution-evidence version 2. The first Phase 7 migration
 renames the former `runs.final_reconciliation_fingerprint` storage meaning, adds the explicit version,

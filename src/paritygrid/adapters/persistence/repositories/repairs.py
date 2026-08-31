@@ -44,6 +44,7 @@ from paritygrid.adapters.persistence.schema import (
 )
 from paritygrid.application.ports.consistency import RedactedDocument
 from paritygrid.application.ports.repair_audit import (
+    MAX_PERSISTED_INTEGER,
     AppliedRepairAction,
     RepairActionCursor,
     RepairActionEffect,
@@ -82,7 +83,7 @@ from paritygrid.domain.models import (
     UtcTimestamp,
 )
 from paritygrid.domain.reconciliation import ReconciliationClassification
-from paritygrid.domain.repair import RepairActionKind, RepairPlan
+from paritygrid.domain.repair import RepairActionKind, RepairPlan, RepairPlanBinding
 
 
 class SqlAlchemyRepairRepository(RepairRepository):
@@ -113,7 +114,15 @@ class SqlAlchemyRepairRepository(RepairRepository):
             action_id: portable_identity(key, "external repair key", 128)
             for action_id, key in key_map.items()
         }
-        self._validate_summary(run, domain_plan.state_fingerprint, timestamp)
+        binding = domain_plan.binding
+        if binding is None:
+            raise RepairInvalidRequestError("repair plan requires an immutable generation binding")
+        if (
+            binding.run_id != run
+            or binding.reconciliation_fingerprint != domain_plan.state_fingerprint
+        ):
+            raise RepairInvalidRequestError("repair plan binding does not match command identities")
+        self._validate_summary(run, domain_plan.state_fingerprint, timestamp, binding)
         effects = tuple(RepairActionEffect.from_action(action) for action in domain_plan.actions)
         self._validate_conflicts(run, effects)
         content = plan_content_fingerprint(domain_plan)
@@ -124,6 +133,14 @@ class SqlAlchemyRepairRepository(RepairRepository):
                 run_id=run.value,
                 reconciliation_fingerprint=domain_plan.state_fingerprint.value,
                 content_fingerprint=content.value,
+                source_input_identity=binding.source_input_identity,
+                target_input_identity=binding.target_input_identity,
+                policy_version=binding.policy_version,
+                generation_version=binding.generation_version,
+                rules_version=binding.rules_version,
+                analysis_version=binding.analysis_version,
+                analytical_query_version=binding.analytical_query_version,
+                action_count=binding.action_count,
                 status=RepairPlanStatus.PROPOSED.value,
                 row_version=1,
                 created_at=str(timestamp),
@@ -177,6 +194,25 @@ class SqlAlchemyRepairRepository(RepairRepository):
         self._require_transaction()
         identity = require_exact(repair_plan_id, RepairPlanId, "repair-plan identifier")
         return self._get_aggregate(identity)
+
+    @translate_repair_storage_errors
+    def record_application_attempt(
+        self,
+        reservation: RepairApplicationReservation,
+        repair_action_id: RepairActionId,
+    ) -> RepairPlanAggregate:
+        """Fence a nonterminal external-attempt audit fact on the current reservation."""
+        self._require_transaction()
+        claim = require_exact(
+            reservation, RepairApplicationReservation, "repair application reservation"
+        )
+        action = require_exact(repair_action_id, RepairActionId, "repair action identifier")
+        aggregate = self._require_claim(claim)
+        self._require_claim_frontier(aggregate.plan, claim)
+        stored = _find_action(aggregate, action)
+        if stored.status is not RepairActionStatus.PENDING:
+            raise RepairApplicationConflictError("repair action is no longer pending")
+        return aggregate
 
     @translate_repair_storage_errors
     def list_for_run(
@@ -695,15 +731,23 @@ class SqlAlchemyRepairRepository(RepairRepository):
         )
 
     def _validate_summary(
-        self, run: RunId, fingerprint: StateFingerprint, created_at: UtcTimestamp
+        self,
+        run: RunId,
+        fingerprint: StateFingerprint,
+        created_at: UtcTimestamp,
+        binding: RepairPlanBinding,
     ) -> None:
         row = (
             self._session.execute(
                 select(
                     reconciliation_summaries.c.reconciliation_fingerprint,
+                    reconciliation_summaries.c.source_fingerprint,
+                    reconciliation_summaries.c.target_fingerprint,
+                    reconciliation_summaries.c.analytical_query_version,
                     reconciliation_summaries.c.created_at,
                     runs.c.state.label("run_state"),
                     runs.c.execution_evidence_fingerprint,
+                    runs.c.execution_evidence_fingerprint_version,
                 )
                 .join(runs, runs.c.run_id == reconciliation_summaries.c.run_id)
                 .where(reconciliation_summaries.c.run_id == run.value)
@@ -716,10 +760,20 @@ class SqlAlchemyRepairRepository(RepairRepository):
         stored = stored_fingerprint(
             row["reconciliation_fingerprint"], "reconciliation summary fingerprint"
         )
-        self._validate_run_fingerprint(cast(Mapping[str, object], row), stored)
+        self._validate_run_finalization(cast(Mapping[str, object], row))
         summary_at = stored_timestamp(row["created_at"], "reconciliation summary time")
         if stored != fingerprint:
             raise RepairStateConflictError("repair plan reconciliation is stale")
+        if (
+            stored_fingerprint(row["source_fingerprint"], "reconciliation source fingerprint").value
+            != binding.source_input_identity
+            or stored_fingerprint(
+                row["target_fingerprint"], "reconciliation target fingerprint"
+            ).value
+            != binding.target_input_identity
+            or row["analytical_query_version"] != binding.analytical_query_version
+        ):
+            raise RepairStateConflictError("repair plan binding does not match reconciliation")
         self._require_monotonic(created_at, summary_at, "repair-plan creation time")
 
     def _validate_conflicts(self, run: RunId, effects: tuple[RepairActionEffect, ...]) -> None:
@@ -781,6 +835,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
             aggregate.plan.run_id != run
             or aggregate.plan.reconciliation_fingerprint != plan.state_fingerprint
             or aggregate.plan.content_fingerprint != content
+            or aggregate.plan.binding != plan.binding
             or aggregate.plan.created_at != created_at
             or aggregate.plan.status is not RepairPlanStatus.PROPOSED
             or tuple(action.effect for action in aggregate.actions) != expected_effects
@@ -820,6 +875,7 @@ class SqlAlchemyRepairRepository(RepairRepository):
                     reconciliation_summaries.c.reconciliation_fingerprint,
                     runs.c.state.label("run_state"),
                     runs.c.execution_evidence_fingerprint,
+                    runs.c.execution_evidence_fingerprint_version,
                 )
                 .join(runs, runs.c.run_id == reconciliation_summaries.c.run_id)
                 .where(reconciliation_summaries.c.run_id == plan.run_id.value)
@@ -832,14 +888,21 @@ class SqlAlchemyRepairRepository(RepairRepository):
         summary = stored_fingerprint(
             row["reconciliation_fingerprint"], "reconciliation summary fingerprint"
         )
-        self._validate_run_fingerprint(cast(Mapping[str, object], row), summary)
+        self._validate_run_finalization(cast(Mapping[str, object], row))
         if summary != plan.reconciliation_fingerprint:
             raise RepairCorruptionError("repair reconciliation relationship is corrupt")
         if current != summary:
             raise RepairStateConflictError("repair plan reconciliation is stale")
 
     @staticmethod
-    def _validate_run_fingerprint(row: Mapping[str, object], summary: StateFingerprint) -> None:
+    def _validate_run_finalization(row: Mapping[str, object]) -> None:
+        """Fence repairs on a completed run without aliasing fingerprint kinds.
+
+        The execution-evidence fingerprint proves this run finalized its
+        durable execution evidence. It is a different fingerprint kind from
+        the reconciliation snapshot: the two identify separate facts, are
+        never compared, and are never copied between columns.
+        """
         state_value = row["run_state"]
         if type(state_value) is not str:
             raise RepairCorruptionError("repair run state is corrupt")
@@ -850,11 +913,14 @@ class SqlAlchemyRepairRepository(RepairRepository):
         if state not in {RunState.SUCCEEDED, RunState.PARTIALLY_SUCCEEDED}:
             raise RepairStateConflictError("repair run has not completed reconciliation")
         fingerprint_value = row["execution_evidence_fingerprint"]
-        if fingerprint_value is None:
-            raise RepairCorruptionError("repair run final fingerprint is missing")
-        final = stored_fingerprint(fingerprint_value, "repair run final fingerprint")
-        if final != summary:
-            raise RepairCorruptionError("repair run and summary fingerprints diverge")
+        version_value = row["execution_evidence_fingerprint_version"]
+        if fingerprint_value is None or version_value is None:
+            raise RepairCorruptionError("repair run execution-evidence fingerprint is missing")
+        stored_fingerprint(fingerprint_value, "repair run execution-evidence fingerprint")
+        if type(version_value) is not int or not 1 <= version_value <= MAX_PERSISTED_INTEGER:
+            raise RepairCorruptionError(
+                "repair run execution-evidence fingerprint version is corrupt"
+            )
 
     def _require_transition(
         self, plan: RepairPlanRecord, expected: int, status: RepairPlanStatus

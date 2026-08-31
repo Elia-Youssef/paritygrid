@@ -1,0 +1,136 @@
+"""Safe, approved, idempotent repair application and target verification."""
+
+from paritygrid.application.repair.applier import (
+    AppliedEffect,
+    AppliedEffectEvidence,
+    RepairApplicationDisposition,
+    RepairApplicationPolicy,
+    RepairApplicationReport,
+    RepairApplicationService,
+)
+from paritygrid.application.repair.approval import (
+    APPROVAL_SCHEMA_VERSION,
+    RepairApprovalOutcome,
+    RepairApprovalRequest,
+    RepairApprovalService,
+)
+from paritygrid.application.repair.companions import (
+    MutationFrontier,
+    build_companions,
+    frontier_from_evidence,
+)
+from paritygrid.application.repair.errors import (
+    RepairApprovalConflictError,
+    # re-exported for the approval fence
+    RepairPlanMismatchError,
+    RepairPlanStateError,
+    RepairReconciliationMissingError,
+    RepairReconciliationStaleError,
+    RepairRunNotFoundError,
+    RepairWorkflowError,
+    RepairWriterOutcomeUnknownError,
+    RepairWriterUnavailableError,
+    TargetApplicationError,
+    TargetApplicationInterruptedError,
+    TargetApplicationUnresolvedError,
+)
+from paritygrid.application.repair.evidence import RepairWorkflowEvidence, RepairWorkflowReader
+from paritygrid.application.repair.identities import (
+    derive_action_id,
+    derive_action_idempotency_key,
+    derive_conflict_id,
+    derive_plan_id,
+    derive_verification_id,
+)
+from paritygrid.application.repair.payloads import (
+    ObservedTargetPayload,
+    parse_observed_payload,
+    render_effect_payload,
+    render_target_payload,
+)
+from paritygrid.application.repair.planning import (
+    REPAIR_GENERATION_POLICY_VERSION,
+    REPAIR_GENERATION_VERSION,
+    REPAIRABLE_CLASSIFICATIONS,
+    GeneratedRepairPlan,
+    RepairPlanBinding,
+    generate_repair_plan,
+    repairable_action_kinds,
+    validate_safe_action_matrix,
+)
+from paritygrid.application.repair.planning_service import CreatedRepairPlan, RepairPlanningService
+from paritygrid.application.repair.reconciliation_service import (
+    PersistedReconciliationOutcome,
+    ReconciliationResultService,
+    build_persisted_conflicts,
+)
+from paritygrid.application.repair.verification import (
+    ExpectedInventory,
+    InventoryDivergence,
+    TargetObservationDisposition,
+    TargetParityVerifier,
+    TargetVerificationReport,
+    TargetVerificationService,
+    build_expected_inventory,
+    expected_fingerprint,
+)
+
+__all__ = [
+    "APPROVAL_SCHEMA_VERSION",
+    "REPAIRABLE_CLASSIFICATIONS",
+    "REPAIR_GENERATION_POLICY_VERSION",
+    "REPAIR_GENERATION_VERSION",
+    "AppliedEffect",
+    "AppliedEffectEvidence",
+    "CreatedRepairPlan",
+    "ExpectedInventory",
+    "GeneratedRepairPlan",
+    "InventoryDivergence",
+    "MutationFrontier",
+    "ObservedTargetPayload",
+    "PersistedReconciliationOutcome",
+    "ReconciliationResultService",
+    "RepairApplicationDisposition",
+    "RepairApplicationPolicy",
+    "RepairApplicationReport",
+    "RepairApplicationService",
+    "RepairApprovalConflictError",
+    "RepairApprovalOutcome",
+    "RepairApprovalRequest",
+    "RepairApprovalService",
+    "RepairPlanBinding",
+    "RepairPlanMismatchError",
+    "RepairPlanStateError",
+    "RepairPlanningService",
+    "RepairReconciliationMissingError",
+    "RepairReconciliationStaleError",
+    "RepairRunNotFoundError",
+    "RepairWorkflowError",
+    "RepairWorkflowEvidence",
+    "RepairWorkflowReader",
+    "RepairWriterOutcomeUnknownError",
+    "RepairWriterUnavailableError",
+    "TargetApplicationError",
+    "TargetApplicationInterruptedError",
+    "TargetApplicationUnresolvedError",
+    "TargetObservationDisposition",
+    "TargetParityVerifier",
+    "TargetVerificationReport",
+    "TargetVerificationService",
+    "build_companions",
+    "build_expected_inventory",
+    "build_persisted_conflicts",
+    "derive_action_id",
+    "derive_action_idempotency_key",
+    "derive_conflict_id",
+    "derive_plan_id",
+    "derive_verification_id",
+    "expected_fingerprint",
+    "frontier_from_evidence",
+    "generate_repair_plan",
+    "parse_observed_payload",
+    "render_effect_payload",
+    "render_target_payload",
+    "repairable_action_kinds",
+    "validate_safe_action_matrix",
+]

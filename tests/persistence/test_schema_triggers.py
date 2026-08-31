@@ -49,6 +49,14 @@ EXPECTED_IMMUTABLE_COLUMNS = {
         "run_id",
         "reconciliation_fingerprint",
         "content_fingerprint",
+        "source_input_identity",
+        "target_input_identity",
+        "policy_version",
+        "generation_version",
+        "rules_version",
+        "analysis_version",
+        "analytical_query_version",
+        "action_count",
         "created_at",
     ),
     "repair_actions": (
@@ -165,8 +173,8 @@ def test_trigger_names_and_sql_are_unique_deterministic_and_migration_ready() ->
     assert names == tuple(sorted(names))
     assert len(names) == len(set(names))
     assert category_counts == {
-        "delete": 21,
-        "whole_update": 10,
+        "delete": 22,
+        "whole_update": 11,
         "immutable_columns": 11,
         "monotonic": 2,
         "terminal": 3,
@@ -332,8 +340,26 @@ def test_installed_repair_plan_terminal_guard_rejects_no_op_updates(
         connection.exec_driver_sql(
             "INSERT INTO repair_plans "
             "(repair_plan_id, run_id, reconciliation_fingerprint, content_fingerprint, "
-            "status, row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("rpl_alpha", "run_alpha", HASH_A, HASH_B, "proposed", 1, UTC),
+            "source_input_identity, target_input_identity, policy_version, generation_version, "
+            "rules_version, analysis_version, analytical_query_version, action_count, status, "
+            "row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "rpl_alpha",
+                "run_alpha",
+                HASH_A,
+                HASH_B,
+                HASH_A,
+                HASH_A,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                "proposed",
+                1,
+                UTC,
+            ),
         )
         connection.exec_driver_sql(
             "UPDATE repair_plans SET status = 'approved', row_version = 2 "
@@ -366,8 +392,26 @@ def test_installed_repair_action_terminal_guard_rejects_no_op_updates(
         connection.exec_driver_sql(
             "INSERT INTO repair_plans "
             "(repair_plan_id, run_id, reconciliation_fingerprint, content_fingerprint, "
-            "status, row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            ("rpl_alpha", "run_alpha", HASH_A, HASH_B, "approved", 1, UTC),
+            "source_input_identity, target_input_identity, policy_version, generation_version, "
+            "rules_version, analysis_version, analytical_query_version, action_count, status, "
+            "row_version, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "rpl_alpha",
+                "run_alpha",
+                HASH_A,
+                HASH_B,
+                HASH_A,
+                HASH_A,
+                1,
+                1,
+                1,
+                1,
+                1,
+                0,
+                "approved",
+                1,
+                UTC,
+            ),
         )
         connection.exec_driver_sql(
             "INSERT INTO repair_actions "

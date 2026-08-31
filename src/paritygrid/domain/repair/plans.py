@@ -1,5 +1,6 @@
 """Safe repair actions bound to an exact reconciliation state."""
 
+import re
 from collections.abc import Hashable, Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -11,6 +12,7 @@ from paritygrid.domain.models import (
     InventoryRecord,
     RepairActionId,
     RepairPlanId,
+    RunId,
     StateFingerprint,
 )
 from paritygrid.domain.reconciliation import (
@@ -19,6 +21,48 @@ from paritygrid.domain.reconciliation import (
     ReconciliationOutcome,
     differences_between,
 )
+
+_SHA256 = re.compile(r"[0-9a-f]{64}")
+
+
+@dataclass(frozen=True, slots=True)
+class RepairPlanBinding:
+    """Immutable source, target, and policy identity for one repair plan."""
+
+    run_id: RunId
+    reconciliation_fingerprint: StateFingerprint
+    source_input_identity: str
+    target_input_identity: str
+    policy_version: int
+    generation_version: int
+    rules_version: int
+    analysis_version: int
+    analytical_query_version: int
+    action_count: int
+
+    def __post_init__(self) -> None:
+        if (
+            type(self.run_id) is not RunId
+            or type(self.reconciliation_fingerprint) is not StateFingerprint
+        ):
+            raise TypeError("repair-plan binding identities are invalid")
+        for value in (self.source_input_identity, self.target_input_identity):
+            if type(value) is not str or _SHA256.fullmatch(value) is None:
+                raise ValueError("repair-plan binding input identity is invalid")
+        for value in (
+            self.policy_version,
+            self.generation_version,
+            self.rules_version,
+            self.analysis_version,
+            self.analytical_query_version,
+        ):
+            if type(value) is not int or value < 1:
+                raise ValueError("repair-plan binding version is invalid")
+        if (
+            type(self.action_count) is not int
+            or not 0 <= self.action_count <= RepairPlan.MAX_ACTIONS
+        ):
+            raise ValueError("repair-plan binding action count is invalid")
 
 
 class RepairActionKind(StrEnum):
@@ -109,6 +153,7 @@ class RepairPlan:
     plan_id: RepairPlanId
     state_fingerprint: StateFingerprint
     actions: tuple[RepairAction, ...]
+    binding: RepairPlanBinding | None = None
 
     def __post_init__(self) -> None:
         _require_type(self.plan_id, RepairPlanId, field_name="plan_id")
@@ -133,6 +178,13 @@ class RepairPlan:
         _require_unique((action.action_id for action in actions), subject="action identities")
         _require_unique((action.conflict_id for action in actions), subject="conflict identities")
         _require_unique((action.sku for action in actions), subject="inventory keys")
+        if self.binding is not None:
+            _require_type(self.binding, RepairPlanBinding, field_name="binding")
+            if (
+                self.binding.reconciliation_fingerprint != self.state_fingerprint
+                or self.binding.action_count != len(actions)
+            ):
+                raise ValueError("repair-plan binding does not match plan contents")
         object.__setattr__(self, "actions", tuple(sorted(actions, key=_action_order_key)))
 
     def is_current(self, current_fingerprint: object) -> bool:

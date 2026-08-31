@@ -14,6 +14,7 @@ from paritygrid.domain.models import (
     Money,
     RepairActionId,
     RepairPlanId,
+    RunId,
     StateFingerprint,
     UtcTimestamp,
 )
@@ -22,6 +23,7 @@ from paritygrid.domain.repair import (
     RepairAction,
     RepairActionKind,
     RepairPlan,
+    RepairPlanBinding,
     StaleRepairPlanError,
 )
 
@@ -311,3 +313,49 @@ def test_plan_state_checks_reject_unvalidated_fingerprints() -> None:
         plan.is_current("1" * 64)
     with pytest.raises(TypeError, match="StateFingerprint"):
         plan.require_current("1" * 64)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "error"),
+    [
+        ("source_input_identity", "not-a-digest", ValueError),
+        ("policy_version", 0, ValueError),
+        ("action_count", -1, ValueError),
+    ],
+)
+def test_plan_binding_rejects_invalid_generation_values(
+    field: str, value: object, error: type[Exception]
+) -> None:
+    values: dict[str, object] = {
+        "run_id": RunId("run_binding-001"),
+        "reconciliation_fingerprint": CURRENT,
+        "source_input_identity": "a" * 64,
+        "target_input_identity": "b" * 64,
+        "policy_version": 1,
+        "generation_version": 1,
+        "rules_version": 1,
+        "analysis_version": 1,
+        "analytical_query_version": 1,
+        "action_count": 1,
+    }
+    values[field] = value
+    with pytest.raises(error):
+        RepairPlanBinding(**values)  # type: ignore[arg-type]
+
+
+def test_plan_binding_must_match_plan_state_and_action_count() -> None:
+    action = _create_action()
+    binding = RepairPlanBinding(
+        run_id=RunId("run_binding-001"),
+        reconciliation_fingerprint=STALE,
+        source_input_identity="a" * 64,
+        target_input_identity="b" * 64,
+        policy_version=1,
+        generation_version=1,
+        rules_version=1,
+        analysis_version=1,
+        analytical_query_version=1,
+        action_count=2,
+    )
+    with pytest.raises(ValueError, match="binding does not match"):
+        RepairPlan(RepairPlanId("rpl_binding-001"), CURRENT, (action,), binding)

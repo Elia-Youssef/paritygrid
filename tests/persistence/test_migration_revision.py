@@ -28,11 +28,14 @@ from paritygrid.adapters.persistence.migration import (
 from paritygrid.adapters.persistence.schema import metadata
 from paritygrid.adapters.persistence.triggers import install_integrity_triggers
 
-REVISION_PATH = (
+INITIAL_REVISION_PATH = (
     Path(__file__).parents[2]
     / "src/paritygrid/adapters/persistence/migrations/versions/0001_operational.py"
 )
 ROOT = Path(__file__).parents[2]
+PHASE_11_REVISION_PATH = (
+    ROOT / "src/paritygrid/adapters/persistence/migrations/versions/0003_repair_verification.py"
+)
 TEMPLATE_PATH = ROOT / "src/paritygrid/adapters/persistence/migrations/script.py.mako"
 
 
@@ -71,11 +74,13 @@ def test_packaged_history_has_one_initial_head(engine: Engine) -> None:
     assert script.get_heads() == [HEAD_REVISION]
     revision = script.get_revision(HEAD_REVISION)
     assert revision.revision == HEAD_REVISION
-    assert revision.down_revision == "0001_operational"
+    assert revision.down_revision == "0002_execution_evidence"
 
 
 def test_revision_is_self_contained_and_has_fixed_statement_inventory() -> None:
-    tree = ast.parse(REVISION_PATH.read_text(encoding="utf-8"), filename=str(REVISION_PATH))
+    tree = ast.parse(
+        INITIAL_REVISION_PATH.read_text(encoding="utf-8"), filename=str(INITIAL_REVISION_PATH)
+    )
     imported_modules = {
         node.module
         for node in ast.walk(tree)
@@ -91,6 +96,49 @@ def test_revision_is_self_contained_and_has_fixed_statement_inventory() -> None:
     assert sum(value.startswith("CREATE TABLE") for value in string_values) == 21
     assert sum(value.startswith("CREATE INDEX") for value in string_values) == 27
     assert sum(value.startswith("CREATE TRIGGER") for value in string_values) == 47
+
+
+def test_phase_11_revision_is_self_contained_and_has_fixed_statement_inventory() -> None:
+    tree = ast.parse(
+        PHASE_11_REVISION_PATH.read_text(encoding="utf-8"), filename=str(PHASE_11_REVISION_PATH)
+    )
+    imported_modules = {
+        node.module
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module is not None
+    }
+    string_values = [
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str)
+    ]
+    assigned_names = {
+        target.id
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Name)
+    }
+
+    assert imported_modules == {"alembic"}
+    assert not any(module.startswith("paritygrid") for module in imported_modules)
+    assert not any(module.startswith("sqlalchemy") for module in imported_modules)
+    assert any(value.lstrip().startswith("CREATE TABLE repair_plans (") for value in string_values)
+    assert any(
+        value.startswith("CREATE TABLE target_state_verifications (") for value in string_values
+    )
+    assert sum(value.startswith("CREATE INDEX") for value in string_values) == 4
+    assert sum(value.startswith("CREATE TRIGGER") for value in string_values) == 5
+    assert (
+        sum(value.startswith("ALTER TABLE repair_plans ADD COLUMN") for value in string_values) == 8
+    )
+    assert {
+        "_REPAIR_PLANS_STAGING_NAME",
+        "_REPAIR_PLANS_STAGING_PREFIX",
+        "_COPY_REPAIR_PLANS_TO_STAGING",
+        "_COPY_REPAIR_PLANS_FROM_STAGING",
+        "_REPAIR_PLAN_BACKFILL",
+    } <= assigned_names
 
 
 def test_future_revision_template_never_renders_noop_downgrade() -> None:
@@ -144,14 +192,14 @@ def test_fresh_upgrade_installs_exact_structural_baseline(engine: Engine) -> Non
         connection.rollback()
 
     assert report == MigrationReport(None, HEAD_REVISION, HEAD_REVISION)
-    assert len(table_names) == 21
-    assert column_count == 212
-    assert primary_key_count == 21
+    assert len(table_names) == 22
+    assert column_count == 234
+    assert primary_key_count == 22
     assert unique_count == 11
-    assert foreign_key_count == 18
-    assert check_count == 211
-    assert len(indexes) == 27
-    assert trigger_count == 47
+    assert foreign_key_count == 21
+    assert check_count == 233
+    assert len(indexes) == 30
+    assert trigger_count == 49
     assert sum("sqlite_where" in index.get("dialect_options", {}) for index in indexes) == 1
 
 
@@ -397,7 +445,7 @@ def test_root_alembic_heads_works_from_arbitrary_cwd(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0, result.stderr
-    assert result.stdout.strip() == "0002_execution_evidence (head)"
+    assert result.stdout.strip() == "0003_repair_verification (head)"
     assert tuple(tmp_path.iterdir()) == ()
 
 
@@ -446,7 +494,7 @@ from paritygrid.adapters.persistence.migration import upgrade_to_head
 engine = create_engine(f"sqlite+pysqlite:///{Path(sys.argv[2])}")
 with engine.connect() as connection:
     report = upgrade_to_head(connection)
-    assert report.current_revision == "0002_execution_evidence"
+    assert report.current_revision == "0003_repair_verification"
     table_count = connection.exec_driver_sql(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' "
         "AND name NOT LIKE 'sqlite_%' AND name <> 'alembic_version'"
@@ -454,8 +502,8 @@ with engine.connect() as connection:
     trigger_count = connection.exec_driver_sql(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
     ).scalar_one()
-    assert table_count == 21
-    assert trigger_count == 47
+    assert table_count == 22
+    assert trigger_count == 49
 engine.dispose()
 """
     result = subprocess.run(

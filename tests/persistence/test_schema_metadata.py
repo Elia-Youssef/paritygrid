@@ -42,6 +42,7 @@ EXPECTED_TABLES = {
     "repair_approvals",
     "repair_actions",
     "audit_entries",
+    "target_state_verifications",
 }
 
 
@@ -156,7 +157,7 @@ from paritygrid.adapters.persistence.schema import OPERATIONAL_TABLE_NAMES
 before = tuple(sorted(path.name for path in Path.cwd().iterdir()))
 configure_mappers()
 after = tuple(sorted(path.name for path in Path.cwd().iterdir()))
-assert len(OPERATIONAL_TABLE_NAMES) == 21
+assert len(OPERATIONAL_TABLE_NAMES) == 22
 assert after == before
 """
     result = subprocess.run(

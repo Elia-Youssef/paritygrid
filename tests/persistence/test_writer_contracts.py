@@ -37,6 +37,12 @@ from paritygrid.application.writes.execution import (
     TransitionRun,
     TransitionRunResult,
 )
+from paritygrid.application.writes.reconciliation import (
+    PersistReconciliation,
+    PersistReconciliationResult,
+    RecordTargetVerification,
+    RecordTargetVerificationResult,
+)
 from paritygrid.application.writes.repairs import (
     ApproveRepairPlan,
     BeginRepairApplication,
@@ -44,6 +50,7 @@ from paritygrid.application.writes.repairs import (
     CompleteRepairApplication,
     CreateRepairPlan,
     RecordRepairActionApplied,
+    RecordRepairActionAttempt,
     RecordRepairActionFailed,
     RejectRepairPlan,
     RepairActionAppliedResult,
@@ -104,9 +111,12 @@ def test_all_command_and_result_markers_are_closed() -> None:
         ApproveRepairPlan,
         RejectRepairPlan,
         BeginRepairApplication,
+        RecordRepairActionAttempt,
         RecordRepairActionApplied,
         RecordRepairActionFailed,
         CompleteRepairApplication,
+        PersistReconciliation,
+        RecordTargetVerification,
     )
     result_types = (
         CreateCapturedRunResult,
@@ -118,6 +128,8 @@ def test_all_command_and_result_markers_are_closed() -> None:
         FinalizeEmptyRunNodeResult,
         BeginRepairApplicationResult,
         RepairActionAppliedResult,
+        PersistReconciliationResult,
+        RecordTargetVerificationResult,
     )
     command_kinds = {
         cast(WriterCommand, object.__new__(command_type)).kind for command_type in command_types

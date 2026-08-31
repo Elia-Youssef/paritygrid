@@ -638,7 +638,7 @@ def _validate_reopened_database(connection: Connection) -> None:
     if pragmas != (1, "wal", 2, 5_000):
         raise CrashDatabaseIntegrityError("SQLite durability pragmas changed after reopen")
     version_rows = _rows(connection, "SELECT version_num FROM alembic_version")
-    if version_rows != (("0002_execution_evidence",),):
+    if version_rows != (("0003_repair_verification",),):
         raise CrashDatabaseIntegrityError("migration version is invalid after reopen")
     operational_tables = connection.exec_driver_sql(
         "SELECT count(*) FROM sqlite_master WHERE type='table' "
@@ -647,7 +647,7 @@ def _validate_reopened_database(connection: Connection) -> None:
     trigger_count = connection.exec_driver_sql(
         "SELECT count(*) FROM sqlite_master WHERE type='trigger'"
     ).scalar_one()
-    if operational_tables != 21 or trigger_count != 47:
+    if operational_tables != 22 or trigger_count != 49:
         raise CrashDatabaseIntegrityError("schema inventory changed after reopen")
 
 

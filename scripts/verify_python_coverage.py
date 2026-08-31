@@ -37,6 +37,10 @@ RUNNER_COVERAGE_SCOPES = (
 RECONCILIATION_COVERAGE_SCOPES = (
     CoverageScope("reconciliation", "src/paritygrid/domain/reconciliation/", 95.0),
 )
+REPAIR_COVERAGE_SCOPES = (
+    CoverageScope("repair-workflow", "src/paritygrid/application/repair/", 95.0),
+    CoverageScope("repair-domain", "src/paritygrid/domain/repair/", 95.0),
+)
 
 
 def _mapping(value: object, subject: str) -> Mapping[str, object]:
@@ -102,6 +106,7 @@ def verify_coverage(data_file: Path) -> bool:
         *APPLICATION_COVERAGE_SCOPES,
         *RUNNER_COVERAGE_SCOPES,
         *RECONCILIATION_COVERAGE_SCOPES,
+        *REPAIR_COVERAGE_SCOPES,
     ):
         percentage = _scope_percentage(files, scope)
         scope_passed = percentage + 1e-9 >= scope.minimum

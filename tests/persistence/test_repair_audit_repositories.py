@@ -88,7 +88,7 @@ from paritygrid.domain.models import (
     StateFingerprint,
     UtcTimestamp,
 )
-from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan
+from paritygrid.domain.repair import RepairAction, RepairActionKind, RepairPlan, RepairPlanBinding
 
 PIPELINE_ID = PipelineId("pip_repair-tests")
 RUN_ID = RunId("run_repair-tests")
@@ -96,6 +96,7 @@ PLAN_ID = RepairPlanId("rpl_repair-tests")
 ACTION_ID = RepairActionId("rac_repair-tests")
 CONFLICT_ID = ConflictId("cnf_repair-tests")
 RECONCILIATION = StateFingerprint("4" * 64)
+EVIDENCE = StateFingerprint("5" * 64)
 
 
 @pytest.fixture
@@ -130,6 +131,23 @@ def record(*, sku: str = "HARBOR-LAMP", name: str = "Harbor Lamp") -> InventoryR
     )
 
 
+def binding(
+    count: int, reconciliation_fingerprint: StateFingerprint = RECONCILIATION
+) -> RepairPlanBinding:
+    return RepairPlanBinding(
+        run_id=RUN_ID,
+        reconciliation_fingerprint=reconciliation_fingerprint,
+        source_input_identity="1" * 64,
+        target_input_identity="2" * 64,
+        policy_version=1,
+        generation_version=1,
+        rules_version=1,
+        analysis_version=1,
+        analytical_query_version=1,
+        action_count=count,
+    )
+
+
 def plan() -> RepairPlan:
     return RepairPlan(
         plan_id=PLAN_ID,
@@ -143,6 +161,7 @@ def plan() -> RepairPlan:
                 proposed_record=record(),
             ),
         ),
+        binding=binding(1),
     )
 
 
@@ -184,7 +203,7 @@ def seed_reconciliation(database: SQLiteDatabase) -> None:
             expected_row_version=2,
             target_state=RunState.SUCCEEDED,
             transitioned_at=timestamp(1),
-            execution_evidence_fingerprint=RECONCILIATION,
+            execution_evidence_fingerprint=EVIDENCE,
             execution_evidence_fingerprint_version=2,
         )
         session.execute(
@@ -282,6 +301,7 @@ def second_plan() -> RepairPlan:
                 record(sku="SECOND-LAMP", name="Second Lamp"),
             ),
         ),
+        binding=binding(1),
     )
 
 
@@ -299,6 +319,7 @@ def update_plan() -> RepairPlan:
                 record(sku="UPDATE-LAMP", name="Old Lamp"),
             ),
         ),
+        binding=binding(1),
     )
 
 
@@ -307,17 +328,18 @@ def multi_plan() -> RepairPlan:
         RepairPlanId("rpl_multi-repair"),
         RECONCILIATION,
         (plan().actions[0], second_plan().actions[0]),
+        binding=binding(2),
     )
 
 
 def test_canonical_effect_projection_matches_original_plan_protocol() -> None:
     domain_plan = plan()
     effect = RepairActionEffect.from_action(domain_plan.actions[0])
-    assert effect_content_fingerprint(PLAN_ID, RECONCILIATION, (effect,)) == (
-        plan_content_fingerprint(domain_plan)
-    )
+    assert effect_content_fingerprint(
+        PLAN_ID, RECONCILIATION, (effect,), binding=domain_plan.binding
+    ) == (plan_content_fingerprint(domain_plan))
     assert plan_content_fingerprint(domain_plan).value == (
-        "cdf2fb7065338c116f6ebbf6cc3f19189743c1e42578f7d7d3b611ee813bcaf9"
+        "5c09a475f6c25deb9665361b4aaa6e1737116b71154daf0ebbafead6e594fa95"
     )
 
 
@@ -462,7 +484,38 @@ def test_repair_creation_rejects_a_nonterminal_run_parent(database: SQLiteDataba
 
 
 @pytest.mark.parametrize("operation", ["approve", "begin"])
-def test_freshness_rejects_run_and_summary_fingerprint_divergence(
+def test_freshness_keeps_execution_evidence_and_reconciliation_kinds_separate(
+    database: SQLiteDatabase, operation: str
+) -> None:
+    seed_reconciliation(database)
+    with database.transaction() as session:
+        repository = SqlAlchemyRepairRepository(session)
+        create_plan(repository)
+        if operation == "begin":
+            approve(repository)
+        # A changed execution-evidence fingerprint is a different fingerprint
+        # kind: it must not block repair fencing, and it must never be copied
+        # into or compared with the reconciliation identity.
+        session.execute(
+            sql_update(runs)
+            .where(runs.c.run_id == RUN_ID.value)
+            .values(execution_evidence_fingerprint="9" * 64)
+        )
+        if operation == "approve":
+            aggregate = approve(repository)
+        else:
+            begun = repository.begin_application(
+                PLAN_ID,
+                expected_row_version=2,
+                current_reconciliation_fingerprint=RECONCILIATION,
+                applying_at=timestamp(4),
+            )
+            aggregate = begun.aggregate
+        assert aggregate.plan.reconciliation_fingerprint == RECONCILIATION
+
+
+@pytest.mark.parametrize("operation", ["approve", "begin"])
+def test_freshness_rejects_a_run_without_finalized_execution_evidence(
     database: SQLiteDatabase, operation: str
 ) -> None:
     seed_reconciliation(database)
@@ -474,13 +527,16 @@ def test_freshness_rejects_run_and_summary_fingerprint_divergence(
         session.execute(
             sql_update(runs)
             .where(runs.c.run_id == RUN_ID.value)
-            .values(execution_evidence_fingerprint="9" * 64)
+            .values(
+                execution_evidence_fingerprint=None,
+                execution_evidence_fingerprint_version=None,
+            )
         )
         if operation == "approve":
-            with pytest.raises(RepairCorruptionError, match="fingerprints diverge"):
+            with pytest.raises(RepairCorruptionError, match="evidence fingerprint is missing"):
                 approve(repository)
         else:
-            with pytest.raises(RepairCorruptionError, match="fingerprints diverge"):
+            with pytest.raises(RepairCorruptionError, match="evidence fingerprint is missing"):
                 repository.begin_application(
                     PLAN_ID,
                     expected_row_version=2,
@@ -615,7 +671,7 @@ def test_plan_creation_classifies_invalid_and_duplicate_requests(
                 created_at=timestamp(3),
             )
         alternate_identity = RepairPlan(
-            RepairPlanId("rpl_same-content"), RECONCILIATION, plan().actions
+            RepairPlanId("rpl_same-content"), RECONCILIATION, plan().actions, binding=binding(1)
         )
         with pytest.raises(RepairPlanContentConflictError):
             repository.create_plan(
@@ -834,6 +890,7 @@ def test_missing_and_mismatched_reconciliation_parents_are_typed(
                 record(sku="MISSING-LAMP"),
             ),
         ),
+        binding=binding(1),
     )
     mismatched_conflict_plan = RepairPlan(
         RepairPlanId("rpl_wrong-conflict"),
@@ -847,6 +904,7 @@ def test_missing_and_mismatched_reconciliation_parents_are_typed(
                 record(),
             ),
         ),
+        binding=binding(1),
     )
     stale_fingerprint = StateFingerprint("8" * 64)
     stale_plan = RepairPlan(
@@ -861,6 +919,7 @@ def test_missing_and_mismatched_reconciliation_parents_are_typed(
                 record(),
             ),
         ),
+        binding=binding(1, stale_fingerprint),
     )
     with database.transaction() as session:
         repository = SqlAlchemyRepairRepository(session)
@@ -1169,18 +1228,40 @@ def test_defensive_repair_cas_classification_paths(  # pyright: ignore[reportPri
                 RECONCILIATION,
             )
         for row in (
-            {"run_state": 1, "execution_evidence_fingerprint": RECONCILIATION.value},
-            {"run_state": "unknown", "execution_evidence_fingerprint": RECONCILIATION.value},
-            {"run_state": RunState.SUCCEEDED.value, "execution_evidence_fingerprint": None},
+            {
+                "run_state": 1,
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": 2,
+            },
+            {
+                "run_state": "unknown",
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": 2,
+            },
+            {
+                "run_state": RunState.SUCCEEDED.value,
+                "execution_evidence_fingerprint": None,
+                "execution_evidence_fingerprint_version": None,
+            },
+            {
+                "run_state": RunState.SUCCEEDED.value,
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": None,
+            },
+            {
+                "run_state": RunState.SUCCEEDED.value,
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": "2",
+            },
         ):
             with pytest.raises(RepairCorruptionError):
-                repository._validate_run_fingerprint(row, RECONCILIATION)
-        repository._validate_run_fingerprint(
+                repository._validate_run_finalization(row)
+        repository._validate_run_finalization(
             {
                 "run_state": RunState.PARTIALLY_SUCCEEDED.value,
-                "execution_evidence_fingerprint": RECONCILIATION.value,
+                "execution_evidence_fingerprint": EVIDENCE.value,
+                "execution_evidence_fingerprint_version": 2,
             },
-            RECONCILIATION,
         )
         with pytest.raises(RepairDuplicateError):
             repository._classify_create_replay(

@@ -84,10 +84,10 @@ def test_database_upgrade_migrates_absolute_file_and_reports_repeat(tmp_path: Pa
     second = runner.invoke(app, ["database", "upgrade", "--database", str(database)])
 
     assert first.exit_code == 0
-    assert first.stdout == "Database revision: empty -> 0002_execution_evidence\n"
+    assert first.stdout == "Database revision: empty -> 0003_repair_verification\n"
     assert second.exit_code == 0
     assert (
-        second.stdout == "Database revision: 0002_execution_evidence -> 0002_execution_evidence\n"
+        second.stdout == "Database revision: 0003_repair_verification -> 0003_repair_verification\n"
     )
 
 

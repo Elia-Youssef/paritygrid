@@ -378,7 +378,7 @@ def _repair_plan_primitive(value: object) -> CanonicalPrimitive:
 
 def _repair_plan_content_primitive(plan: RepairPlan) -> CanonicalPrimitive:
     """Return logical repair contents without generated plan, action, or conflict identities."""
-    return {
+    value: dict[str, CanonicalPrimitive] = {
         "actions": [
             _repair_action_value(
                 action,
@@ -390,6 +390,20 @@ def _repair_plan_content_primitive(plan: RepairPlan) -> CanonicalPrimitive:
         ],
         "state_fingerprint": plan.state_fingerprint.value,
     }
+    if plan.binding is not None:
+        value["binding"] = {
+            "run_id": plan.binding.run_id.value,
+            "reconciliation_fingerprint": plan.binding.reconciliation_fingerprint.value,
+            "source_input_identity": plan.binding.source_input_identity,
+            "target_input_identity": plan.binding.target_input_identity,
+            "policy_version": plan.binding.policy_version,
+            "generation_version": plan.binding.generation_version,
+            "rules_version": plan.binding.rules_version,
+            "analysis_version": plan.binding.analysis_version,
+            "analytical_query_version": plan.binding.analytical_query_version,
+            "action_count": plan.binding.action_count,
+        }
+    return value
 
 
 def encode_repair_plan_content(
@@ -400,6 +414,30 @@ def encode_repair_plan_content(
     return _encode_envelope(
         type_tag="repair-plan-content",
         value=_repair_plan_content_primitive(plan),
+        version=version,
+    )
+
+
+def encode_inventory_observation(
+    record: InventoryRecord,
+    *,
+    version: CanonicalVersion,
+) -> bytes:
+    """Encode one inventory observation without connector provenance.
+
+    Target-state identity covers the logical business content a record
+    carries, never the connector or source position that observed it, so
+    the same stored record observed through different reads encodes
+    identically.
+    """
+    if type(record) is not InventoryRecord:
+        raise CanonicalEncodingError(
+            reason=CanonicalErrorCode.UNSUPPORTED_CANONICAL_TYPE,
+            subject_type="inventory-observation",
+        )
+    return _encode_envelope(
+        type_tag="inventory-observation",
+        value=_inventory_effect_value(record),
         version=version,
     )
 

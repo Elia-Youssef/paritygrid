@@ -30,6 +30,7 @@ _IMMUTABLE_TABLES: Final[frozenset[str]] = frozenset(
         "reconciliation_summaries",
         "reconciliation_conflicts",
         "repair_approvals",
+        "target_state_verifications",
         "audit_entries",
     }
 )
@@ -65,6 +66,14 @@ IMMUTABLE_COLUMNS: Final[MappingProxyType[str, tuple[str, ...]]] = MappingProxyT
             "run_id",
             "reconciliation_fingerprint",
             "content_fingerprint",
+            "source_input_identity",
+            "target_input_identity",
+            "policy_version",
+            "generation_version",
+            "rules_version",
+            "analysis_version",
+            "analytical_query_version",
+            "action_count",
             "created_at",
         ),
         "repair_actions": (

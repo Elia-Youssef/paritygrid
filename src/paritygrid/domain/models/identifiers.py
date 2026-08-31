@@ -106,6 +106,13 @@ class RepairActionId(_PrefixedIdentifier):
     _prefix: ClassVar[str] = "rac"
 
 
+@dataclass(frozen=True, slots=True)
+class TargetVerificationId(_PrefixedIdentifier):
+    """Identity of one immutable target-state verification fact."""
+
+    _prefix: ClassVar[str] = "tgv"
+
+
 type EntityId = (
     PipelineId
     | NodeId
@@ -116,6 +123,7 @@ type EntityId = (
     | ConflictId
     | RepairPlanId
     | RepairActionId
+    | TargetVerificationId
 )
 
 

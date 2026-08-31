@@ -63,6 +63,7 @@ from paritygrid.application.ports.connectors import (
     ConnectorValidationError,
     TargetEffectOutcome,
     TargetRecord,
+    TargetRecordPage,
     TargetStateSnapshot,
     TargetWriteOutcome,
     TargetWriteRequest,
@@ -104,14 +105,15 @@ class WarehouseTargetConfig:
 def derive_idempotency_key(prefix: str, request: TargetWriteRequest) -> str:
     """Derive the stable idempotency identity of one logical write.
 
-    The key binds the addressed record and the exact payload bytes, so
-    the same logical write derives the same key from any call site while
-    a different payload derives a different key.
+    The key binds the addressed record, exact payload bytes, and conditional
+    target-state predicate.  A write with another precondition is therefore
+    another logical request and cannot silently reuse an old receipt.
     """
     canonical = json.dumps(
         dict(request.payload), ensure_ascii=True, separators=(",", ":"), sort_keys=True
     ).encode("utf-8")
-    digest = sha256(canonical).hexdigest()[:32]
+    precondition = "" if request.precondition is None else request.precondition.header_value()
+    digest = sha256(canonical + b"\0" + precondition.encode("ascii")).hexdigest()[:32]
     return f"{prefix}:{request.sku}:{digest}"
 
 
@@ -150,8 +152,8 @@ class WarehouseTargetConnector:
                     ConnectorCapability.IDEMPOTENCY,
                 )
             ),
-            max_page_records=0,
-            supports_cursors=False,
+            max_page_records=self._config.bounds.max_page_records,
+            supports_cursors=True,
         )
 
     def state(self) -> ConnectorState:
@@ -208,6 +210,8 @@ class WarehouseTargetConnector:
             "Content-Type": "application/json",
             "Idempotency-Key": request.idempotency_key,
         }
+        if request.precondition is not None:
+            headers["X-ParityGrid-Target-Precondition"] = request.precondition.header_value()
         if self._authentication is not None:
             headers[self._authentication.header_name] = self._authentication.header_value()
         self._events.publish(
@@ -319,6 +323,60 @@ class WarehouseTargetConnector:
                 ),
                 secrets=secrets,
             ) from error
+
+    async def list_records_async(
+        self,
+        cursor: str | None,
+        context: ConnectorCallContext,
+    ) -> TargetRecordPage:
+        """Read one bounded target-inventory page for independent verification."""
+        client = self._require_open()
+        secrets = SecretMaterial.combine(self._secrets, context.secrets)
+        if cursor is not None:
+            from paritygrid.application.ports.connectors import validate_cursor
+
+            validate_cursor(cursor)
+        context.raise_if_cancelled()
+        query = f"?limit={self._config.bounds.max_page_records}"
+        if cursor is not None:
+            query += f"&cursor={cursor}"
+        headers: dict[str, str] = {}
+        if self._authentication is not None:
+            headers[self._authentication.header_name] = self._authentication.header_value()
+        try:
+            response = await client.request(
+                "GET",
+                f"{WAREHOUSE_RECORDS_PREFIX}{query}",
+                headers=headers,
+                timeout_seconds=self._config.bounds.request_timeout_microseconds / 1_000_000,
+            )
+        except HttpTransportError as error:
+            raise self._classify_read_transport_error(error, secrets) from error
+        context.raise_if_cancelled()
+        if response.status != 200:
+            raise self._classify_read_status(response, secrets)
+        document = self._parse_document(response.body, secrets)
+        try:
+            page = _decode_target_page(document, byte_count=len(response.body))
+        except ConnectorValidationError as error:
+            raise ConnectorUnknownError(
+                "the target record page violated the contract",
+                detail=build_public_detail(
+                    "record page failed the connector contract",
+                    details={"reason": error.detail},
+                    secrets=secrets,
+                ),
+                secrets=secrets,
+            ) from error
+        self._events.publish(
+            ConnectorEvent(
+                kind=ConnectorEventKind.PAGE_COMPLETED,
+                connector_kind=ConnectorKind.WAREHOUSE_TARGET,
+                correlation_id=context.correlation_id,
+                details={"record_count": len(page.records)},
+            )
+        )
+        return page
 
     async def state_snapshot_async(
         self,
@@ -495,6 +553,12 @@ class WarehouseTargetConnector:
                 secrets=secrets,
             )
         if status == 409:
+            if _target_error_code(response.body) == "target_precondition_failed":
+                return ConnectorConflictError(
+                    "the target no longer satisfies the write precondition",
+                    detail=detail,
+                    secrets=secrets,
+                )
             return ConnectorConflictError(
                 "the idempotency key was reused with a different request",
                 detail=detail,
@@ -557,6 +621,25 @@ def _parse_retry_after(retry_after_text: str | None) -> int | None:
     return value
 
 
+def _target_error_code(body: bytes) -> str | None:
+    """Return one known bounded target error code without trusting its message."""
+    try:
+        document = json.loads(body.decode("utf-8"))
+    except UnicodeDecodeError, json.JSONDecodeError:
+        return None
+    if not isinstance(document, dict):
+        return None
+    error = cast("dict[str, object]", document).get("error")
+    if not isinstance(error, dict):
+        return None
+    code = cast("dict[str, object]", error).get("code")
+    return (
+        code
+        if isinstance(code, str) and code in {"idempotency_conflict", "target_precondition_failed"}
+        else None
+    )
+
+
 def _decode_write_document(document: object) -> tuple[str, int, int, bool]:
     if not isinstance(document, dict):
         raise ConnectorUnknownError("the target write document is malformed")
@@ -594,6 +677,31 @@ def _decode_target_record(sku: str, document: object) -> TargetRecord:
         payload=cast("Mapping[str, object]", payload),
         record_version=record_version,
         target_version=target_version,
+    )
+
+
+def _decode_target_page(document: object, *, byte_count: int) -> TargetRecordPage:
+    if not isinstance(document, dict):
+        raise ConnectorValidationError("target record page is malformed")
+    page_document = cast("dict[str, object]", document)
+    records_value = page_document.get("records")
+    cursor_value = page_document.get("next_cursor")
+    if not isinstance(records_value, list) or not isinstance(cursor_value, str):
+        raise ConnectorValidationError("target record page is malformed")
+    records: list[TargetRecord] = []
+    for record_document in cast("list[object]", records_value):
+        if not isinstance(record_document, dict):
+            raise ConnectorValidationError("target record page is malformed")
+        record_mapping = cast("dict[str, object]", record_document)
+        sku = record_mapping.get("sku")
+        if not isinstance(sku, str):
+            raise ConnectorValidationError("target record page is malformed")
+        records.append(_decode_target_record(sku, record_mapping))
+    return TargetRecordPage(
+        records=tuple(records),
+        next_cursor=None if cursor_value == "" else cursor_value,
+        request_count=1,
+        byte_count=byte_count,
     )
 
 

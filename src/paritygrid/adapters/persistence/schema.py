@@ -25,6 +25,7 @@ from paritygrid.adapters.persistence.values import (
     RepairActionApplicationStatus,
     RepairPlanStatus,
     RunNodeState,
+    TargetVerificationVerdict,
     WorkAttemptOutcome,
 )
 from paritygrid.domain.execution import FailureClassification, RunState, WorkItemState
@@ -127,16 +128,18 @@ def _json(column: str, name: str, *, shape: str, nullable: bool = False) -> Chec
     return CheckConstraint(expression, name=name)
 
 
-def _id(column: str, prefix: str, name: str) -> CheckConstraint:
+def _id(column: str, prefix: str, name: str, *, nullable: bool = False) -> CheckConstraint:
     maximum = len(prefix) + 1 + 64
-    return CheckConstraint(
+    expression = (
         f"typeof({column}) = 'text' AND length({column}) BETWEEN {len(prefix) + 4} "
         f"AND {maximum} AND substr({column}, 1, {len(prefix) + 1}) = '{prefix}_' "
         f"AND substr({column}, {len(prefix) + 2}) NOT GLOB '*[^a-z0-9-]*' "
         f"AND substr({column}, {len(prefix) + 2}) NOT LIKE '-%' "
-        f"AND substr({column}, -1) <> '-' AND {column} NOT LIKE '%--%'",
-        name=name,
+        f"AND substr({column}, -1) <> '-' AND {column} NOT LIKE '%--%'"
     )
+    if nullable:
+        expression = f"{column} IS NULL OR ({expression})"
+    return CheckConstraint(expression, name=name)
 
 
 def _pk(table: str, *columns: str) -> PrimaryKeyConstraint:
@@ -858,6 +861,14 @@ repair_plans = Table(
     _column("run_id", String(68)),
     _column("reconciliation_fingerprint", String(64)),
     _column("content_fingerprint", String(64)),
+    _column("source_input_identity", String(64)),
+    _column("target_input_identity", String(64)),
+    _column("policy_version", Integer),
+    _column("generation_version", Integer),
+    _column("rules_version", Integer),
+    _column("analysis_version", Integer),
+    _column("analytical_query_version", Integer),
+    _column("action_count", Integer),
     _column("status", String(32)),
     _column("row_version", Integer, default="1"),
     _column("created_at", String(27)),
@@ -879,6 +890,14 @@ repair_plans = Table(
     _id("repair_plan_id", "rpl", "repair_plan_id_shape"),
     _sha256("reconciliation_fingerprint", "reconciliation_fingerprint_shape"),
     _sha256("content_fingerprint", "content_fingerprint_shape"),
+    _sha256("source_input_identity", "source_input_identity_shape"),
+    _sha256("target_input_identity", "target_input_identity_shape"),
+    _positive("policy_version", "policy_version_range"),
+    _positive("generation_version", "generation_version_range"),
+    _positive("rules_version", "rules_version_range"),
+    _positive("analysis_version", "analysis_version_range"),
+    _positive("analytical_query_version", "analytical_query_version_range"),
+    _nonnegative("action_count", "action_count_range"),
     _enum("status", (value.value for value in RepairPlanStatus), "status_values"),
     _positive("row_version", "row_version_range"),
     _utc("created_at", "created_at_utc"),
@@ -1044,6 +1063,60 @@ audit_entries = Table(
     sqlite_autoincrement=True,
 )
 
+target_state_verifications = Table(
+    "target_state_verifications",
+    metadata,
+    _column("verification_id", String(68)),
+    _column("run_id", String(68)),
+    _column("repair_plan_id", String(68), nullable=True),
+    _column("reconciliation_fingerprint", String(64)),
+    _column("plan_content_fingerprint", String(64), nullable=True),
+    _column("observed_fingerprint", String(64)),
+    _column("observed_fingerprint_version", Integer),
+    _column("expected_fingerprint", String(64)),
+    _column("verdict", String(32)),
+    _column("observed_record_count", Integer),
+    _column("expected_record_count", Integer),
+    _column("observed_target_version", Integer),
+    _column("observed_at", String(27)),
+    _column("detail_json", Text),
+    _pk("target_state_verifications", "verification_id"),
+    _fk("target_state_verifications", ["run_id"], ["runs.run_id"], "runs"),
+    _fk(
+        "target_state_verifications",
+        ["run_id", "reconciliation_fingerprint"],
+        ["reconciliation_summaries.run_id", "reconciliation_summaries.reconciliation_fingerprint"],
+        "reconciliation_summaries",
+    ),
+    _fk(
+        "target_state_verifications",
+        ["repair_plan_id"],
+        ["repair_plans.repair_plan_id"],
+        "repair_plans",
+    ),
+    _id("verification_id", "tgv", "verification_id_shape"),
+    _id("repair_plan_id", "rpl", "repair_plan_id_shape", nullable=True),
+    _bounded_text("run_id", 68, "run_id_size"),
+    _sha256("reconciliation_fingerprint", "reconciliation_fingerprint_shape"),
+    _sha256("plan_content_fingerprint", "plan_content_fingerprint_shape", nullable=True),
+    _sha256("observed_fingerprint", "observed_fingerprint_shape"),
+    _sha256("expected_fingerprint", "expected_fingerprint_shape"),
+    _positive("observed_fingerprint_version", "observed_fingerprint_version_range"),
+    _enum(
+        "verdict",
+        (value.value for value in TargetVerificationVerdict),
+        "verdict_values",
+    ),
+    _nonnegative("observed_record_count", "observed_record_count_range"),
+    _nonnegative("expected_record_count", "expected_record_count_range"),
+    _nonnegative("observed_target_version", "observed_target_version_range"),
+    _utc("observed_at", "observed_at_utc"),
+    _json("detail_json", "detail_json_object", shape="object"),
+    _ix("target_state_verifications", "run_id", "observed_at"),
+    _ix("target_state_verifications", "run_id", "reconciliation_fingerprint"),
+    _ix("target_state_verifications", "repair_plan_id"),
+)
+
 OPERATIONAL_TABLE_NAMES: Final[tuple[str, ...]] = tuple(metadata.tables)
 
 
@@ -1173,6 +1246,12 @@ class AuditEntryRow(Base):
     __table__ = audit_entries
 
 
+class TargetStateVerificationRow(Base):
+    """Internal row mapping for immutable target-state verification facts."""
+
+    __table__ = target_state_verifications
+
+
 ORM_ROW_TYPES: Final[tuple[type[Base], ...]] = (
     SystemMetadataRow,
     PipelineRow,
@@ -1195,4 +1274,5 @@ ORM_ROW_TYPES: Final[tuple[type[Base], ...]] = (
     RepairApprovalRow,
     RepairActionRow,
     AuditEntryRow,
+    TargetStateVerificationRow,
 )

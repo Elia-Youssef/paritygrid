@@ -700,7 +700,7 @@ class FakeValidationConnection:
             "journal_mode": FakeScalarResult("wal"),
             "synchronous": FakeScalarResult(2),
             "busy_timeout": FakeScalarResult(5_000),
-            "version_num": FakeScalarResult(rows=[("0002_execution_evidence",)]),
+            "version_num": FakeScalarResult(rows=[("0003_repair_verification",)]),
             "type='table'": FakeScalarResult(21),
             "type='trigger'": FakeScalarResult(47),
         }

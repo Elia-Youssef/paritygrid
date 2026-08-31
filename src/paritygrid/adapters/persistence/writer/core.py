@@ -30,6 +30,15 @@ from paritygrid.application.ports.execution import (
     ExecutionStaleRowVersionError,
     ExecutionStateConflictError,
 )
+from paritygrid.application.ports.reconciliation_persistence import (
+    ReconciliationCorruptionError,
+    ReconciliationInvalidRequestError,
+    ReconciliationRecordNotFoundError,
+    ReconciliationResultConflictError,
+    TargetVerificationConflictError,
+    TargetVerificationCorruptionError,
+    TargetVerificationInvalidRequestError,
+)
 from paritygrid.application.ports.repair_audit import (
     AuditInvalidRequestError,
     AuditSequenceConflictError,
@@ -419,6 +428,13 @@ class SQLiteTransactionalWriter(TransactionalWriter):
                 RepairStateConflictError,
                 AuditInvalidRequestError,
                 AuditSequenceConflictError,
+                ReconciliationInvalidRequestError,
+                ReconciliationRecordNotFoundError,
+                ReconciliationResultConflictError,
+                ReconciliationCorruptionError,
+                TargetVerificationInvalidRequestError,
+                TargetVerificationConflictError,
+                TargetVerificationCorruptionError,
                 WriterInvalidRequestError,
             ) as error:
                 cleanup = _rollback_and_close(session, transaction)

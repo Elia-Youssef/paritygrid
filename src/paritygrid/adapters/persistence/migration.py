@@ -18,7 +18,7 @@ from paritygrid.adapters.persistence.errors import (
     MigrationIntegrityError,
 )
 
-HEAD_REVISION = "0002_execution_evidence"
+HEAD_REVISION = "0003_repair_verification"
 _SCRIPT_LOCATION = "paritygrid.adapters.persistence:migrations"
 _EXPECTED_TABLE_NAMES = frozenset(
     {
@@ -41,6 +41,7 @@ _EXPECTED_TABLE_NAMES = frozenset(
         "run_nodes",
         "runs",
         "system_metadata",
+        "target_state_verifications",
         "work_attempts",
         "work_items",
     }
@@ -255,7 +256,7 @@ _EXPECTED_SCHEMA_HASHES: dict[tuple[str, str, str], str] = {
         "table",
         "repair_plans",
         "repair_plans",
-    ): "17b1de1e714e0c99707ade4d9b5b78587e2c119fb957841b45bcef3e560955ae",
+    ): "b7909f8bc66224e362c340648a95507b78ba3c57f8959b7c168a134a4ac48a10",
     (
         "table",
         "run_event_counters",
@@ -446,7 +447,7 @@ _EXPECTED_SCHEMA_HASHES: dict[tuple[str, str, str], str] = {
         "trigger",
         "trg_repair_plans_protect_immutable_columns",
         "repair_plans",
-    ): "1a30f1cb5124f6bc7b20968d8ea7e6406f5507a3e1b53a68aabec246524741a9",
+    ): "bf0f699e44a4ae215be644a50e6e7172838439126b678b427ecf1bf0ec7f44cf",
     (
         "trigger",
         "trg_repair_plans_protect_terminal_status",
@@ -517,6 +518,36 @@ _EXPECTED_SCHEMA_HASHES: dict[tuple[str, str, str], str] = {
         "trg_work_items_protect_immutable_columns",
         "work_items",
     ): "cf1a4f19885d1be584270daed514ff2cfc4a35be00f906001c3c98cbc015d7a2",
+    (
+        "index",
+        "ix_target_state_verifications_run_id_observed_at",
+        "target_state_verifications",
+    ): "a283fa20839d67f97cc23970c7b25ce4908141b07cb5ec4528b7522e65f97fcd",
+    (
+        "index",
+        "ix_target_state_verifications_repair_plan_id",
+        "target_state_verifications",
+    ): "71aec676ca47e461af54d84173a427f5264afd7a2d054c9b8913788b70c60676",
+    (
+        "index",
+        "ix_target_state_verifications_run_id_reconciliation_fingerprint",
+        "target_state_verifications",
+    ): "76bb320ce6e3d643ead4bfed311730a1a6c7d6e6fb67a372d5403253f8b56583",
+    (
+        "table",
+        "target_state_verifications",
+        "target_state_verifications",
+    ): "634405e82198eab7eee0512615708d6b5f3058ae61f75fc9eb92227f8d99746f",
+    (
+        "trigger",
+        "trg_target_state_verifications_prohibit_delete",
+        "target_state_verifications",
+    ): "fb86a7731ef039c40d922f5b60a4efae3a693a579a9f395e3fd5f8b5a4c9f4fc",
+    (
+        "trigger",
+        "trg_target_state_verifications_prohibit_update",
+        "target_state_verifications",
+    ): "b9b1cf3a35d3cb1b60224d46e37340e908f24cba93152c108d3a4b96eb66defe",
 }
 
 
@@ -616,7 +647,7 @@ def _validate_revision_state(connection: Connection, revision: str) -> None:
     trigger_count = connection.exec_driver_sql(
         "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger'"
     ).scalar_one()
-    if type(trigger_count) is not int or trigger_count != 47:
+    if type(trigger_count) is not int or trigger_count != 49:
         raise MigrationIntegrityError("The installed operational trigger inventory is incomplete.")
     rows = connection.exec_driver_sql(
         "SELECT type, name, tbl_name, sql FROM sqlite_master "

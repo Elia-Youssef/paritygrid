@@ -13,6 +13,7 @@ from paritygrid.domain.models.identifiers import (
     RepairActionId,
     RepairPlanId,
     RunId,
+    TargetVerificationId,
     WorkItemId,
 )
 from paritygrid.domain.models.inventory import InventoryAttributes, InventoryRecord
@@ -37,6 +38,7 @@ __all__ = [
     "RepairPlanId",
     "RunId",
     "StateFingerprint",
+    "TargetVerificationId",
     "UtcTimestamp",
     "WorkItemId",
 ]
