@@ -16,6 +16,14 @@ _FRONTEND_CSP = (
     b"img-src 'self' data:; font-src 'self'; connect-src 'self'; "
     b"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 )
+_DOCUMENTATION_CSP = (
+    b"default-src 'none'; base-uri 'none'; form-action 'none'; "
+    b"frame-ancestors 'none'; object-src 'none'; connect-src 'self'; "
+    b"script-src https://cdn.jsdelivr.net 'unsafe-inline'; "
+    b"style-src https://cdn.jsdelivr.net; "
+    b"img-src 'self' data: https://fastapi.tiangolo.com"
+)
+_DOCUMENTATION_PATHS = frozenset({"/api/docs", "/api/docs/oauth2-redirect"})
 _NO_STORE = b"no-store"
 
 
@@ -50,7 +58,10 @@ class SecurityHeadersMiddleware:
                         headers.append((name, value))
                 if b"content-security-policy" not in present:
                     if api_response:
-                        headers.append((b"content-security-policy", _DENY_ALL_CSP))
+                        content_security_policy = (
+                            _DOCUMENTATION_CSP if path in _DOCUMENTATION_PATHS else _DENY_ALL_CSP
+                        )
+                        headers.append((b"content-security-policy", content_security_policy))
                     else:
                         _apply_frontend_policy(message, headers)
                 if api_response and b"cache-control" not in present:
