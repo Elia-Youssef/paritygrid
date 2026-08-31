@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
-import { BrowserRouter, Route, Routes } from "react-router";
+import { createBrowserRouter, RouterProvider } from "react-router";
+import { useMemo } from "react";
 
 import { appQueryClient } from "../api/query-client";
 import { Overview } from "../features/overview/overview";
@@ -18,36 +19,46 @@ import { RunLiveScreen } from "./screens/run-live-screen";
 import { SystemScreen } from "./screens/system-screen";
 
 /**
- * Stable application routes. Direct loads and client-side navigation hit
- * the same components; unknown addresses keep their owning layout. The
- * QueryClient provider is the single server-state ownership boundary for
- * everything beneath the shell.
+ * Stable application routes. A data router is required so route-bound
+ * guards (the studio's unsaved-draft blocker) can intercept navigation;
+ * direct loads and client-side navigation hit the same components and
+ * unknown addresses keep their owning layout.
  */
+const routeTree = [
+  {
+    path: "/",
+    element: <PublicLayout />,
+    children: [
+      { index: true, element: <Overview /> },
+      { path: "*", element: <NotFoundScreen /> },
+    ],
+  },
+  {
+    path: "/app",
+    element: <AppLayout />,
+    children: [
+      { index: true, element: <OperationsOverviewScreen /> },
+      { path: "pipelines", element: <PipelineLibraryScreen /> },
+      { path: "pipelines/:pipelineId", element: <PipelineStudioScreen /> },
+      { path: "runs", element: <RunHistoryScreen /> },
+      { path: "runs/:runId", element: <RunLiveScreen /> },
+      { path: "runs/:runId/reconcile", element: <ReconciliationScreen /> },
+      { path: "repairs/:repairId", element: <RepairReviewScreen /> },
+      { path: "compare", element: <ComparisonScreen /> },
+      { path: "system", element: <SystemScreen /> },
+      { path: "*", element: <NotFoundScreen /> },
+    ],
+  },
+];
+
 export function App() {
+  // Created per mount so tests and direct loads observe the live document
+  // location; the tree itself is static.
+  const router = useMemo(() => createBrowserRouter(routeTree), []);
   return (
     <RootErrorBoundary>
       <QueryClientProvider client={appQueryClient}>
-        <BrowserRouter>
-          <Routes>
-            <Route element={<PublicLayout />}>
-              <Route index path="/" element={<Overview />} />
-              <Route path="*" element={<NotFoundScreen />} />
-            </Route>
-
-            <Route path="/app" element={<AppLayout />}>
-              <Route index element={<OperationsOverviewScreen />} />
-              <Route path="pipelines" element={<PipelineLibraryScreen />} />
-              <Route path="pipelines/:pipelineId" element={<PipelineStudioScreen />} />
-              <Route path="runs" element={<RunHistoryScreen />} />
-              <Route path="runs/:runId" element={<RunLiveScreen />} />
-              <Route path="runs/:runId/reconcile" element={<ReconciliationScreen />} />
-              <Route path="repairs/:repairId" element={<RepairReviewScreen />} />
-              <Route path="compare" element={<ComparisonScreen />} />
-              <Route path="system" element={<SystemScreen />} />
-              <Route path="*" element={<NotFoundScreen />} />
-            </Route>
-          </Routes>
-        </BrowserRouter>
+        <RouterProvider router={router} />
       </QueryClientProvider>
     </RootErrorBoundary>
   );

@@ -56,11 +56,14 @@ Every run response carries `run_id`, `run_version` (the durable row version), `s
 GET  /api/v1/pipelines
 POST /api/v1/pipelines
 GET  /api/v1/pipelines/{pipeline_id}
+GET  /api/v1/pipelines/{pipeline_id}/version-frontier
 POST /api/v1/pipelines/{pipeline_id}/versions
 GET  /api/v1/pipelines/{pipeline_id}/versions/{version}
 ```
 
 Publishing a pipeline version validates and freezes its logical definition. Visual layout may be stored separately from the logical specification when layout changes should not create a new logical version.
+
+`GET …/version-frontier` reports the immutable latest-version frontier used for stale-safe publication: `{schema_version, pipeline_id, latest_version, published}` where `latest_version` is `0` exactly when the pipeline has never been published and otherwise equals the newest immutable published version. Clients echo this value as `expected_latest_version`; the mutable metadata `row_version` carried by pipeline responses never fences publication. Publication requests replay when the durable frontier and exact serialized specification match, and answer `409` (`pipeline_version_conflict`) when the supplied frontier is stale.
 
 ## Connector routes
 

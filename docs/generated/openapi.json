@@ -919,6 +919,80 @@
         "title": "PipelineResponse",
         "type": "object"
       },
+      "PipelineVersionAckResponse": {
+        "additionalProperties": false,
+        "description": "Publication acknowledgement without the specification body.\n\nThe published specification embeds connector binding snapshots whose\nfield names cannot pass the durable redaction wall applied to stored\nidempotent responses; the full document is addressable through the\nversion route.",
+        "properties": {
+          "pipeline_id": {
+            "title": "Pipeline Id",
+            "type": "string"
+          },
+          "planner_format_version": {
+            "title": "Planner Format Version",
+            "type": "integer"
+          },
+          "published_at": {
+            "title": "Published At",
+            "type": "string"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          },
+          "specification_sha256": {
+            "title": "Specification Sha256",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pipeline_id",
+          "version",
+          "specification_sha256",
+          "planner_format_version",
+          "published_at"
+        ],
+        "title": "PipelineVersionAckResponse",
+        "type": "object"
+      },
+      "PipelineVersionFrontierResponse": {
+        "additionalProperties": false,
+        "description": "Immutable latest-version frontier for one pipeline.\n\n``latest_version`` is the newest immutable published version and is\n``0`` exactly when the pipeline has never been published. It is the\nvalue clients echo as ``expected_latest_version`` when publishing.\nMutable metadata row versions are deliberately not part of this\nresponse: they never fence publication.",
+        "properties": {
+          "latest_version": {
+            "maximum": 2147483647.0,
+            "minimum": 0.0,
+            "title": "Latest Version",
+            "type": "integer"
+          },
+          "pipeline_id": {
+            "title": "Pipeline Id",
+            "type": "string"
+          },
+          "published": {
+            "title": "Published",
+            "type": "boolean"
+          },
+          "schema_version": {
+            "const": 1,
+            "default": 1,
+            "title": "Schema Version",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "pipeline_id",
+          "latest_version",
+          "published"
+        ],
+        "title": "PipelineVersionFrontierResponse",
+        "type": "object"
+      },
       "PipelineVersionPublishRequest": {
         "additionalProperties": false,
         "description": "Body of ``POST /api/v1/pipelines/{id}/versions``.",
@@ -2158,7 +2232,9 @@
           "201": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineResponse"
+                }
               }
             },
             "description": "Successful Response"
@@ -2222,6 +2298,48 @@
         ]
       }
     },
+    "/api/v1/pipelines/{pipeline_id}/version-frontier": {
+      "get": {
+        "operationId": "get_pipeline_version_frontier_api_v1_pipelines__pipeline_id__version_frontier_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "pipeline_id",
+            "required": true,
+            "schema": {
+              "title": "Pipeline Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineVersionFrontierResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Pipeline Version Frontier",
+        "tags": [
+          "pipelines"
+        ]
+      }
+    },
     "/api/v1/pipelines/{pipeline_id}/versions": {
       "post": {
         "operationId": "publish_pipeline_version_api_v1_pipelines__pipeline_id__versions_post",
@@ -2250,7 +2368,9 @@
           "201": {
             "content": {
               "application/json": {
-                "schema": {}
+                "schema": {
+                  "$ref": "#/components/schemas/PipelineVersionAckResponse"
+                }
               }
             },
             "description": "Successful Response"

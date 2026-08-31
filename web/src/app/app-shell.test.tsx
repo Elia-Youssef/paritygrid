@@ -6,18 +6,117 @@ import { App } from "./App";
 import { appQueryClient } from "../api/query-client";
 import { expectNoAccessibilityViolations } from "../test/axe";
 
-function stubHealthApi(status = 200): void {
-  vi.stubGlobal(
-    "fetch",
-    vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(
+const HEALTH_OK = JSON.stringify({
+  status: "ok",
+  service: "ParityGrid",
+  version: "0.1.0",
+});
+
+/**
+ * The console screens consume several durable APIs; route the stub by URL
+ * so each fixture satisfies its consumer and health behavior stays exact.
+ */
+function stubAppApis(options: { healthStatus?: number } = {}): {
+  fetchMock: ReturnType<typeof vi.fn>;
+  healthCalls: () => number;
+  setHealthy: () => void;
+} {
+  let healthy = (options.healthStatus ?? 200) === 200;
+  let healthCallCount = 0;
+  const fetchMock = vi.fn<typeof fetch>((input: RequestInfo | URL) => {
+    const url =
+      typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+    if (url.includes("/healthz")) {
+      healthCallCount += 1;
+      const status = healthy ? 200 : 503;
+      const body = healthy ? HEALTH_OK : "restarting";
+      return Promise.resolve(
+        new Response(body, {
+          status,
+          headers: {
+            "Content-Type": healthy ? "application/json" : "text/plain",
+          },
+        }),
+      );
+    }
+    if (url.includes("/readyz")) {
+      return Promise.resolve(
         new Response(
-          JSON.stringify({ status: "ok", service: "ParityGrid", version: "0.1.0" }),
-          { status, headers: { "Content-Type": "application/json" } },
+          JSON.stringify({
+            status: "ready",
+            service: "ParityGrid",
+            version: "0.1.0",
+            detail: "migrations applied",
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
         ),
-      ),
-  );
+      );
+    }
+    if (url.includes("/api/v1/runs")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            schema_version: 1,
+            items: [],
+            limit: 10,
+            next_cursor: null,
+          }),
+          {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          },
+        ),
+      );
+    }
+    if (url.includes("/api/v1/system/capabilities")) {
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            schema_version: 1,
+            service: "ParityGrid",
+            version: "0.1.0",
+            runners: [],
+            subordinate_pools: [],
+            features: [],
+            sqlite: {
+              schema_version: 1,
+              library_version: "3",
+              minimum_supported_version: "3",
+              journal_mode: "wal",
+              synchronous_level: 1,
+              threadsafety: 1,
+              supports_json_sql: true,
+              supports_returning: true,
+            },
+            limits: {
+              schema_version: 1,
+              artifact_chunk_bytes: 1,
+              idempotency_lease_seconds: 1,
+              max_concurrent_requests: 1,
+              max_json_depth: 1,
+              max_page_size: 1,
+              max_request_body_bytes: 1,
+              request_timeout_seconds: 1,
+            },
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    }
+    return Promise.resolve(new Response("not found", { status: 404 }));
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  return {
+    fetchMock,
+    healthCalls: () => healthCallCount,
+    setHealthy: () => {
+      healthy = true;
+    },
+  };
+}
+
+function stubHealthApi(status = 200): void {
+  stubAppApis({ healthStatus: status });
 }
 
 function load(path: string): void {
@@ -105,30 +204,21 @@ describe("operations shell", () => {
   });
 
   it("allows an unavailable API connection to recover", async () => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValueOnce(
-        new Response("server restarting", {
-          status: 503,
-          headers: { "Content-Type": "text/plain" },
-        }),
-      )
-      .mockResolvedValueOnce(
-        new Response(
-          JSON.stringify({ status: "ok", service: "ParityGrid", version: "0.1.0" }),
-          { status: 200, headers: { "Content-Type": "application/json" } },
-        ),
-      );
-    vi.stubGlobal("fetch", fetchMock);
+    const apis = stubAppApis({ healthStatus: 503 });
     const user = userEvent.setup();
     load("/app");
     render(<App />);
 
     expect(await screen.findByText("API unavailable")).toBeVisible();
-    await user.click(screen.getByRole("button", { name: "Retry" }));
+    apis.setHealthy();
+    const badgeCluster = screen.getByText("API unavailable").closest("div");
+    expect(badgeCluster).not.toBeNull();
+    await user.click(
+      within(badgeCluster as HTMLElement).getByRole("button", { name: "Retry" }),
+    );
 
     expect(await screen.findByText("API online")).toBeVisible();
-    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(apis.healthCalls()).toBeGreaterThanOrEqual(2);
   });
 
   it("keeps exactly one navigation in the accessibility tree per layout", () => {

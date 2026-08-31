@@ -134,6 +134,13 @@ class SqlAlchemyPipelineRepository(PipelineRepository):
         return PipelinePage(items=records, next_cursor=next_cursor)
 
     @translate_storage_errors
+    def latest_version(self, pipeline_id: PipelineId) -> int:
+        """Return the newest immutable published version, or 0 if none."""
+        self._require_transaction()
+        identity = require_pipeline_id(pipeline_id)
+        return self._version_state(identity).latest
+
+    @translate_storage_errors
     def archive(
         self,
         pipeline_id: PipelineId,

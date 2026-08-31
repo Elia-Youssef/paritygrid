@@ -227,6 +227,8 @@ class PipelineRepository(Protocol):
         archived_at: UtcTimestamp,
     ) -> PipelineRecord: ...
 
+    def latest_version(self, pipeline_id: PipelineId) -> int: ...
+
     def publish_version(
         self,
         *,

@@ -15,6 +15,7 @@ from paritygrid.api.schemas.pipelines import (
     PipelinePageResponse,
     PipelineResponse,
     PipelineVersionAckResponse,
+    PipelineVersionFrontierResponse,
     PipelineVersionPublishRequest,
     PipelineVersionResponse,
 )
@@ -42,7 +43,7 @@ def list_pipelines(
     )
 
 
-@router.post("", status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED, response_model=PipelineResponse)
 def create_pipeline(payload: PipelineCreateRequest, request: Request) -> JSONResponse:
     execution = execute_command(
         request,
@@ -60,7 +61,24 @@ def get_pipeline(pipeline_id: str, request: Request) -> PipelineResponse:
     return _pipeline_response(record)
 
 
-@router.post("/{pipeline_id}/versions", status_code=status.HTTP_201_CREATED)
+@router.get("/{pipeline_id}/version-frontier", response_model=PipelineVersionFrontierResponse)
+def get_pipeline_version_frontier(
+    pipeline_id: str, request: Request
+) -> PipelineVersionFrontierResponse:
+    services = get_services(request)
+    latest = services.pipelines.latest_version(pipeline_id)
+    return PipelineVersionFrontierResponse(
+        pipeline_id=pipeline_id,
+        latest_version=latest,
+        published=latest > 0,
+    )
+
+
+@router.post(
+    "/{pipeline_id}/versions",
+    status_code=status.HTTP_201_CREATED,
+    response_model=PipelineVersionAckResponse,
+)
 def publish_pipeline_version(
     payload: PipelineVersionPublishRequest, pipeline_id: str, request: Request
 ) -> JSONResponse:

@@ -16,6 +16,8 @@ _FRONTEND_CSP = (
     b"img-src 'self' data:; font-src 'self'; connect-src 'self'; "
     b"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
 )
+# Swagger documentation is HTML+JS served from the CDN assets FastAPI
+# embeds; it gets the narrowest policy that keeps the local docs usable.
 _DOCUMENTATION_CSP = (
     b"default-src 'none'; base-uri 'none'; form-action 'none'; "
     b"frame-ancestors 'none'; object-src 'none'; connect-src 'self'; "

@@ -8,12 +8,70 @@ const HEALTH_OK = JSON.stringify({
 
 test.beforeEach(async ({ page }) => {
   // Shell checks run against the built SPA without a backend. The health
-  // probe is served by the Phase 15 query layer; keep it deterministic.
+  // probe and the durable operations endpoints are served deterministically.
   await page.route("**/healthz", (route) =>
     route.fulfill({
       status: 200,
       contentType: "application/json",
       body: HEALTH_OK,
+    }),
+  );
+  await page.route("**/readyz", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        status: "ready",
+        service: "ParityGrid",
+        version: "0.1.0",
+        detail: "migrations applied",
+      }),
+    }),
+  );
+  await page.route("**/api/v1/runs*", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: 1,
+        items: [],
+        limit: 10,
+        next_cursor: null,
+      }),
+    }),
+  );
+  await page.route("**/api/v1/system/capabilities", (route) =>
+    route.fulfill({
+      status: 200,
+      contentType: "application/json",
+      body: JSON.stringify({
+        schema_version: 1,
+        service: "ParityGrid",
+        version: "0.1.0",
+        runners: [{ schema_version: 1, strategy_id: "sequential", available: true }],
+        subordinate_pools: [],
+        features: [],
+        sqlite: {
+          schema_version: 1,
+          library_version: "3.45",
+          minimum_supported_version: "3.35",
+          journal_mode: "wal",
+          synchronous_level: 1,
+          threadsafety: 1,
+          supports_json_sql: true,
+          supports_returning: true,
+        },
+        limits: {
+          schema_version: 1,
+          artifact_chunk_bytes: 1,
+          idempotency_lease_seconds: 1,
+          max_concurrent_requests: 1,
+          max_json_depth: 1,
+          max_page_size: 1,
+          max_request_body_bytes: 1,
+          request_timeout_seconds: 1,
+        },
+      }),
     }),
   );
 });

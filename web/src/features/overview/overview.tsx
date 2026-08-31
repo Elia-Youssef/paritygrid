@@ -1,11 +1,11 @@
 import {
   ArrowRight,
   CheckCircle2,
+  CircleDashed,
   Database,
   FileInput,
   Fingerprint,
   Network,
-  ShieldCheck,
 } from "lucide-react";
 
 import { Button } from "../../components/ui/button";
@@ -30,12 +30,25 @@ const flowStages = [
 ] as const;
 
 const readinessItems = [
-  { detail: "Vite production path", label: "Interface bundle", state: "Ready" },
-  { detail: "SQLite + DuckDB", label: "Embedded storage", state: "Local" },
   {
-    detail: "Sequential · threads · async",
-    label: "Runner contract",
-    state: "Planned",
+    available: true,
+    detail: "Versioned publication and immutable history",
+    label: "Pipeline authoring",
+  },
+  {
+    available: true,
+    detail: "Runs, runners, and storage readiness over REST",
+    label: "Operations overview",
+  },
+  {
+    available: false,
+    detail: "Arrives with the execution observability phase",
+    label: "Live run execution",
+  },
+  {
+    available: false,
+    detail: "Arrives with the reconciliation phase",
+    label: "Conflict and repair screens",
   },
 ] as const;
 
@@ -53,18 +66,20 @@ export function Overview() {
             Reconciliation you can prove.
           </h1>
           <p className="mt-7 max-w-2xl text-base leading-7 text-muted-strong sm:text-lg sm:leading-8">
-            Observe every I/O boundary, recover from interruption, and verify that
-            independent execution strategies reach the same logical state.
+            Author versioned pipelines, observe durable operational state, and verify
+            that independent execution strategies reach the same logical state — with
+            at-least-once execution, idempotent effects, and fingerprints as the first
+            metric.
           </p>
           <div className="mt-8 flex flex-wrap items-center gap-3">
             <Button asChild>
-              <a href="#readiness">
-                Inspect readiness
-                <ArrowRight className="size-4" aria-hidden="true" />
-              </a>
+              <a href="/app">Open the console</a>
             </Button>
             <Button asChild variant="secondary">
-              <a href="#execution-path">Trace the execution path</a>
+              <a href="/app/pipelines">
+                Browse pipeline library
+                <ArrowRight className="size-4" aria-hidden="true" />
+              </a>
             </Button>
           </div>
         </div>
@@ -94,7 +109,7 @@ export function Overview() {
                 Evidence travels with the work
               </h2>
             </div>
-            <StatusBadge state="stale">Preview</StatusBadge>
+            <StatusBadge state="stale">Target state</StatusBadge>
           </header>
 
           <ol className="grid divide-y divide-border md:grid-cols-3 md:divide-x md:divide-y-0">
@@ -138,17 +153,17 @@ export function Overview() {
           <div className="flex items-start justify-between gap-4">
             <div>
               <p className="font-mono text-2xs tracking-eyebrow text-muted uppercase">
-                Phase 01
+                What works today
               </p>
               <h2 id="readiness-title" className="mt-1 text-lg font-semibold">
-                Foundation readiness
+                Interface readiness
               </h2>
             </div>
-            <ShieldCheck className="size-5 text-verified" aria-hidden="true" />
+            <Database className="size-5 text-verified" aria-hidden="true" />
           </div>
 
           <dl className="mt-6 divide-y divide-border border-y border-border">
-            {readinessItems.map(({ detail, label, state }) => (
+            {readinessItems.map(({ available, detail, label }) => (
               <div
                 key={label}
                 className="grid grid-cols-overview-readiness items-center gap-x-4 gap-y-1 py-4"
@@ -158,8 +173,23 @@ export function Overview() {
                   {detail}
                 </dd>
                 <dd className="col-start-2 row-span-2 flex items-center gap-1.5 font-mono text-2xs text-muted-strong uppercase">
-                  <CheckCircle2 className="size-3.5 text-verified" aria-hidden="true" />
-                  {state}
+                  {available ? (
+                    <>
+                      <CheckCircle2
+                        className="size-3.5 text-verified"
+                        aria-hidden="true"
+                      />
+                      <span>Available</span>
+                    </>
+                  ) : (
+                    <>
+                      <CircleDashed
+                        className="size-3.5 text-muted"
+                        aria-hidden="true"
+                      />
+                      <span>Not yet</span>
+                    </>
+                  )}
                 </dd>
               </div>
             ))}
@@ -171,8 +201,10 @@ export function Overview() {
               aria-hidden="true"
             />
             <p className="text-xs leading-5 text-muted-strong">
-              The normal demonstration runs locally without a database service or
-              container runtime.
+              Everything shown here runs locally against the packaged application
+              without a database service or container runtime. Live execution views and
+              the one-command canonical demo are future work and are not shipped in this
+              interface yet.
             </p>
           </div>
         </aside>
