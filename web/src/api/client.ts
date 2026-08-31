@@ -132,12 +132,14 @@ function isAbortError(error: unknown, signal: AbortSignal | undefined): boolean 
 }
 
 /**
- * The `Idempotency-Key` header accepts 1–128 portable ASCII characters;
- * validating before send keeps malformed keys a local programmer error
- * instead of a server round trip.
+ * The `Idempotency-Key` header accepts 1–128 characters from the server's
+ * portable identity alphabet and must begin with an ASCII alphanumeric;
+ * validating before send keeps malformed keys a local programmer error.
  */
 export function isValidIdempotencyKey(key: string): boolean {
-  return key.length >= 1 && key.length <= 128 && /^[\x20-\x7e]+$/.test(key);
+  return (
+    key.length >= 1 && key.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(key)
+  );
 }
 
 export interface RequestLike {

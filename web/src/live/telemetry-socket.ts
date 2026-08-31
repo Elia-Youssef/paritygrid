@@ -88,10 +88,25 @@ export function telemetryBackoffDelay(attempt: number): number {
   );
 }
 
+function browserWebSocketUrl(url: string, baseHref: string): string {
+  const resolved = new URL(url, baseHref);
+  if (resolved.protocol === "http:") {
+    resolved.protocol = "ws:";
+  } else if (resolved.protocol === "https:") {
+    resolved.protocol = "wss:";
+  }
+  if (resolved.protocol !== "ws:" && resolved.protocol !== "wss:") {
+    throw new TypeError("telemetry WebSocket URL must use HTTP(S) or WS(S)");
+  }
+  return resolved.toString();
+}
+
 /** Production transport backed by the browser WebSocket. */
-export function createBrowserTelemetryTransport(): TelemetryTransportFactory {
+export function createBrowserTelemetryTransport(
+  baseHref = window.location.href,
+): TelemetryTransportFactory {
   return (url, callbacks) => {
-    const socket = new WebSocket(url);
+    const socket = new WebSocket(browserWebSocketUrl(url, baseHref));
     const onAbort = () => {
       socket.close();
     };
