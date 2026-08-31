@@ -20,14 +20,15 @@ This document is the durable index of accepted phases, their integration commits
 | 10 — Reconciliation analysis | Accepted | [`724116a`](https://github.com/Elia-Youssef/paritygrid/commit/724116acc97678a2932848a99cdb87785d81487d) | [Phase pull request #99](https://github.com/Elia-Youssef/paritygrid/pull/99) | Deterministic schema normalization, matching, duplicate detection, classification, field differences, conflict artifacts, DuckDB agreement, summaries, and reconciliation fingerprints | Operational persistence and repair remain deferred; agreement testing is bounded by the accepted 5,000-row synthetic ceiling, and quarantine evidence is not yet a separate artifact. |
 | 11 — Repair and target verification | Accepted | [`169b538`](https://github.com/Elia-Youssef/paritygrid/commit/169b538eac347f014a1142552bfce9305f27cda7) | [Phase pull request #104](https://github.com/Elia-Youssef/paritygrid/pull/104) | Deterministic safety-limited repair planning, explicit approval and fencing, idempotent application with ambiguous-outcome recovery, independent target verification, and durable audit evidence | HTTP routes and UI workflows remain deferred; target behavior remains bounded to the accepted synthetic loopback warehouse contract, and target-state, reconciliation, and execution-evidence fingerprints remain distinct. |
 | 12 — Core HTTP API | Accepted | [`3ca6125`](https://github.com/Elia-Youssef/paritygrid/commit/3ca61251bc03b71d74de5e28b71c2202469ac70e) | [Phase pull request #107](https://github.com/Elia-Youssef/paritygrid/pull/107) | Versioned operational HTTP composition, Problem Details, correlation, durable command idempotency, pipeline, connector, run, artifact, capability, health, and readiness routes, plus request limits and security headers | Reconciliation and repair routes, live transports, generated API clients, and packaged frontend serving remain Phase 13 work. |
+| 13 — Live and generated API boundary | Accepted | [`c0011ed`](https://github.com/Elia-Youssef/paritygrid/commit/c0011edbec409ba132c4323a09a7b4a15d655441) | [Phase pull request #109](https://github.com/Elia-Youssef/paritygrid/pull/109) | Reconciliation and repair routes, durable SSE replay, advisory WebSocket telemetry, deterministic OpenAPI and TypeScript generation, and confined packaged frontend serving | Typed frontend data ownership, durable/live state precedence, application routing, and the accessible product shell remain Phase 14 and 15 work. |
 
 ## Active boundary
 
-Phase 13 is the next delivery boundary. No Phase 13 implementation has been accepted.
+Phase 14 is the next delivery boundary. No Phase 14 implementation has been accepted.
 
-- Accepted Phase 12 integration: [`3ca6125`](https://github.com/Elia-Youssef/paritygrid/commit/3ca61251bc03b71d74de5e28b71c2202469ac70e).
-- Phase 12 acceptance evidence: [pull request #107](https://github.com/Elia-Youssef/paritygrid/pull/107) and its exact-head Windows, Ubuntu, policy, frontend, and smoke checks.
-- Phase 13 must begin from accepted Phase 12 and satisfy its own complete gate before acceptance.
+- Accepted Phase 13 integration: [`c0011ed`](https://github.com/Elia-Youssef/paritygrid/commit/c0011edbec409ba132c4323a09a7b4a15d655441).
+- Phase 13 acceptance evidence: [pull request #109](https://github.com/Elia-Youssef/paritygrid/pull/109) and its exact-head Windows, Ubuntu, policy, frontend, and smoke checks.
+- Phase 14 must begin from accepted Phase 13 and satisfy its own complete gate before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -375,9 +376,68 @@ public contract matches the implemented route boundary.
 - Typed frontend query, cache, reducer, and live-state ownership remains
   assigned to Phase 15.
 
+## Phase 13 acceptance record
+
+Phase 13 completes the domain-facing API, separates durable replay from
+advisory telemetry, reproduces generated contracts, and serves the packaged
+frontend without a Node.js runtime dependency. All seven packages were
+accepted through [pull request #109](https://github.com/Elia-Youssef/paritygrid/pull/109)
+at merge commit
+[`c0011ed`](https://github.com/Elia-Youssef/paritygrid/commit/c0011edbec409ba132c4323a09a7b4a15d655441).
+
+### Phase 13 package status
+
+| Package | Status | Evidence |
+|---|---|---|
+| P13.1 — reconciliation routes | Accepted | Versioned list, summary, detail, and comparison contracts expose bounded persisted reconciliation evidence through application-owned services and typed Problem Details. |
+| P13.2 — repair routes | Accepted | Planning, approval, application, and verification routes retain Phase 11 identities, safety limits, fencing, idempotency, and independent target observation. |
+| P13.3 — durable SSE stream | Accepted | Run events replay from durable sequence cursors, preserve ordering and reconnect semantics, emit bounded heartbeats, and stop cleanly under slow or disconnected clients. |
+| P13.4 — live WebSocket telemetry | Accepted | Advisory telemetry is bounded, redacted, capability-gated, and explicitly non-authoritative; durable replay remains the source of truth. |
+| P13.5 — deterministic OpenAPI export | Accepted | The committed OpenAPI document reproduces byte-for-byte from the application factory and fails CI on drift. |
+| P13.6 — TypeScript type generation | Accepted | The committed generated declaration reproduces from the OpenAPI boundary, compiles independently, and fails CI on drift. |
+| P13.7 — production frontend serving | Accepted | Packaged assets use confinement, immutable hashed-asset caching, no-store HTML, SPA fallback outside `/api`, strict API 404 behavior, and installed-wheel verification without Node.js. |
+
+### Phase 13 acceptance evidence
+
+The accepted candidate `dae394a5328ece623cd954713945b5a616735cf4`
+passed the complete local lane and the exact-head
+[pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33386157838).
+The local Windows run passed 6,507 tests with seven environment-only
+filesystem-link skips and 95.58% aggregate coverage. Every scoped coverage
+gate passed, including 90.53% for the API. Locked dependency audits, Ruff,
+strict Pyright, import boundaries, deterministic OpenAPI and TypeScript drift
+checks, declaration compilation, isolated wheel and spawned-process checks,
+packaged frontend probing, backend smoke, frontend formatting, lint, types,
+33 tests, coverage, production build, exact three-file distribution
+reproduction, dependency audit, API proxy smoke, instruction validation, and
+whitespace validation all passed.
+
+The duplicate exact-head
+[push workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33386121894)
+initially exposed an inherited Windows WAL-stress scheduling race after 6,513
+tests passed: the mocked terminal reader failure became visible after the
+progress gate. Phase 13 does not modify that code, the isolated regression
+passed five consecutive local runs, the required pull-request Windows lane
+passed unchanged, and the unchanged push-workflow rerun passed the complete
+matrix before merge.
+
+An independent exact-head review assessed Phase 13 at 100/100 and found no
+open hard gate. Durable events remain authoritative, telemetry cannot mutate
+execution state, generated artifacts reproduce exactly, static paths remain
+confined, and the packaged application serves its frontend without Node.js.
+
+### Phase 13 known limitations
+
+- The accepted frontend remains a packaged boundary rather than the Phase 14
+  accessible design system, routing shell, and shared UI state layer.
+- Typed query ownership, cache policy, durable/live reducers, and reconnecting
+  browser clients remain assigned to Phase 15.
+- Product-specific pipeline, overview, live execution, reconciliation, and
+  repair interfaces remain assigned to later phases.
+
 ## Advancement rule
 
-Phase 12 is accepted on top of accepted Phase 11. Phase 13 may begin from the
-accepted Phase 12 integration commit and may merge only after its own
+Phase 13 is accepted on top of accepted Phase 12. Phase 14 may begin from the
+accepted Phase 13 integration commit and may merge only after its own
 complete gate and remote CI pass; acceptance of a later phase does not bypass
 acceptance of its prerequisites.
