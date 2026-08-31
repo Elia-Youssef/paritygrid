@@ -21,6 +21,7 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
+    include: ["src/**/*.test.{ts,tsx}"],
     setupFiles: ["./src/test/setup.ts"],
     coverage: {
       provider: "v8",
@@ -33,6 +34,18 @@ export default defineConfig({
         functions: 75,
         lines: 75,
         statements: 75,
+        "src/lib/**": {
+          branches: 85,
+          functions: 85,
+          lines: 85,
+          statements: 85,
+        },
+        "src/app/routes-model.ts": {
+          branches: 85,
+          functions: 85,
+          lines: 85,
+          statements: 85,
+        },
       },
     },
   },

@@ -35,10 +35,12 @@ npm --prefix web run lint
 npm --prefix web run typecheck
 npm --prefix web run test:coverage
 npm --prefix web run build
+npm --prefix web exec -- playwright install chromium
+npm --prefix web run test:browser
 uv run python scripts/verify_frontend_api_path.py
 ```
 
-The frontend API smoke command runs after both locked environments are installed and exercises the Vite development proxy against the FastAPI application factory. Later phases add the stable `paritygrid verify` profiles without removing these underlying checks.
+The Chromium command exercises the built production shell with deterministic locale, timezone, viewport, and reduced-motion settings. The frontend API smoke command runs after both locked environments are installed and exercises the Vite development proxy against the FastAPI application factory. Later phases add the stable `paritygrid verify` profiles without removing these underlying checks.
 
 The dependency audit exports every locked group to a temporary hash-pinned requirements file, omits only the unpublished local project, and audits that exact set in strict mode. The scoped coverage command consumes the same `.coverage` data as the aggregate report and independently requires at least 90 percent branch coverage for `paritygrid.application.execution`, 95 percent for the sequential runner, and 90 percent for `paritygrid.adapters.runners`. Every new runner adapter remains inside that registered gate.
 

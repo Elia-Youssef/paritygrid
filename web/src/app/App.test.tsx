@@ -1,40 +1,24 @@
 import { render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it } from "vitest";
 
 import { App } from "./App";
-
-afterEach(() => {
-  vi.unstubAllGlobals();
-});
+import { expectNoAccessibilityViolations } from "../test/axe";
 
 describe("App", () => {
-  it("renders the operational shell and confirms an available API", async () => {
-    const fetchMock = vi
-      .fn<typeof fetch>()
-      .mockResolvedValue(new Response('{"status":"ok"}', { status: 200 }));
-    vi.stubGlobal("fetch", fetchMock);
-
+  it("renders the public overview with a path into the console", async () => {
     render(<App />);
 
     expect(
-      screen.getByRole("heading", { level: 1, name: "Reconciliation you can prove." }),
+      screen.getByRole("heading", {
+        level: 1,
+        name: "Reconciliation you can prove.",
+      }),
     ).toBeVisible();
-    expect(screen.getByRole("navigation", { name: "Primary" })).toBeVisible();
-    expect(await screen.findByText("API online")).toBeVisible();
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/healthz",
-      expect.objectContaining({ cache: "no-store" }),
-    );
-  });
+    expect(
+      screen.getByRole("link", { name: "Open operations console" }),
+    ).toHaveAttribute("href", "/app");
+    expect(screen.getByRole("link", { name: "ParityGrid home" })).toBeVisible();
 
-  it("surfaces an unsuccessful API health response", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn<typeof fetch>().mockResolvedValue(new Response(null, { status: 503 })),
-    );
-
-    render(<App />);
-
-    expect(await screen.findByText("API unavailable")).toBeVisible();
+    await expectNoAccessibilityViolations(document.body);
   });
 });

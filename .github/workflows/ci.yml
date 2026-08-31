@@ -107,6 +107,10 @@ jobs:
         run: npm run test:coverage
       - name: Build production frontend
         run: npm run build
+      - name: Install Chromium for shell-browser coverage
+        run: npm exec -- playwright install --with-deps chromium
+      - name: Run Chromium shell-browser coverage
+        run: npm run test:browser
       - name: Verify committed frontend distribution drift
         working-directory: .
         run: python scripts/verify_frontend_dist.py
