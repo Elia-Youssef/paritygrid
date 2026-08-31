@@ -18,14 +18,15 @@ This document is the durable index of accepted phases, their integration commits
 | 8 — Deterministic synthetic systems | Accepted | [`07c997b`](https://github.com/Elia-Youssef/paritygrid/commit/07c997b24c48460c6efade8ea55e1c0e872ecbf6) | [Phase pull request #97](https://github.com/Elia-Youssef/paritygrid/pull/97) | Seeded inventory datasets, scripted failure models, async and blocking source simulators, bounded files, idempotent warehouse simulation, and composed lifecycle control | The systems are loopback-only synthetic fixtures; production transport and authentication remain deferred. |
 | 9 — Connector contract and adapters | Accepted | [`38dac4e`](https://github.com/Elia-Youssef/paritygrid/commit/38dac4e134f8d90a97a428baf93c360ee99987e1) | [Phase pull request #98](https://github.com/Elia-Youssef/paritygrid/pull/98) | Application-owned connector contracts, async and blocking HTTP sources, CSV and JSON Lines sources, warehouse target integration, cooperative cancellation, deadlines, and bounded redaction | HTTP support intentionally targets the accepted loopback simulator protocol; product routes and broader transport features remain deferred. |
 | 10 — Reconciliation analysis | Accepted | [`724116a`](https://github.com/Elia-Youssef/paritygrid/commit/724116acc97678a2932848a99cdb87785d81487d) | [Phase pull request #99](https://github.com/Elia-Youssef/paritygrid/pull/99) | Deterministic schema normalization, matching, duplicate detection, classification, field differences, conflict artifacts, DuckDB agreement, summaries, and reconciliation fingerprints | Operational persistence and repair remain deferred; agreement testing is bounded by the accepted 5,000-row synthetic ceiling, and quarantine evidence is not yet a separate artifact. |
+| 11 — Repair and target verification | Accepted | [`169b538`](https://github.com/Elia-Youssef/paritygrid/commit/169b538eac347f014a1142552bfce9305f27cda7) | [Phase pull request #104](https://github.com/Elia-Youssef/paritygrid/pull/104) | Deterministic safety-limited repair planning, explicit approval and fencing, idempotent application with ambiguous-outcome recovery, independent target verification, and durable audit evidence | HTTP routes and UI workflows remain deferred; target behavior remains bounded to the accepted synthetic loopback warehouse contract, and target-state, reconciliation, and execution-evidence fingerprints remain distinct. |
 
 ## Active boundary
 
-Phase 11 is the next delivery boundary. No Phase 11 implementation has been accepted.
+Phase 12 is the next delivery boundary. No Phase 12 implementation has been accepted.
 
-- Accepted Phase 10 integration: [`724116a`](https://github.com/Elia-Youssef/paritygrid/commit/724116acc97678a2932848a99cdb87785d81487d).
-- Phase 10 acceptance evidence: [pull request #99](https://github.com/Elia-Youssef/paritygrid/pull/99) and its exact-head Windows, Ubuntu, policy, frontend, and smoke checks.
-- Phase 11 must begin from accepted Phase 10 and satisfy its own complete gate before acceptance.
+- Accepted Phase 11 integration: [`169b538`](https://github.com/Elia-Youssef/paritygrid/commit/169b538eac347f014a1142552bfce9305f27cda7).
+- Phase 11 acceptance evidence: [pull request #104](https://github.com/Elia-Youssef/paritygrid/pull/104) and its exact-head Windows, Ubuntu, policy, frontend, and smoke checks.
+- Phase 12 must begin from accepted Phase 11 and satisfy its own complete gate before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -278,9 +279,53 @@ passed.
 - Quarantine evidence participates in counts, fingerprints, and analysis
   results but is not yet published as its own artifact.
 
+## Phase 11 acceptance record
+
+Phase 11 implements the safety-limited, approval-gated repair path and proves
+the resulting target state through a separate observation boundary. All five
+packages were accepted through [pull request #104](https://github.com/Elia-Youssef/paritygrid/pull/104)
+at merge commit [`169b538`](https://github.com/Elia-Youssef/paritygrid/commit/169b538eac347f014a1142552bfce9305f27cda7).
+
+### Phase 11 package status
+
+| Package | Status | Evidence |
+|---|---|---|
+| P11.1 — repair planning | Accepted | Canonical plans bind the run, reconciliation fingerprint, source and target identities, policy generation, rules, analysis, and query versions. The closed action matrix permits only target creation and update; review-only outcomes cannot produce an action. |
+| P11.2 — approval and fencing | Accepted | Durable approval records bind exact plan content and reconciliation state. Stale, foreign, concurrent, and replayed approvals fail closed. |
+| P11.3 — idempotent application | Accepted | Per-action reservations, pre-dispatch ambiguity evidence, stable idempotency keys, target preconditions, replay and resume, and competing-application fences prove one logical effect and prevent false acceptance after interruption. |
+| P11.4 — target verification | Accepted | Independently paged target observation is bracketed by matching snapshots, produces its own versioned target-state fingerprint, persists immutable verification facts, and cannot self-certify parity from repair output. |
+| P11.5 — showcase integration | Accepted | The reconciliation-to-plan-to-approval-to-application-to-verification scenario executes more than 50 repairs, records durable evidence, produces exactly one target request per action, proves reapplication is a no-op, and reproduces the verification fingerprint. |
+
+### Phase 11 acceptance evidence
+
+The accepted candidate `353dc5be14370bc86e83361014ebf4e1f4808c6f`
+passed the complete local lane and both exact-head GitHub workflows recorded in
+the pull request. The local Windows run passed 6,311 tests with five
+environment-only filesystem-link skips and 96.28% aggregate coverage. Scoped
+coverage passed for application execution, reconciliation analysis, the
+sequential runner, runner adapters, connector adapters, reconciliation, the
+repair workflow, and the repair domain. Locked dependency audits, Ruff,
+Pyright, import boundaries, isolated wheel and spawned-process verification,
+backend smoke, frontend formatting, lint, types, 33 component tests, production
+build, frontend dependency audit, API proxy smoke, instruction validation, and
+the repository-content check all passed.
+
+An independent exact-head review assessed the phase at 100/100 and found no
+open hard gate. Deletion is not representable, stale plans and approvals are
+fenced, ambiguous outcomes cannot become accepted, logical repair effects are
+idempotent, and target parity is established only by independent observation.
+
+### Phase 11 known limitations
+
+- HTTP routes and UI workflows remain assigned to later phases.
+- Target behavior remains bounded to the accepted synthetic loopback warehouse
+  contract and does not claim broader production transport support.
+- Target-state, reconciliation, and execution-evidence fingerprints remain
+  deliberately distinct and are not interchangeable.
+
 ## Advancement rule
 
-Phase 10 is accepted on top of accepted Phases 8 and 9. Phase 11 may begin from
-the accepted Phase 10 integration commit and may merge only after its own
+Phase 11 is accepted on top of accepted Phase 10. Phase 12 may begin from the
+accepted Phase 11 integration commit and may merge only after its own
 complete gate and remote CI pass; acceptance of a later phase does not bypass
 acceptance of its prerequisites.
