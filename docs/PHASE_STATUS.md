@@ -23,14 +23,15 @@ This document is the durable index of accepted phases, their integration commits
 | 13 — Live and generated API boundary | Accepted | [`c0011ed`](https://github.com/Elia-Youssef/paritygrid/commit/c0011edbec409ba132c4323a09a7b4a15d655441) | [Phase pull request #109](https://github.com/Elia-Youssef/paritygrid/pull/109) | Reconciliation and repair routes, durable SSE replay, advisory WebSocket telemetry, deterministic OpenAPI and TypeScript generation, and confined packaged frontend serving | Typed frontend data ownership, durable/live state precedence, application routing, and the accessible product shell remain Phase 14 and 15 work. |
 | 14 — UI design system and shell | Accepted | [`05d1724`](https://github.com/Elia-Youssef/paritygrid/commit/05d1724f64c049022457fe2d3012f1b0640dcbe8) | [Phase pull request #111](https://github.com/Elia-Youssef/paritygrid/pull/111) | Semantic design tokens, owned accessible primitives, stable routing, keyboard navigation shell, shared async states, responsive and reduced-motion behavior, and safe render-error recovery | Routes intentionally contain shell-level placeholders; typed API ownership, caching, durable/live reducers, and reconnecting browser transports remain Phase 15 work. |
 | 15 — Typed frontend data and live state | Accepted | [`1263101`](https://github.com/Elia-Youssef/paritygrid/commit/1263101fbb4bfe79108b8308c726b7c5a25e2979) | [Phase pull request #114](https://github.com/Elia-Youssef/paritygrid/pull/114) | Generated API client integration, deterministic query/cache ownership, bounded durable SSE recovery, advisory WebSocket telemetry, and sequence/version-aware coherent run state | Product screens and workflows remain Phase 16 through 18 work; the accepted layer supplies state and transport ownership without claiming those interfaces. |
+| 16 — Pipeline and overview interface | Accepted | [`0d2f8c7`](https://github.com/Elia-Youssef/paritygrid/commit/0d2f8c7aefcf3cd7ed92cba9abdfca0ea52ca312) | [Phase pull request #116](https://github.com/Elia-Youssef/paritygrid/pull/116) | Truthful public and operations overviews, searchable pipeline library with URL-backed state, typed React Flow node set, studio canvas with keyboard authoring, node inspector, and frontier-fenced versioned plan publication | Reconciliation, repair, live execution observability, and comparison screens remain Phase 17 and 18 work; their routes stay explicit placeholders. |
 
 ## Active boundary
 
-Phase 16 is the next delivery boundary. No Phase 16 implementation has been accepted.
+Phase 17 is the next delivery boundary. No Phase 17 implementation has been accepted.
 
-- Accepted Phase 15 integration: [`1263101`](https://github.com/Elia-Youssef/paritygrid/commit/1263101fbb4bfe79108b8308c726b7c5a25e2979).
-- Phase 15 acceptance evidence: [pull request #114](https://github.com/Elia-Youssef/paritygrid/pull/114) and its exact-head Windows, Ubuntu, policy, frontend, Chromium, and smoke checks.
-- Phase 16 must begin from accepted Phase 15 and satisfy its own complete gate before acceptance.
+- Accepted Phase 16 integration: [`0d2f8c7`](https://github.com/Elia-Youssef/paritygrid/commit/0d2f8c7aefcf3cd7ed92cba9abdfca0ea52ca312).
+- Phase 16 acceptance evidence: [pull request #116](https://github.com/Elia-Youssef/paritygrid/pull/116) and its exact-head Windows, Ubuntu, policy, frontend, Chromium, and smoke checks.
+- Phase 17 must begin from accepted Phase 16 and satisfy its own complete gate before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -548,9 +549,73 @@ exact client/server idempotency parity.
 - The required browser acceptance lane is Chromium; the broader release
   browser matrix remains assigned to later release verification.
 
+## Phase 16 acceptance record
+
+Phase 16 delivers the public and operations overviews, the pipeline library,
+and the complete accessible pipeline-authoring workflow. All seven packages
+were accepted through
+[pull request #116](https://github.com/Elia-Youssef/paritygrid/pull/116) at
+merge commit
+[`0d2f8c7`](https://github.com/Elia-Youssef/paritygrid/commit/0d2f8c7aefcf3cd7ed92cba9abdfca0ea52ca312).
+
+### Phase 16 package status
+
+| Package | Status | Evidence |
+|---|---|---|
+| P16.1 — public project overview | Accepted | The overview claims only shipped capabilities, marks future work explicitly unavailable, and links into the console; hostile external text renders inertly. |
+| P16.2 — operations overview | Accepted | Durable runs, runner availability, and readiness render from strict validated responses; unavailable facts render as unavailable and never as zero, with coherent stale and error states. |
+| P16.3 — pipeline library | Accepted | Search, selection, creation, and pagination keep URL-backed state across reload, back, forward, and direct entry; keyboard-accessible rows and dialogs throughout. |
+| P16.4 — typed React Flow node set | Accepted | A closed node registry binds typed ports and kinds; the graph always has a semantic table alternative so pointer interaction is never the only path. |
+| P16.5 — pipeline studio canvas | Accepted | Typed graph authoring with port-validated connections, precise rejection feedback, keyboard-only editing, and a route-bound unsaved-draft navigation blocker. |
+| P16.6 — node configuration inspector | Accepted | Typed field editors validate before publication, announce precise safe errors, and move focus correctly on open and close. |
+| P16.7 — plan preview and publication | Accepted | Canonical plan preview, explicit `expected_latest_version` frontier fencing against the new durable version-frontier route, idempotency-keyed publication that blocks double submission, preserves the draft on stale conflict, replays exact bytes under the same key, and fails closed on malformed or mismatched acknowledgements. |
+
+### Phase 16 acceptance evidence
+
+The accepted candidate `00f2845`
+(`866c7f4` is content-identical; the merge updates ancestry only) passed the
+complete local Windows lane and the exact-head
+[pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33413597134)
+with Ubuntu and Windows Python, frontend, and repository-policy checks. The
+local run passed 6,512 Python tests with seven environment-only
+filesystem-link skips and 95.59% aggregate coverage. Every scoped coverage
+gate passed, including 90.53% for the API. Locked dependency audits, Ruff,
+strict Pyright, import boundaries, generated OpenAPI and TypeScript drift,
+isolated wheel and spawned-process verification, packaged frontend
+reproduction, backend smoke, API proxy smoke, instruction validation, and
+whitespace validation passed.
+
+The frontend lane passed formatting, lint, types, generated declaration
+compilation, 490 tests at required coverage, the production build, exact
+three-file distribution reproduction, 23 Chromium browser workflows with
+deterministic locale, timezone, viewport, and reduced-motion settings, and
+the dependency audit with zero reported vulnerabilities. Browser evidence
+covers overview navigation, durable operations data with coherent unavailable
+rendering, library URL-state restoration, creation, hostile-text inertness,
+600px narrow viewport, and the full canonical authoring path including
+keyboard-only graph editing, invalid-connection rejection, inspector
+validation focus, plan preview, first publication, double-submit blocking,
+stale-conflict recovery with frontier refresh, exact idempotency replay, and
+malformed and mismatched acknowledgement rejection.
+
+An independent exact-head review assessed Phase 16 at 100/100 across workflow
+completeness, graph correctness, accessibility, error states, and browser
+evidence, with no open hard gate.
+
+### Phase 16 known limitations
+
+- Reconciliation, repair, live execution observability, and runner
+  comparison screens remain Phase 17 and 18 work; their routes stay explicit
+  placeholders.
+- The graph canvas keeps pointer and keyboard parity through semantic
+  alternatives; free-form spatial editing gestures remain bounded by the
+  owned component set.
+- The required browser acceptance lane is Chromium; the broader release
+  browser matrix remains assigned to later release verification.
+
 ## Advancement rule
 
-Phase 15 is accepted on top of accepted Phase 14. Phase 16 may begin from the
-accepted Phase 15 integration commit and may merge only after its own
+Phase 16 is accepted on top of accepted Phase 15. Phase 17 may begin from the
+accepted Phase 16 integration commit and may merge only after its own
 complete gate and remote CI pass; acceptance of a later phase does not bypass
 acceptance of its prerequisites.
