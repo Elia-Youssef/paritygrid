@@ -6,9 +6,17 @@ _SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"x-content-type-options", b"nosniff"),
     (b"x-frame-options", b"DENY"),
     (b"referrer-policy", b"no-referrer"),
-    (b"content-security-policy", b"default-src 'none'; frame-ancestors 'none'"),
     (b"cross-origin-opener-policy", b"same-origin"),
 )
+_DEFAULT_CSP = b"default-src 'none'; frame-ancestors 'none'"
+_DOCUMENTATION_CSP = (
+    b"default-src 'none'; base-uri 'none'; form-action 'none'; "
+    b"frame-ancestors 'none'; object-src 'none'; connect-src 'self'; "
+    b"script-src https://cdn.jsdelivr.net 'unsafe-inline'; "
+    b"style-src https://cdn.jsdelivr.net; "
+    b"img-src 'self' data: https://fastapi.tiangolo.com"
+)
+_DOCUMENTATION_PATHS = frozenset({"/api/docs", "/api/docs/oauth2-redirect"})
 _NO_STORE = b"no-store"
 
 
@@ -39,6 +47,11 @@ class SecurityHeadersMiddleware:
                 for name, value in _SECURITY_HEADERS:
                     if name not in present:
                         headers.append((name, value))
+                if b"content-security-policy" not in present:
+                    content_security_policy = (
+                        _DOCUMENTATION_CSP if path in _DOCUMENTATION_PATHS else _DEFAULT_CSP
+                    )
+                    headers.append((b"content-security-policy", content_security_policy))
                 if api_response and b"cache-control" not in present:
                     headers.append((b"cache-control", _NO_STORE))
                 message["headers"] = headers
