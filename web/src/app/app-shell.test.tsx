@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { App } from "./App";
+import { appQueryClient } from "../api/query-client";
 import { expectNoAccessibilityViolations } from "../test/axe";
 
 function stubHealthApi(status = 200): void {
@@ -10,7 +11,12 @@ function stubHealthApi(status = 200): void {
     "fetch",
     vi
       .fn<typeof fetch>()
-      .mockResolvedValue(new Response('{"status":"ok"}', { status })),
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ status: "ok", service: "ParityGrid", version: "0.1.0" }),
+          { status, headers: { "Content-Type": "application/json" } },
+        ),
+      ),
   );
 }
 
@@ -26,6 +32,7 @@ function breadcrumbLabels(trail: HTMLElement): string[] {
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  appQueryClient.clear();
   load("/");
 });
 
@@ -100,8 +107,18 @@ describe("operations shell", () => {
   it("allows an unavailable API connection to recover", async () => {
     const fetchMock = vi
       .fn<typeof fetch>()
-      .mockResolvedValueOnce(new Response('{"status":"unavailable"}', { status: 503 }))
-      .mockResolvedValueOnce(new Response('{"status":"ok"}', { status: 200 }));
+      .mockResolvedValueOnce(
+        new Response("server restarting", {
+          status: 503,
+          headers: { "Content-Type": "text/plain" },
+        }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ status: "ok", service: "ParityGrid", version: "0.1.0" }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
     load("/app");

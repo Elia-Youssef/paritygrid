@@ -1,10 +1,67 @@
 [CmdletBinding()]
-param()
+param(
+    [switch]$CandidateFileSelfTest
+)
 
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
 $docsRoot = Join-Path $projectRoot 'docs'
 $failures = [System.Collections.Generic.List[string]]::new()
+
+function Get-RepositoryCandidateFiles {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Root
+    )
+
+    return @(
+        git -C $Root ls-files
+        git -C $Root ls-files --others --exclude-standard
+    ) |
+        Sort-Object -Unique |
+        Where-Object { Test-Path -LiteralPath (Join-Path $Root $_) -PathType Leaf }
+}
+
+if ($CandidateFileSelfTest) {
+    $selfTestRoot = Join-Path (
+        [IO.Path]::GetTempPath()
+    ) ("paritygrid-validator-{0}" -f [Guid]::NewGuid().ToString('N'))
+    try {
+        $assetRoot = Join-Path $selfTestRoot 'web/dist/assets'
+        [void](New-Item -ItemType Directory -Path $assetRoot -Force)
+        git -C $selfTestRoot init --quiet
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to initialize candidate-file self-test repository.'
+        }
+
+        $deletedAsset = Join-Path $assetRoot 'index-old.js'
+        $replacementAsset = Join-Path $assetRoot 'index-new.js'
+        [IO.File]::WriteAllText($deletedAsset, 'old')
+        git -C $selfTestRoot add -- 'web/dist/assets/index-old.js'
+        if ($LASTEXITCODE -ne 0) {
+            throw 'Unable to stage the self-test fixture.'
+        }
+
+        Remove-Item -LiteralPath $deletedAsset
+        [IO.File]::WriteAllText($replacementAsset, 'new')
+        $candidateFiles = @(Get-RepositoryCandidateFiles -Root $selfTestRoot)
+
+        if ($candidateFiles -contains 'web/dist/assets/index-old.js') {
+            throw 'Deleted indexed files must not be repository candidates.'
+        }
+        if ($candidateFiles -notcontains 'web/dist/assets/index-new.js') {
+            throw 'Existing untracked files must be repository candidates.'
+        }
+
+        Write-Output 'Repository candidate-file self-test passed.'
+        return
+    }
+    finally {
+        if (Test-Path -LiteralPath $selfTestRoot) {
+            Remove-Item -LiteralPath $selfTestRoot -Recurse -Force
+        }
+    }
+}
 
 function Get-ProjectRelativePath {
     param(
@@ -54,10 +111,7 @@ foreach ($relativePath in $requiredFiles) {
     }
 }
 
-$repositoryFiles = @(
-    git -C $projectRoot ls-files
-    git -C $projectRoot ls-files --others --exclude-standard
-) | Sort-Object -Unique
+$repositoryFiles = @(Get-RepositoryCandidateFiles -Root $projectRoot)
 $markdownFiles = $repositoryFiles |
     Where-Object { [IO.Path]::GetExtension($_) -ieq '.md' } |
     ForEach-Object { Get-Item -LiteralPath (Join-Path $projectRoot $_) }
@@ -106,7 +160,7 @@ foreach ($prohibitedName in $prohibitedNames) {
     $failures.Add("Prohibited instruction filename: $prohibitedName")
 }
 
-$trackedFiles = git -C $projectRoot ls-files
+$trackedFiles = $repositoryFiles
 $generatedFileInventory = @(
     'tests/fixtures/persistence/v0001/manifest.json',
     'tests/fixtures/persistence/v0001/schema.sql',
@@ -117,8 +171,8 @@ $generatedFileInventory = @(
     'docs/generated/openapi.json',
     'web/src/api/generated/schema.d.ts',
     'web/dist/index.html',
-    'web/dist/assets/index-RMxKHZql.css',
-    'web/dist/assets/index-B4YmMBQ6.js'
+    'web/dist/assets/index-cEiBJWhO.css',
+    'web/dist/assets/index-turva_mm.js'
 )
 $unsafeTrackedExtensions = @(
     '.cer', '.crt', '.db', '.der', '.duckdb', '.key', '.kdbx', '.log', '.parquet',
