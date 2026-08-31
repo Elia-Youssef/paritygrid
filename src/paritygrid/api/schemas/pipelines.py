@@ -70,3 +70,19 @@ class PipelineVersionAckResponse(TransportModel):
     specification_sha256: str
     planner_format_version: int
     published_at: str
+
+
+class PipelineVersionFrontierResponse(TransportModel):
+    """Immutable latest-version frontier for one pipeline.
+
+    ``latest_version`` is the newest immutable published version and is
+    ``0`` exactly when the pipeline has never been published. It is the
+    value clients echo as ``expected_latest_version`` when publishing.
+    Mutable metadata row versions are deliberately not part of this
+    response: they never fence publication.
+    """
+
+    schema_version: Literal[1] = TRANSPORT_SCHEMA_VERSION
+    pipeline_id: str
+    latest_version: int = Field(ge=0, le=2_147_483_647)
+    published: bool

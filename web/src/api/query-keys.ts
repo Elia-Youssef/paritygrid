@@ -9,7 +9,51 @@ import type { PageParams } from "./client";
 export const queryKeys = {
   health: () => ["health"] as const,
 
+  readiness: () => ["system", "readiness"] as const,
+
   capabilities: () => ["system", "capabilities"] as const,
+
+  /** Connector collection page used for inspector bindings. */
+  connectors: (params: PageParams & { includeArchived?: boolean }) =>
+    [
+      "connectors",
+      "list",
+      {
+        cursor: params.cursor ?? null,
+        includeArchived: params.includeArchived ?? false,
+        limit: params.limit ?? 100,
+      },
+    ] as const,
+
+  /** Root for all pipeline-scoped data. */
+  pipelinesRoot: () => ["pipelines"] as const,
+
+  /**
+   * Pipeline library page from the REST collection. Library search text is
+   * URL state filtered deterministically on top of fetched pages, so the
+   * REST result key carries exactly the parameters the server accepts.
+   */
+  pipelineList: (params: PageParams & { includeArchived?: boolean }) =>
+    [
+      "pipelines",
+      "list",
+      {
+        cursor: params.cursor ?? null,
+        includeArchived: params.includeArchived ?? false,
+        limit: params.limit ?? 50,
+      },
+    ] as const,
+
+  /** One pipeline identity with its mutable display metadata. */
+  pipelineDetail: (pipelineId: string) => ["pipelines", pipelineId, "detail"] as const,
+
+  /** The immutable latest-version frontier (0 = never published). */
+  pipelineFrontier: (pipelineId: string) =>
+    ["pipelines", pipelineId, "version-frontier"] as const,
+
+  /** One immutable published pipeline version. */
+  pipelineVersion: (pipelineId: string, version: number) =>
+    ["pipelines", pipelineId, "versions", { version }] as const,
 
   /** Root for all run-scoped data; invalidate to refresh everything run-related. */
   runsRoot: () => ["runs"] as const,

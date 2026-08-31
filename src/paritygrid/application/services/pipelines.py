@@ -155,6 +155,19 @@ class PipelineService:
                     field="document",
                 ) from error
 
+    def latest_version(self, pipeline_id: str) -> int:
+        """Return the immutable latest-version frontier, 0 when unpublished.
+
+        This is the value clients echo as ``expected_latest_version`` when
+        publishing. Mutable metadata row versions never participate in
+        publication fencing.
+        """
+        identity = _pipeline_id(pipeline_id)
+        with self._unit_of_work.transaction() as repositories:
+            if repositories.pipelines.get(identity) is None:
+                raise OperationalRecordNotFoundError("pipeline", pipeline_id)
+            return repositories.pipelines.latest_version(identity)
+
     def get_version(self, pipeline_id: str, version: int) -> PipelineVersionRecord:
         identity = _pipeline_id(pipeline_id)
         number = _version(version)

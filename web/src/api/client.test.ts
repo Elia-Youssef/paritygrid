@@ -365,8 +365,12 @@ describe("typed REST client", () => {
     ).rejects.toBeInstanceOf(RangeError);
     expect(global.fetch).not.toHaveBeenCalled();
     expect(isValidIdempotencyKey("ok-key_1")).toBe(true);
+    expect(isValidIdempotencyKey("A.b:c-1")).toBe(true);
     expect(isValidIdempotencyKey("")).toBe(false);
     expect(isValidIdempotencyKey("x".repeat(129))).toBe(false);
+    for (const malformed of [" bad", "bad key", "@bad", "_bad", "bad!"]) {
+      expect(isValidIdempotencyKey(malformed)).toBe(false);
+    }
   });
 });
 

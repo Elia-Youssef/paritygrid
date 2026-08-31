@@ -132,12 +132,14 @@ function isAbortError(error: unknown, signal: AbortSignal | undefined): boolean 
 }
 
 /**
- * The `Idempotency-Key` header accepts 1–128 portable ASCII characters;
- * validating before send keeps malformed keys a local programmer error
- * instead of a server round trip.
+ * The `Idempotency-Key` header accepts 1–128 characters from the server's
+ * portable identity alphabet and must begin with an ASCII alphanumeric;
+ * validating before send keeps malformed keys a local programmer error.
  */
 export function isValidIdempotencyKey(key: string): boolean {
-  return key.length >= 1 && key.length <= 128 && /^[\x20-\x7e]+$/.test(key);
+  return (
+    key.length >= 1 && key.length <= 128 && /^[A-Za-z0-9][A-Za-z0-9._:-]*$/.test(key)
+  );
 }
 
 export interface RequestLike {
@@ -350,4 +352,214 @@ export async function createRepairPlan(
     signal: options.signal,
     headers: requireIdempotencyKey(options),
   });
+}
+
+// ---------------------------------------------------------------------------
+// Phase 16 boundaries. Every response — including nested pipeline documents
+// — is parsed through the strict runtime schemas before it can reach query
+// state; a rejected response becomes a safe invalid-response error and
+// nothing partial enters state.
+// ---------------------------------------------------------------------------
+
+import type { ZodType } from "zod";
+import {
+  capabilitiesSchema,
+  connectorPageSchema,
+  healthSchema,
+  pipelinePageSchema,
+  pipelineResponseSchema,
+  pipelineVersionAckSchema,
+  pipelineVersionFrontierSchema,
+  pipelineVersionSchema,
+  readinessSchema,
+  runPageSchema,
+  type CapabilitiesValue,
+  type ConnectorResponseValue,
+  type PipelineResponseValue,
+  type PipelineVersionAckValue,
+  type PipelineVersionFrontierValue,
+  type PipelineVersionValue,
+  type RunResponseValue,
+} from "./schemas";
+
+async function requestParsed<T>(
+  path: string,
+  schema: ZodType<T>,
+  init: RequestLike & { method?: string; body?: string } = {},
+): Promise<T> {
+  const payload = await requestJson<unknown>(
+    path,
+    (value): value is unknown => value !== undefined,
+    init,
+  );
+  const parsed = schema.safeParse(payload);
+  if (!parsed.success) {
+    throw new ApiRequestError("invalid-response", {
+      title: GENERIC_ERROR_TITLE,
+      extensions: [],
+    });
+  }
+  return parsed.data;
+}
+
+export interface PipelinePageParams extends PageParams {
+  includeArchived?: boolean;
+}
+
+/** Paginated pipeline identities, optionally including archived records. */
+export function fetchPipelines(
+  params: PipelinePageParams = {},
+  init: RequestLike = {},
+): Promise<{
+  items: PipelineResponseValue[];
+  limit: number;
+  next_cursor: string | null;
+}> {
+  return requestParsed(
+    apiPath(["pipelines"], {
+      cursor: params.cursor,
+      include_archived:
+        params.includeArchived === undefined
+          ? undefined
+          : String(params.includeArchived),
+      limit: params.limit,
+    }),
+    pipelinePageSchema,
+    init,
+  );
+}
+
+/** One pipeline identity with mutable display metadata. */
+export function fetchPipeline(
+  pipelineId: string,
+  init: RequestLike = {},
+): Promise<PipelineResponseValue> {
+  return requestParsed(
+    apiPath(["pipelines", pipelineId]),
+    pipelineResponseSchema,
+    init,
+  );
+}
+
+/** Create a pipeline; the 201 acknowledgement is a pipeline response. */
+export async function createPipeline(
+  request: { pipeline_id: string; display_name: string; description?: string | null },
+  options: MutationOptions = {},
+): Promise<PipelineResponseValue> {
+  return requestParsed(apiPath(["pipelines"]), pipelineResponseSchema, {
+    method: "POST",
+    body: JSON.stringify(request),
+    signal: options.signal,
+    headers: requireIdempotencyKey(options),
+  });
+}
+
+/** Immutable latest-version frontier; `latest_version` is 0 when unpublished. */
+export function fetchPipelineVersionFrontier(
+  pipelineId: string,
+  init: RequestLike = {},
+): Promise<PipelineVersionFrontierValue> {
+  return requestParsed(
+    apiPath(["pipelines", pipelineId, "version-frontier"]),
+    pipelineVersionFrontierSchema,
+    init,
+  );
+}
+
+/** One immutable published pipeline version, document parsed in full. */
+export function fetchPipelineVersion(
+  pipelineId: string,
+  version: number,
+  init: RequestLike = {},
+): Promise<PipelineVersionValue> {
+  return requestParsed(
+    apiPath(["pipelines", pipelineId, "versions", String(Math.trunc(version))]),
+    pipelineVersionSchema,
+    init,
+  );
+}
+
+export interface PublishVersionCommand {
+  document: Record<string, unknown>;
+  expectedLatestVersion: number;
+}
+
+/**
+ * Publish one immutable pipeline version. The idempotency key must bind to
+ * one unchanged canonical command; the caller owns its stability.
+ */
+export async function publishPipelineVersion(
+  pipelineId: string,
+  command: PublishVersionCommand,
+  options: MutationOptions = {},
+): Promise<PipelineVersionAckValue> {
+  return requestParsed(
+    apiPath(["pipelines", pipelineId, "versions"]),
+    pipelineVersionAckSchema,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        document: command.document,
+        expected_latest_version: command.expectedLatestVersion,
+      }),
+      signal: options.signal,
+      headers: requireIdempotencyKey(options),
+    },
+  );
+}
+
+/** Connector collection used by inspector bindings. */
+export function fetchConnectors(
+  params: PipelinePageParams = {},
+  init: RequestLike = {},
+): Promise<{
+  items: ConnectorResponseValue[];
+  limit: number;
+  next_cursor: string | null;
+}> {
+  return requestParsed(
+    apiPath(["connectors"], {
+      cursor: params.cursor,
+      include_archived:
+        params.includeArchived === undefined
+          ? undefined
+          : String(params.includeArchived),
+      limit: params.limit,
+    }),
+    connectorPageSchema,
+    init,
+  );
+}
+
+/** Durable recent-runs page for the operations overview. */
+export function fetchRunPage(
+  params: PageParams = {},
+  init: RequestLike = {},
+): Promise<{ items: RunResponseValue[]; limit: number; next_cursor: string | null }> {
+  return requestParsed(
+    apiPath(["runs"], { cursor: params.cursor, limit: params.limit }),
+    runPageSchema,
+    init,
+  );
+}
+
+export function fetchReadiness(init: RequestLike = {}): Promise<{
+  status: "ready" | "not_ready";
+  service: string;
+  version: string;
+  detail: string;
+}> {
+  return requestParsed("/readyz", readinessSchema, init);
+}
+
+export function fetchCapabilitiesDetail(
+  init: RequestLike = {},
+): Promise<CapabilitiesValue> {
+  return requestParsed(apiPath(["system", "capabilities"]), capabilitiesSchema, init);
+}
+
+export function fetchHealthDetail(
+  init: RequestLike = {},
+): Promise<{ status: "ok"; service: string; version: string }> {
+  return requestParsed("/healthz", healthSchema, init);
 }

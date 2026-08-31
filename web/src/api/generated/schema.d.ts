@@ -170,6 +170,20 @@ export interface components {
             row_version: number;
             schema_version?: 1;
         };
+        PipelineVersionAckResponse: {
+            pipeline_id: string;
+            planner_format_version: number;
+            published_at: string;
+            schema_version?: 1;
+            specification_sha256: string;
+            version: number;
+        };
+        PipelineVersionFrontierResponse: {
+            latest_version: number;
+            pipeline_id: string;
+            published: boolean;
+            schema_version?: 1;
+        };
         PipelineVersionPublishRequest: {
             document: {
                 [key: string]: unknown;
@@ -359,6 +373,8 @@ export type OperationalLimitsBody = components["schemas"]["OperationalLimitsBody
 export type PipelineCreateRequest = components["schemas"]["PipelineCreateRequest"];
 export type PipelinePageResponse = components["schemas"]["PipelinePageResponse"];
 export type PipelineResponse = components["schemas"]["PipelineResponse"];
+export type PipelineVersionAckResponse = components["schemas"]["PipelineVersionAckResponse"];
+export type PipelineVersionFrontierResponse = components["schemas"]["PipelineVersionFrontierResponse"];
 export type PipelineVersionPublishRequest = components["schemas"]["PipelineVersionPublishRequest"];
 export type PipelineVersionResponse = components["schemas"]["PipelineVersionResponse"];
 export type ReadinessResponse = components["schemas"]["ReadinessResponse"];
@@ -458,7 +474,7 @@ export interface operations {
             responses: {
                 "201": {
                     content: {
-                        "application/json": unknown;
+                        "application/json": components["schemas"]["PipelineResponse"];
                     };
                 };
                 "422": {
@@ -483,13 +499,28 @@ export interface operations {
                 };
             };
         };
+        get_pipeline_version_frontier_api_v1_pipelines__pipeline_id__version_frontier_get: {
+            parameters: Array<{ name: "pipeline_id"; in: "path"; required: true }>;
+            responses: {
+                "200": {
+                    content: {
+                        "application/json": components["schemas"]["PipelineVersionFrontierResponse"];
+                    };
+                };
+                "422": {
+                    content: {
+                        "application/json": components["schemas"]["HTTPValidationError"];
+                    };
+                };
+            };
+        };
         publish_pipeline_version_api_v1_pipelines__pipeline_id__versions_post: {
             parameters: Array<{ name: "pipeline_id"; in: "path"; required: true }>;
             requestBody: { content: { "application/json": components["schemas"]["PipelineVersionPublishRequest"]; }; };
             responses: {
                 "201": {
                     content: {
-                        "application/json": unknown;
+                        "application/json": components["schemas"]["PipelineVersionAckResponse"];
                     };
                 };
                 "422": {

@@ -1,14 +1,5 @@
-import { Workflow } from "lucide-react";
-
-import { ScreenPlaceholder } from "./screen-placeholder";
+import { PipelineLibrary } from "../../features/library/library-screen";
 
 export function PipelineLibraryScreen() {
-  return (
-    <ScreenPlaceholder
-      icon={Workflow}
-      title="Pipeline library"
-      lede="Published, immutable pipeline versions with search, runner compatibility, and resource limits."
-      arrival="The library arrives with the pipeline workflows."
-    />
-  );
+  return <PipelineLibrary />;
 }

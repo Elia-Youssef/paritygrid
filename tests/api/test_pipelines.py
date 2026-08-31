@@ -154,3 +154,65 @@ async def test_invalid_pipeline_identifier_returns_validation_problem(
     response = await client.get("/api/v1/pipelines/pip_BAD-ID")
     assert response.status_code == 422
     assert response.json()["code"] == "validation"
+
+
+@pytest.mark.anyio
+async def test_version_frontier_is_zero_before_publication(
+    client: httpx.AsyncClient,
+) -> None:
+    await client.post("/api/v1/pipelines", json={"pipeline_id": PIPELINE_ID, "display_name": "d"})
+    response = await client.get(f"/api/v1/pipelines/{PIPELINE_ID}/version-frontier")
+    assert response.status_code == 200
+    body = response.json()
+    assert body == {
+        "schema_version": 1,
+        "pipeline_id": PIPELINE_ID,
+        "latest_version": 0,
+        "published": False,
+    }
+
+
+@pytest.mark.anyio
+async def test_version_frontier_tracks_the_immutable_published_version(
+    client: httpx.AsyncClient,
+) -> None:
+    await seed_scenario(client)
+    first = await client.get(f"/api/v1/pipelines/{PIPELINE_ID}/version-frontier")
+    assert first.status_code == 200
+    assert first.json()["latest_version"] == 1
+    assert first.json()["published"] is True
+
+    publish = await client.post(
+        f"/api/v1/pipelines/{PIPELINE_ID}/versions",
+        json={"document": DOCUMENT, "expected_latest_version": 1},
+    )
+    assert publish.status_code == 201
+    ack = publish.json()
+    assert ack["schema_version"] == 1
+    assert ack["pipeline_id"] == PIPELINE_ID
+    assert ack["version"] == 2
+    assert ack["planner_format_version"] == 1
+    assert len(ack["specification_sha256"]) == 64
+    assert "published_at" in ack
+
+    second = await client.get(f"/api/v1/pipelines/{PIPELINE_ID}/version-frontier")
+    assert second.json()["latest_version"] == 2
+
+
+@pytest.mark.anyio
+async def test_version_frontier_unknown_pipeline_returns_not_found(
+    client: httpx.AsyncClient,
+) -> None:
+    response = await client.get("/api/v1/pipelines/pip_missing-one/version-frontier")
+    assert response.status_code == 404
+    assert response.json()["code"] == "pipeline_not_found"
+
+
+@pytest.mark.anyio
+async def test_version_frontier_rejects_non_canonical_identities(
+    client: httpx.AsyncClient,
+) -> None:
+    for pipeline_id in ("not-canonical", "pip_upper-Case"):
+        response = await client.get(f"/api/v1/pipelines/{pipeline_id}/version-frontier")
+        assert response.status_code == 422, pipeline_id
+        assert response.json()["code"] == "validation"

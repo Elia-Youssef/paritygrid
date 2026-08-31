@@ -358,14 +358,14 @@ describe("browser telemetry transport", () => {
       const socket = new TelemetrySocket({
         runId: RUN_ID,
         handlers,
-        transport: createBrowserTelemetryTransport(),
+        transport: createBrowserTelemetryTransport("http://console.example/app/runs"),
         scheduler,
         now: () => scheduler.now,
       });
       socket.start();
 
       const instance = FakeBrowserSocket.instances[0];
-      expect(instance?.url).toBe(`/api/v1/live/runs/${RUN_ID}`);
+      expect(instance?.url).toBe(`ws://console.example/api/v1/live/runs/${RUN_ID}`);
 
       instance?.onopen?.();
       expect(socket.getConnection()).toMatchObject({ kind: "live" });
@@ -409,6 +409,30 @@ describe("browser telemetry transport", () => {
       socket.start();
       socket.dispose();
       expect(FakeBrowserSocket.instances[0]?.closed).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("uses a secure WebSocket URL when the page origin is HTTPS", () => {
+    FakeBrowserSocket.instances = [];
+    vi.stubGlobal("WebSocket", FakeBrowserSocket);
+    try {
+      const scheduler = new ManualScheduler();
+      const { handlers } = recordingHandlers();
+      const socket = new TelemetrySocket({
+        runId: RUN_ID,
+        handlers,
+        transport: createBrowserTelemetryTransport("https://console.example/app/"),
+        scheduler,
+        now: () => scheduler.now,
+      });
+      socket.start();
+
+      expect(FakeBrowserSocket.instances[0]?.url).toBe(
+        `wss://console.example/api/v1/live/runs/${RUN_ID}`,
+      );
+      socket.dispose();
     } finally {
       vi.unstubAllGlobals();
     }
