@@ -1,5 +1,23 @@
 @import "tailwindcss";
 
+@font-face {
+  font-family: "Inter Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 900;
+  src: url("@fontsource-variable/inter/files/inter-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
+
+@font-face {
+  font-family: "Roboto Mono Variable";
+  font-style: normal;
+  font-display: swap;
+  font-weight: 100 700;
+  src: url("@fontsource-variable/roboto-mono/files/roboto-mono-latin-wght-normal.woff2")
+    format("woff2-variations");
+}
+
 /*
  * ParityGrid semantic design tokens.
  *
@@ -66,8 +84,8 @@
   --queue-saturated: #d85f6b;
 
   /* Typography */
-  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
-  --font-mono: "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --font-sans: "Inter Variable", sans-serif;
+  --font-mono: "Roboto Mono Variable", monospace;
   --text-2xs: 0.6875rem;
   --text-xs: 0.75rem;
   --text-sm: 0.875rem;
@@ -113,6 +131,7 @@
   --layout-overview-hero-columns: minmax(0, 1fr) 30rem;
   --layout-overview-content-columns: minmax(0, 1fr) 24rem;
   --layout-overview-readiness-columns: minmax(0, 1fr) auto;
+  --layout-inspector-columns: minmax(0, 10rem) minmax(0, 1fr);
 }
 
 @theme inline {
@@ -158,6 +177,7 @@
   --grid-template-columns-overview-hero: var(--layout-overview-hero-columns);
   --grid-template-columns-overview-content: var(--layout-overview-content-columns);
   --grid-template-columns-overview-readiness: var(--layout-overview-readiness-columns);
+  --grid-template-columns-inspector: var(--layout-inspector-columns);
   --radius-sm: var(--radius-sm);
   --radius-md: var(--radius-md);
   --radius-lg: var(--radius-lg);

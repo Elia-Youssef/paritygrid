@@ -1,14 +1,23 @@
-import { ShieldCheck } from "lucide-react";
+import { useParams } from "react-router";
 
-import { ScreenPlaceholder } from "./screen-placeholder";
+import { RepairReview } from "../../features/repair/repair-review";
 
 export function RepairReviewScreen() {
+  const { repairId = "" } = useParams();
   return (
-    <ScreenPlaceholder
-      icon={ShieldCheck}
-      title="Repair review"
-      lede="Exact reconciliation fingerprint, proposed changes, risks, approval status, and idempotent application progress for one repair plan."
-      arrival="Repair review arrives with the repair workflows, including the approval gate and stale-plan blocking."
-    />
+    <div className="flex min-h-0 flex-1 flex-col">
+      <div className="border-b border-border px-4 py-2">
+        <h1
+          data-page-title
+          tabIndex={-1}
+          className="text-sm font-semibold text-foreground"
+        >
+          Repair review
+        </h1>
+      </div>
+      <div className="min-h-0 flex-1 overflow-y-auto p-4">
+        {repairId === "" ? null : <RepairReview planId={repairId} />}
+      </div>
+    </div>
   );
 }

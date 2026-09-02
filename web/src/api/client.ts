@@ -20,6 +20,8 @@ import type {
   ConflictPageResponse,
   HealthResponse,
   ReconciliationResponse,
+  RepairApplyResponse,
+  RepairApprovalRequestBody,
   RepairPlanCreateRequest,
   RepairPlanResponse,
   RunCreateRequest,
@@ -30,7 +32,9 @@ import {
   capabilitiesResponseSchema,
   conflictPageResponseSchema,
   healthResponseSchema,
+  isLowercaseSha256Hex,
   reconciliationResponseSchema,
+  repairApplyResponseSchema,
   repairPlanResponseSchema,
   runPageResponseSchema,
   runResponseSchema,
@@ -114,6 +118,10 @@ function isConflictPageResponse(value: unknown): value is ConflictPageResponse {
 
 export function isRepairPlanResponse(value: unknown): value is RepairPlanResponse {
   return repairPlanResponseSchema.safeParse(value).success;
+}
+
+export function isRepairApplyResponse(value: unknown): value is RepairApplyResponse {
+  return repairApplyResponseSchema.safeParse(value).success;
 }
 
 function isHealthResponse(value: unknown): value is HealthResponse {
@@ -284,7 +292,8 @@ export function fetchReconciliation(
 ): Promise<ReconciliationResponse> {
   return requestJson(
     apiPath(["runs", runId, "reconciliation"]),
-    isReconciliationResponse,
+    (value): value is ReconciliationResponse =>
+      isReconciliationResponse(value) && value.run_id === runId,
     init,
   );
 }
@@ -299,7 +308,8 @@ export function fetchConflicts(
       limit: params.limit,
       cursor: params.cursor,
     }),
-    isConflictPageResponse,
+    (value): value is ConflictPageResponse =>
+      isConflictPageResponse(value) && value.run_id === runId,
     init,
   );
 }
@@ -308,7 +318,12 @@ export function fetchRepairPlan(
   planId: string,
   init: RequestLike = {},
 ): Promise<RepairPlanResponse> {
-  return requestJson(apiPath(["repair-plans", planId]), isRepairPlanResponse, init);
+  return requestJson(
+    apiPath(["repair-plans", planId]),
+    (value): value is RepairPlanResponse =>
+      isRepairPlanResponse(value) && value.plan_id === planId,
+    init,
+  );
 }
 
 export interface MutationOptions extends RequestLike {
@@ -346,12 +361,97 @@ export async function createRepairPlan(
   request: RepairPlanCreateRequest,
   options: MutationOptions = {},
 ): Promise<RepairPlanResponse> {
-  return requestJson(apiPath(["runs", runId, "repair-plans"]), isRepairPlanResponse, {
-    method: "POST",
-    body: JSON.stringify(request),
-    signal: options.signal,
-    headers: requireIdempotencyKey(options),
-  });
+  return requestJson(
+    apiPath(["runs", runId, "repair-plans"]),
+    (value): value is RepairPlanResponse =>
+      isRepairPlanResponse(value) && value.run_id === runId,
+    {
+      method: "POST",
+      body: JSON.stringify(request),
+      signal: options.signal,
+      headers: requireIdempotencyKey(options),
+    },
+  );
+}
+
+/**
+ * The approval body must already satisfy the server contract before any
+ * byte is sent: a malformed approver identity or fingerprint would be
+ * rejected server-side anyway, and refusing locally keeps the durable
+ * idempotency key from being consumed by a request that cannot succeed.
+ */
+function requireValidApprovalRequest(request: RepairApprovalRequestBody): void {
+  const {
+    approved_by,
+    approved_content_fingerprint,
+    approved_reconciliation_fingerprint,
+  } = request;
+  if (
+    typeof approved_by !== "string" ||
+    approved_by.length < 1 ||
+    approved_by.length > 128
+  ) {
+    throw new RangeError("approved_by must be 1-128 characters");
+  }
+  if (!isLowercaseSha256Hex(approved_content_fingerprint)) {
+    throw new RangeError("approved_content_fingerprint must be lowercase 64-hex");
+  }
+  if (!isLowercaseSha256Hex(approved_reconciliation_fingerprint)) {
+    throw new RangeError(
+      "approved_reconciliation_fingerprint must be lowercase 64-hex",
+    );
+  }
+}
+
+/**
+ * Approve one proposed repair plan. The durable approval binds the plan to
+ * the exact reconciliation and content fingerprints the approver reviewed;
+ * retries of the same decision must reuse one idempotency key so the server
+ * replays the stored acknowledgement.
+ */
+export async function approveRepairPlan(
+  planId: string,
+  request: RepairApprovalRequestBody,
+  options: MutationOptions = {},
+): Promise<RepairPlanResponse> {
+  requireValidApprovalRequest(request);
+  return requestJson(
+    apiPath(["repair-plans", planId, "approve"]),
+    (value): value is RepairPlanResponse =>
+      isRepairPlanResponse(value) &&
+      value.plan_id === planId &&
+      value.content_fingerprint === request.approved_content_fingerprint &&
+      value.reconciliation_fingerprint === request.approved_reconciliation_fingerprint,
+    {
+      method: "POST",
+      body: JSON.stringify(request),
+      signal: options.signal,
+      headers: requireIdempotencyKey(options),
+    },
+  );
+}
+
+/**
+ * Apply one approved repair plan. The route takes no body; the
+ * `Idempotency-Key` alone decides replay versus fresh execution. A 503
+ * Problem Details response means application ended unresolved or was
+ * interrupted — a recoverable failure surfaced to the caller as
+ * `ApiRequestError` with status 503, never a success.
+ */
+export async function applyRepairPlan(
+  planId: string,
+  options: MutationOptions = {},
+): Promise<RepairApplyResponse> {
+  return requestJson(
+    apiPath(["repair-plans", planId, "apply"]),
+    (value): value is RepairApplyResponse =>
+      isRepairApplyResponse(value) && value.plan_id === planId,
+    {
+      method: "POST",
+      signal: options.signal,
+      headers: requireIdempotencyKey(options),
+    },
+  );
 }
 
 // ---------------------------------------------------------------------------

@@ -93,6 +93,7 @@ const requiredNonColorTokens = [
   "--layout-overview-hero-columns",
   "--layout-overview-content-columns",
   "--layout-overview-readiness-columns",
+  "--layout-inspector-columns",
 ] as const;
 
 describe("semantic design token snapshot", () => {
