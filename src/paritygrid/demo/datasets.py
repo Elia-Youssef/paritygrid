@@ -223,6 +223,79 @@ def canonical_json_bytes(value: Mapping[str, WireValue]) -> bytes:
     ).encode("ascii")
 
 
+def derive_source_dataset(
+    dataset: SyntheticDataset,
+    rows: Sequence[WireRow],
+) -> SyntheticDataset:
+    """Derive one source dataset carrying an ordered subset of parent rows.
+
+    The derived manifest is recomputed with the same identity rules as
+    :func:`generate_dataset`, so a slice is itself a first-class versioned
+    dataset: same seed, scenario version, generator version, and profile,
+    distinguished by the content digest of its own rows. The rows must be a
+    non-repeating, order-preserving subset of the parent rows, so per-source
+    role counts remain a pure function of the parent dataset.
+    """
+    sliced: tuple[WireRow, ...] = rows if isinstance(rows, tuple) else tuple(rows)
+    parent_positions = [id(row) for row in dataset.rows]
+    seen: set[int] = set()
+    last_position = -1
+    for row in sliced:
+        if type(row) is not WireRow:
+            raise DatasetError("source dataset rows must be WireRow values")
+        if id(row) in seen:
+            raise DatasetError("source dataset rows must not repeat a parent row")
+        try:
+            position = parent_positions.index(id(row), last_position + 1)
+        except ValueError as error:
+            raise DatasetError(
+                "source dataset rows must be an ordered subset of the parent dataset"
+            ) from error
+        seen.add(id(row))
+        last_position = position
+    counts = {
+        "boundary": sum(row.role is RowRole.BOUNDARY for row in rows),
+        "duplicate": sum(row.role is RowRole.DUPLICATE for row in rows),
+        "malformed": sum(row.role is RowRole.MALFORMED for row in rows),
+        "total": len(rows),
+        "valid": sum(row.role is RowRole.VALID for row in rows),
+    }
+    digest_stream = bytearray()
+    total_payload_bytes = 0
+    for row in sliced:
+        encoded = row.payload_bytes()
+        digest_stream += _frame(row.index.to_bytes(_LENGTH_BYTES, byteorder="big"))
+        digest_stream += _frame(encoded)
+        total_payload_bytes += len(encoded)
+    rows_sha256 = sha256(digest_stream).hexdigest()
+    identity_preimage = (
+        b"paritygrid-dataset-identity-v1\0"
+        + _frame(DATASET_FORMAT_NAME.encode("ascii"))
+        + _frame(str(DATASET_GENERATOR_VERSION).encode("ascii"))
+        + _frame(str(dataset.seed.value).encode("ascii"))
+        + _frame(str(dataset.scenario_version.value).encode("ascii"))
+        + _frame(dataset.profile.canonical_bytes())
+        + _frame(rows_sha256.encode("ascii"))
+    )
+    manifest = DatasetManifest(
+        dataset_id=sha256(identity_preimage).hexdigest(),
+        generator_version=DATASET_GENERATOR_VERSION,
+        seed=dataset.seed,
+        scenario_version=dataset.scenario_version,
+        profile=dataset.profile,
+        counts=counts,
+        rows_sha256=rows_sha256,
+        total_payload_bytes=total_payload_bytes,
+    )
+    return SyntheticDataset(
+        seed=dataset.seed,
+        scenario_version=dataset.scenario_version,
+        profile=dataset.profile,
+        rows=sliced,
+        manifest=manifest,
+    )
+
+
 def parse_wire_row(
     payload: Mapping[str, WireValue],
     *,
