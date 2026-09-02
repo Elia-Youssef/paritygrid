@@ -193,4 +193,12 @@ describe("telemetry message validation", () => {
       parseTelemetryMessage(snapshotJson([telemetryRecordJson(10, { run_id: "" })])).ok,
     ).toBe(false);
   });
+
+  it("rejects an unknown telemetry record schema version", () => {
+    expect(
+      parseTelemetryMessage(
+        snapshotJson([telemetryRecordJson(1_000, { schema_version: 2 })]),
+      ).ok,
+    ).toBe(false);
+  });
 });

@@ -29,6 +29,8 @@ import type { RunResponse } from "../api/generated/schema";
 import { runIdentity, type RunIdentity } from "../api/client";
 
 export const MAX_EVENT_LOG = 100;
+/** One latest durable event per possible pipeline node (pipeline limit: 256). */
+export const MAX_NODE_EVENT_PROJECTION = 256;
 
 /** Snapshot of one run received from an authoritative REST response. */
 export interface RunSnapshot extends RunIdentity {
@@ -47,6 +49,11 @@ export interface DurableRunState {
   readonly status: DurableStatus;
   /** Bounded newest-first log of accepted durable event summaries. */
   readonly events: readonly DurableEventFrame[];
+  /**
+   * Bounded newest-first latest event per node identity. Unlike the timeline,
+   * this projection does not forget a quiet node after 100 unrelated events.
+   */
+  readonly nodeEvents: readonly DurableEventFrame[];
   readonly lastError: string | null;
 }
 
@@ -57,6 +64,7 @@ export function initialDurableRunState(runId: string): DurableRunState {
     run: null,
     status: "idle",
     events: [],
+    nodeEvents: [],
     lastError: null,
   };
 }
@@ -171,10 +179,29 @@ export function applyDurableEvent(
   }
 
   const events = [frame, ...state.events].slice(0, MAX_EVENT_LOG);
+  const nodeId = frame.payload.node_id;
+  let nodeEvents = state.nodeEvents;
+  if (typeof nodeId === "string" && nodeId !== "") {
+    const prior = state.nodeEvents.find((event) => event.payload.node_id === nodeId);
+    if (prior === undefined && state.nodeEvents.length >= MAX_NODE_EVENT_PROJECTION) {
+      // A valid immutable pipeline cannot contain more than 256 node
+      // identities. Recover instead of evicting a quiet node and silently
+      // presenting an incomplete durable overlay.
+      return markRecovering(state, {
+        kind: "incompatible-frame",
+        detail: "durable node projection exceeds the pipeline node limit",
+      });
+    }
+    nodeEvents = [
+      frame,
+      ...state.nodeEvents.filter((event) => event.payload.node_id !== nodeId),
+    ];
+  }
   const next: DurableRunState = {
     ...state,
     acceptedSequence: frame.sequence,
     events,
+    nodeEvents,
   };
   // Some durable events carry a newer authoritative run projection (for
   // example lifecycle transitions). Apply it under the same version guard

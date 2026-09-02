@@ -135,7 +135,8 @@ export function OperationsOverview() {
                     <td className="px-4 py-1.5">
                       <StatusBadge
                         state={
-                          run.state === "completed"
+                          run.state === "succeeded" ||
+                          run.state === "partially_succeeded"
                             ? "verified"
                             : run.state === "failed"
                               ? "failure"

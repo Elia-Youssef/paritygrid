@@ -44,6 +44,21 @@ const sha256Schema = z.string().regex(/^[0-9a-f]{64}$/, {
 const schemaVersion1 = z.literal(1);
 const positiveVersion = z.number().int().min(1).max(2_147_483_647);
 
+export const RUN_STATES = [
+  "queued",
+  "running",
+  "pausing",
+  "paused",
+  "resuming",
+  "succeeded",
+  "partially_succeeded",
+  "failed",
+  "cancelling",
+  "cancelled",
+] as const;
+export type RunStateValue = (typeof RUN_STATES)[number];
+export const runStateSchema = z.enum(RUN_STATES);
+
 // ---------------------------------------------------------------------------
 // Pipelines
 // ---------------------------------------------------------------------------
@@ -206,7 +221,7 @@ export const runResponseSchema = z
     schema_version: schemaVersion1,
     run_id: runIdSchema,
     run_version: z.number().int().min(0),
-    state: z.string().min(1).max(64),
+    state: runStateSchema,
     observed_at: timestampSchema,
     created_at: timestampSchema,
     started_at: timestampSchema.nullable(),
@@ -216,15 +231,51 @@ export const runResponseSchema = z
     pipeline_version: positiveVersion,
     runner_kind: z.string().min(1).max(64),
     scenario_seed: z.number().int().nullable(),
-    execution_evidence_fingerprint: z.string().max(128).nullable().optional(),
+    execution_evidence_fingerprint: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable()
+      .optional(),
     execution_evidence_fingerprint_version: z
       .number()
       .int()
-      .min(0)
+      .min(1)
       .nullable()
       .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((run, context) => {
+    const fingerprintPresent = run.execution_evidence_fingerprint != null;
+    const versionPresent = run.execution_evidence_fingerprint_version != null;
+    if (fingerprintPresent !== versionPresent) {
+      context.addIssue({
+        code: "custom",
+        message: "execution-evidence fingerprint and version must be present together",
+        path: ["execution_evidence_fingerprint"],
+      });
+    }
+    if (
+      fingerprintPresent &&
+      run.state !== "succeeded" &&
+      run.state !== "partially_succeeded"
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "execution evidence is only valid for an evidence-finalized run",
+        path: ["state"],
+      });
+    }
+    if (
+      ["succeeded", "partially_succeeded", "failed", "cancelled"].includes(run.state) &&
+      run.finished_at === null
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "terminal runs must include a finish timestamp",
+        path: ["finished_at"],
+      });
+    }
+  });
 
 export type RunResponseValue = z.infer<typeof runResponseSchema>;
 
@@ -241,14 +292,25 @@ export const operationalLimitsSchema = z
   .object({
     schema_version: schemaVersion1,
     artifact_chunk_bytes: z.number().int().min(1),
-    idempotency_lease_seconds: z.number().int().min(1),
+    // RuntimeSettings exposes these as bounded floats. Preserve fractional
+    // values while rejecting measurements the backend cannot produce.
+    idempotency_lease_seconds: z.number().positive().max(86_400),
     max_concurrent_requests: z.number().int().min(1),
     max_json_depth: z.number().int().min(1),
     max_page_size: z.number().int().min(1),
     max_request_body_bytes: z.number().int().min(1),
-    request_timeout_seconds: z.number().int().min(1),
+    request_timeout_seconds: z.number().min(0.1).max(300),
   })
-  .strict();
+  .strict()
+  .superRefine((limits, context) => {
+    if (limits.idempotency_lease_seconds <= limits.request_timeout_seconds) {
+      context.addIssue({
+        code: "custom",
+        message: "idempotency lease must exceed the request timeout",
+        path: ["idempotency_lease_seconds"],
+      });
+    }
+  });
 
 export const runnerStrategySchema = z
   .object({
@@ -289,6 +351,8 @@ export const capabilitiesSchema = z
         minimum_supported_version: z.string().min(1).max(64),
         journal_mode: z.string().min(1).max(32),
         synchronous_level: z.number().int().min(0),
+        // The runtime always reports its configured SQLite busy timeout.
+        busy_timeout_ms: z.number().int().min(0),
         threadsafety: z.number().int().min(0),
         supports_json_sql: z.boolean(),
         supports_returning: z.boolean(),

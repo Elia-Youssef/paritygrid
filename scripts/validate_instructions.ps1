@@ -171,8 +171,8 @@ $generatedFileInventory = @(
     'docs/generated/openapi.json',
     'web/src/api/generated/schema.d.ts',
     'web/dist/index.html',
-    'web/dist/assets/index-Tk3iJXDk.css',
-    'web/dist/assets/index-DYo5X9GS.js'
+    'web/dist/assets/index-DacWRX6X.css',
+    'web/dist/assets/index-D4J1i5t0.js'
 )
 $unsafeTrackedExtensions = @(
     '.cer', '.crt', '.db', '.der', '.duckdb', '.key', '.kdbx', '.log', '.parquet',

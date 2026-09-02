@@ -6,6 +6,7 @@ import {
   fetchConflicts,
   fetchHealth,
   fetchRun,
+  fetchRunPage,
   isApiRequestError,
   isValidIdempotencyKey,
   runIdentity,
@@ -39,6 +40,13 @@ afterEach(() => {
 });
 
 describe("typed REST client", () => {
+  it("rejects an unknown run-state filter before issuing a request", () => {
+    const fetchMock = vi.fn<typeof fetch>();
+    vi.stubGlobal("fetch", fetchMock);
+    expect(() => fetchRunPage({ state: "not-a-state" as never })).toThrow(RangeError);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   it("returns the generated-typed payload on success", async () => {
     vi.stubGlobal(
       "fetch",

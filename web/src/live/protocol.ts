@@ -21,8 +21,6 @@ export const MIN_SEQUENCE = 1;
 /** Per-run durable sequence numbers use the same bound as the server. */
 export const DURABLE_SEQUENCE_MAX = 2_147_483_647;
 
-const boundedVersion = z.number().int().min(1).max(1_000_000);
-
 export const durableEventFrameSchema = z
   .object({
     schema_version: z.literal(1),
@@ -60,7 +58,10 @@ export const telemetryMetricSchema = z
 
 export const telemetryRecordSchema = z
   .object({
-    schema_version: boundedVersion,
+    // The application telemetry record contract is independently versioned
+    // and currently supports only version 1. Accepting a future version as
+    // if it had today's meaning would make advisory metrics misleading.
+    schema_version: z.literal(1),
     observed_at_micros: z.number().int().min(0),
     run_id: z.string().min(1).max(256),
     metrics: z.array(telemetryMetricSchema).max(256),

@@ -6,6 +6,7 @@ import {
   DurableRunStream,
   type DurableStreamHandlers,
   type RecoveryReason,
+  type SseTransport,
 } from "./durable-stream";
 import {
   durableFrameJson,
@@ -142,6 +143,52 @@ describe("durable run stream", () => {
     connections[1]?.emitData(durableFrameJson(3));
     expect(recorded.frames).toEqual([1, 3]);
     expect(stream.getAcceptedSequence()).toBe(3);
+  });
+
+  it("does not spend retry budget when an aborted connection settles during recovery", async () => {
+    const scheduler = new ManualScheduler();
+    const callbacks: Parameters<SseTransport>[1][] = [];
+    const transport: SseTransport = (_url, connectionCallbacks) => {
+      callbacks.push(connectionCallbacks);
+      return new Promise((resolve) => {
+        connectionCallbacks.signal.addEventListener(
+          "abort",
+          () => {
+            resolve({ outcome: "completed" });
+          },
+          { once: true },
+        );
+      });
+    };
+    let finishRecovery: ((sequence: number) => void) | undefined;
+    const recovery = new Promise<number>((resolve) => {
+      finishRecovery = resolve;
+    });
+    const { recorded, handlers } = recordingHandlers({
+      onRecovery: () => recovery,
+    });
+    const stream = new DurableRunStream({
+      runId: RUN_ID,
+      handlers,
+      transport,
+      scheduler,
+      maxAttempts: 2,
+    });
+    stream.start();
+
+    callbacks[0]?.onEvent({ id: null, event: null, data: durableFrameJson(1) });
+    callbacks[0]?.onEvent({ id: null, event: null, data: durableFrameJson(3) });
+    await flushMicrotasks();
+
+    expect(stream.getStatus()).toMatchObject({ kind: "recovering", attemptsUsed: 1 });
+    expect(recorded.exhausted).toHaveLength(0);
+    expect(scheduler.pendingCount()).toBe(0);
+
+    finishRecovery?.(1);
+    await flushMicrotasks();
+    expect(callbacks).toHaveLength(2);
+    expect(stream.getStatus()).toMatchObject({ kind: "connecting", attemptsUsed: 1 });
+    expect(recorded.exhausted).toHaveLength(0);
   });
 
   it("recovers from a malformed data payload without advancing", () => {

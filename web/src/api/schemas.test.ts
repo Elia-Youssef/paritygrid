@@ -17,6 +17,7 @@ import {
   pipelineVersionSchema,
   readinessSchema,
   runPageSchema,
+  runResponseSchema,
 } from "./schemas";
 
 export const PIPELINE = {
@@ -372,6 +373,107 @@ describe("operations overview schemas", () => {
         next_cursor: null,
       }).success,
     ).toBe(false);
+  });
+  it("parses the exact capabilities payload the backend contract emits", () => {
+    // Field set and value domains mirror
+    // src/paritygrid/api/schemas/system.py:CapabilitiesResponse, the wire
+    // truth behind GET /api/v1/system/capabilities.
+    const backendCapabilities = {
+      schema_version: 1,
+      service: "ParityGrid",
+      version: "0.1.0",
+      sqlite: {
+        schema_version: 1,
+        library_version: "3.45.1",
+        minimum_supported_version: "3.35.0",
+        threadsafety: 1,
+        journal_mode: "wal",
+        synchronous_level: 2,
+        busy_timeout_ms: 5000,
+        supports_json_sql: true,
+        supports_returning: true,
+      },
+      runners: [{ schema_version: 1, strategy_id: "sequential", available: true }],
+      subordinate_pools: [],
+      limits: {
+        schema_version: 1,
+        max_request_body_bytes: 1048576,
+        max_json_depth: 64,
+        max_concurrent_requests: 8,
+        request_timeout_seconds: 0.5,
+        max_page_size: 100,
+        idempotency_lease_seconds: 86399.5,
+        artifact_chunk_bytes: 65536,
+      },
+      features: [{ name: "runtime-profile-loopback", available: true }],
+    };
+    expect(capabilitiesSchema.safeParse(backendCapabilities).success).toBe(true);
+    expect(
+      capabilitiesSchema.safeParse({
+        ...backendCapabilities,
+        sqlite: { ...backendCapabilities.sqlite, busy_timeout_ms: -1 },
+      }).success,
+    ).toBe(false);
+    expect(
+      capabilitiesSchema.safeParse({
+        ...backendCapabilities,
+        limits: { ...backendCapabilities.limits, request_timeout_seconds: 0 },
+      }).success,
+    ).toBe(false);
+    for (const limits of [
+      { ...backendCapabilities.limits, request_timeout_seconds: 300.01 },
+      { ...backendCapabilities.limits, idempotency_lease_seconds: 86_400.01 },
+      {
+        ...backendCapabilities.limits,
+        request_timeout_seconds: 30.5,
+        idempotency_lease_seconds: 30.5,
+      },
+    ]) {
+      expect(
+        capabilitiesSchema.safeParse({ ...backendCapabilities, limits }).success,
+      ).toBe(false);
+    }
+    expect(
+      capabilitiesSchema.safeParse({
+        ...backendCapabilities,
+        limits: {
+          ...backendCapabilities.limits,
+          request_timeout_seconds: 0.1,
+          idempotency_lease_seconds: 86_400,
+        },
+      }).success,
+    ).toBe(true);
+  });
+
+  it("enforces execution-evidence pairing, shape, version, and lifecycle state", () => {
+    const completedRun = {
+      schema_version: 1,
+      run_id: "run_schema",
+      run_version: 3,
+      state: "succeeded",
+      observed_at: "2026-01-01T00:01:00Z",
+      created_at: "2026-01-01T00:00:00Z",
+      started_at: "2026-01-01T00:00:02Z",
+      finished_at: "2026-01-01T00:00:32Z",
+      cancellation_requested_at: null,
+      pipeline_id: "pip_schema",
+      pipeline_version: 1,
+      runner_kind: "sequential",
+      scenario_seed: 7,
+      execution_evidence_fingerprint: "a".repeat(64),
+      execution_evidence_fingerprint_version: 2,
+    };
+    expect(runResponseSchema.safeParse(completedRun).success).toBe(true);
+    for (const candidate of [
+      { ...completedRun, execution_evidence_fingerprint_version: null },
+      { ...completedRun, execution_evidence_fingerprint: "not-a-sha256" },
+      { ...completedRun, execution_evidence_fingerprint_version: 0 },
+      { ...completedRun, state: "running", finished_at: null },
+      { ...completedRun, state: "failed" },
+      { ...completedRun, finished_at: null },
+    ]) {
+      expect(runResponseSchema.safeParse(candidate).success).toBe(false);
+    }
   });
 });
 
