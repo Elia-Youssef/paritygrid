@@ -89,6 +89,7 @@ from paritygrid.application.writes.execution import (
     TransitionRunResult,
 )
 from paritygrid.application.writes.reconciliation import (
+    RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION,
     PersistReconciliation,
     PersistReconciliationResult,
     RecordTargetVerification,
@@ -806,6 +807,19 @@ def _validate_reconciliation_persist_command(command: PersistReconciliation) -> 
         command.run_id,
         occurred_at,
     )
+    event = companions.event.event
+    if event.payload_schema_version != RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION:
+        raise WriterInvalidRequestError("reconciliation event payload schema version is invalid")
+    if event.payload.to_mapping() != {
+        "analytical_query_version": summary.analytical_query_version,
+        "canonical_key_count": summary.counts.canonical_key_count,
+        "conflict_count": len(command.conflicts),
+        "reconciliation_fingerprint": summary.fingerprint.value,
+        "source_input_identity": summary.source_input_identity,
+        "source_quarantined_count": summary.counts.source_quarantined_count,
+        "target_input_identity": summary.target_input_identity,
+    }:
+        raise WriterInvalidRequestError("reconciliation event payload is inconsistent")
     if summary.fingerprint_version < 1:
         raise WriterInvalidRequestError("reconciliation summary version is invalid")
 

@@ -356,6 +356,25 @@ export async function createRun(
   });
 }
 
+export type RunControlDirection = "pause" | "resume" | "cancel";
+
+/** Execute one idempotent lifecycle command and bind its response to the route run. */
+export async function controlRun(
+  runId: string,
+  direction: RunControlDirection,
+  options: MutationOptions = {},
+): Promise<RunResponse> {
+  return requestJson(
+    apiPath(["runs", runId, direction]),
+    (value): value is RunResponse => isRunResponse(value) && value.run_id === runId,
+    {
+      method: "POST",
+      signal: options.signal,
+      headers: requireIdempotencyKey(options),
+    },
+  );
+}
+
 export async function createRepairPlan(
   runId: string,
   request: RepairPlanCreateRequest,

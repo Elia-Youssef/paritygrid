@@ -34,6 +34,7 @@ from paritygrid.application.repair.errors import (
 from paritygrid.application.repair.evidence import RepairWorkflowReader
 from paritygrid.application.repair.identities import derive_conflict_id
 from paritygrid.application.writes.reconciliation import (
+    RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION,
     PersistReconciliation,
     PersistReconciliationResult,
 )
@@ -110,6 +111,7 @@ class ReconciliationResultService:
             correlation_id=correlation_id,
             occurred_at=occurred_at,
             payload=_summary_payload(analysis, len(conflicts)),
+            event_payload_schema_version=RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION,
         )
         command = PersistReconciliation(
             run_id=run_id,
@@ -196,6 +198,7 @@ def _summary_payload(analysis: ReconciliationAnalysis, conflict_count: int) -> d
         "canonical_key_count": summary.counts.canonical_key_count,
         "conflict_count": conflict_count,
         "reconciliation_fingerprint": summary.fingerprint.value,
+        "source_quarantined_count": summary.counts.source_quarantined_count,
         "source_input_identity": summary.source_input_identity,
         "target_input_identity": summary.target_input_identity,
     }

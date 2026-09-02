@@ -110,7 +110,7 @@ jobs:
       - name: Install Chromium for shell-browser coverage
         run: npm exec -- playwright install --with-deps chromium
       - name: Run Chromium shell-browser coverage
-        run: npm run test:browser
+        run: npm exec -- playwright test --config=playwright.frontend.config.ts
       - name: Verify committed frontend distribution drift
         working-directory: .
         run: python scripts/verify_frontend_dist.py
@@ -147,3 +147,9 @@ jobs:
         run: npm ci
       - name: Exercise Vite-to-FastAPI proxy
         run: uv run python scripts/verify_frontend_api_path.py
+      - name: Install Chromium for the real demo proof
+        working-directory: web
+        run: npm exec -- playwright install --with-deps chromium
+      - name: Exercise the real packaged demo through Chromium
+        working-directory: web
+        run: npm exec -- playwright test e2e/demo.spec.ts

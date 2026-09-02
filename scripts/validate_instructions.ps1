@@ -172,7 +172,7 @@ $generatedFileInventory = @(
     'web/src/api/generated/schema.d.ts',
     'web/dist/index.html',
     'web/dist/assets/index-CoE9DoJ8.css',
-    'web/dist/assets/index-Bz2LA2AQ.js',
+    'web/dist/assets/index-Dy5BHT7q.js',
     'web/dist/assets/inter-latin-wght-normal-Dx4kXJAl.woff2',
     'web/dist/assets/roboto-mono-latin-wght-normal-CZtBPCCa.woff2'
 )

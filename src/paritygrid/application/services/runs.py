@@ -402,7 +402,11 @@ class RunLifecycleService:
         durable, _frontier = self._read(identity, identity.value)
         if (
             durable.run_id != evidence.run.run_id
-            or durable.row_version != evidence.run.row_version
+            # A resumed engine can commit more durable progress between the
+            # owner's proven RUNNING transition and this authoritative
+            # re-read.  Reject regressions, but accept a newer version that
+            # still proves the requested lifecycle state.
+            or durable.row_version < evidence.run.row_version
             or durable.state is not expected_state
         ):
             raise OperationalUnavailableError(

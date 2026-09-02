@@ -32,7 +32,10 @@ export const durableEventFrameSchema = z
     subject_id: z.string().min(1).max(256),
     occurred_at: z.string().min(1).max(64),
     correlation_id: z.string().max(128).nullish(),
-    payload_schema_version: z.literal(1),
+    // The envelope contract is version 1, while individual durable payloads
+    // are independently versioned. Work lease/result facts currently use
+    // payload version 2 and remain opaque to this transport layer.
+    payload_schema_version: z.number().int().min(1).max(2),
     payload: z.record(z.string(), z.unknown()),
   })
   .strict();

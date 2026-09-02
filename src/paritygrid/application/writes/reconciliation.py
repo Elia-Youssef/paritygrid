@@ -15,7 +15,9 @@ from paritygrid.application.writes.repairs import RepairCompanions
 from paritygrid.domain.models import RunId, UtcTimestamp
 from paritygrid.domain.reconciliation import ReconciliationSummary
 
-RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION = 1
+# Version 2 adds the source-quarantine count already owned by the immutable
+# reconciliation summary; version 1 rows remain append-only historical facts.
+RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION = 2
 TARGET_VERIFICATION_EVENT_PAYLOAD_SCHEMA_VERSION = 1
 
 

@@ -28,6 +28,19 @@ describe("durable frame validation", () => {
     }
   });
 
+  it("accepts current opaque payload version 2 and rejects future version 3", () => {
+    expect(
+      parseDurableFrame(
+        JSON.parse(durableFrameJson(1, { payload_schema_version: 2 })) as unknown,
+      ).ok,
+    ).toBe(true);
+    expect(
+      parseDurableFrame(
+        JSON.parse(durableFrameJson(1, { payload_schema_version: 3 })) as unknown,
+      ).ok,
+    ).toBe(false);
+  });
+
   it("rejects non-object input", () => {
     for (const input of [null, 42, "frame", [], true]) {
       expect(parseDurableFrame(input).ok).toBe(false);

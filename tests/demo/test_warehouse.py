@@ -3,6 +3,7 @@
 import asyncio
 import json
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import httpx
 import pytest
@@ -21,7 +22,9 @@ from paritygrid.demo.failures import (
     ScriptedFailure,
     ScriptedFailureKind,
 )
+from paritygrid.demo.simulators.http_wire import HttpRequest
 from paritygrid.demo.simulators.warehouse import (
+    WAREHOUSE_STATE_FILENAME,
     SimulatedWarehouse,
     WarehouseBehavior,
     WarehouseError,
@@ -483,6 +486,34 @@ def test_warehouse_settings_are_validated() -> None:
         WarehouseSettings(max_list_page_size=501)
 
 
+def test_persistent_state_preserves_target_and_idempotency_across_restart(
+    tmp_path: Path,
+) -> None:
+    state_root = tmp_path / "owned-state"
+    state_root.mkdir()
+    payload = _record_payload("GRID-RESTART")
+    first = WarehouseBehavior(FailureScript.empty(), state_root=state_root)
+    _apply(first, "GRID-RESTART", payload, "restart-key")
+    assert first.external_effect_counts() == {"restart-key": 1}
+    assert (state_root / WAREHOUSE_STATE_FILENAME).is_file()
+
+    restarted = WarehouseBehavior(FailureScript.empty(), state_root=state_root)
+    replay = _request("GRID-RESTART", payload, "restart-key")
+    response = restarted.handle(replay)
+    assert response.status == 200
+    assert json.loads(response.body.decode("utf-8"))["replayed"] is True
+    assert restarted.target_version == 1
+    assert restarted.external_effect_counts() == {"restart-key": 1}
+
+
+def test_persistent_state_fails_closed_on_a_malformed_document(tmp_path: Path) -> None:
+    state_root = tmp_path / "owned-state"
+    state_root.mkdir()
+    (state_root / WAREHOUSE_STATE_FILENAME).write_text("{}", encoding="utf-8")
+    with pytest.raises(WarehouseError, match="unexpected schema"):
+        WarehouseBehavior(FailureScript.empty(), state_root=state_root)
+
+
 async def test_repeated_replay_stays_idempotent_under_many_keys(
     warehouse: SimulatedWarehouse,
 ) -> None:
@@ -526,9 +557,11 @@ async def test_fingerprint_and_versions_are_insertion_order_independent(
 
 
 def _apply(behavior: WarehouseBehavior, sku: str, payload: dict[str, object], key: str) -> None:
-    from paritygrid.demo.simulators.http_wire import HttpRequest
+    behavior.handle(_request(sku, payload, key))
 
-    request = HttpRequest(
+
+def _request(sku: str, payload: dict[str, object], key: str) -> HttpRequest:
+    return HttpRequest(
         method="PUT",
         path=f"/v1/records/{sku}",
         query={},
@@ -537,4 +570,3 @@ def _apply(behavior: WarehouseBehavior, sku: str, payload: dict[str, object], ke
             "ascii"
         ),
     )
-    behavior.handle(request)

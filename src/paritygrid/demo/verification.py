@@ -144,6 +144,19 @@ _CANONICAL_RETRY_NODE = "nod_can-async-src"
 _CANONICAL_ARTIFACT_NODE = "nod_can-export"
 
 
+def _engine_run_suffix(run_id: str) -> str:
+    """Return the run-local identity suffix used in derived identifiers.
+
+    Canonical engine runs keep the accepted ``run_can-engine-`` shape.  A
+    run created through the public API contributes its own payload after
+    the ``run_`` prefix — already lowercase ASCII and dashes — so derived
+    work, artifact, and checkpoint identities stay valid and unique.
+    """
+    if run_id.startswith("run_can-engine-"):
+        return run_id.removeprefix("run_can-engine-")
+    return run_id.removeprefix("run_")
+
+
 class RunnerManifestError(ValueError):
     """Raised when a cross-runner manifest is built from invalid evidence."""
 
@@ -230,7 +243,7 @@ class CanonicalEngineExecutor(ScriptedConcurrentExecutor):
         run_id = str(assignment.run_id)
         node = str(assignment.node_id)
         partition = str(assignment.partition_key)
-        run_suffix = run_id.removeprefix("run_can-engine-")
+        run_suffix = _engine_run_suffix(run_id)
         artifact_id = f"art_can-e-{run_suffix}-{node.removeprefix('nod_can-')}-{partition}"
         if artifact_id in self._canonical_bodies:
             return artifact_id
@@ -390,7 +403,7 @@ def freeze_runner_record(
     # Artifact identifiers embed their run-local directory identity, so the
     # snapshot normalizes them exactly like every other run-local identity
     # before strategies are compared.
-    run_suffix = str(run_id).removeprefix("run_can-engine-")
+    run_suffix = _engine_run_suffix(str(run_id))
     normalized_artifacts = tuple(
         sorted(
             identity.replace(f"-{run_suffix}-", "-", 1)
@@ -616,7 +629,7 @@ def bootstrap_canonical_run(
     for node in CANONICAL_NODES:
         for partition in CANONICAL_PARTITIONS_BY_NODE[node]:
             node_id = NodeId(node)
-            run_suffix = str(run_id).removeprefix("run_can-engine-")
+            run_suffix = _engine_run_suffix(str(run_id))
             work_item_id = WorkItemId(
                 f"wrk_can-e-{run_suffix}-{node.removeprefix('nod_can-')}-{partition}"
             )
@@ -697,7 +710,7 @@ def build_canonical_engine(
     def artifact_allowance(identity: WorkIdentity) -> tuple[str, ...]:
         node = identity.node_id
         if node == _CANONICAL_ARTIFACT_NODE:
-            run_suffix = str(identity.run_id).removeprefix("run_can-engine-")
+            run_suffix = _engine_run_suffix(str(identity.run_id))
             return (
                 f"art_can-e-{run_suffix}-{node.removeprefix('nod_can-')}-{identity.partition_key}",
             )
@@ -813,7 +826,7 @@ def _checkpoint_projection(
                 checkpoints.c.artifact_id,
             ).where(checkpoints.c.run_id == run_id.value)
         ).all()
-    run_suffix = str(run_id).removeprefix("run_can-engine-")
+    run_suffix = _engine_run_suffix(str(run_id))
     return tuple(
         sorted(
             (

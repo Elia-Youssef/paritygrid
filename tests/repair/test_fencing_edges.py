@@ -353,17 +353,20 @@ class TestReconciliationRaceMappings:
                         frontier_from_evidence,
                     )
                     from paritygrid.application.writes.reconciliation import (
+                        RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION,
                         PersistReconciliation,
                     )
 
                     moment = clock.now()
+                    conflicts = build_persisted_conflicts(RUN_ID, different, moment)
+                    summary = different.summary
                     with database.transaction() as session:
                         dispatch_command(
                             session,
                             PersistReconciliation(
                                 run_id=RUN_ID,
-                                summary=different.summary,
-                                conflicts=build_persisted_conflicts(RUN_ID, different, moment),
+                                summary=summary,
+                                conflicts=conflicts,
                                 created_at=moment,
                                 companions=build_companions(
                                     frontier=frontier_from_evidence(reader.load(RUN_ID)),
@@ -374,7 +377,22 @@ class TestReconciliationRaceMappings:
                                     actor="competitor",
                                     correlation_id="corr-competing",
                                     occurred_at=moment,
-                                    payload={"reconciliation_fingerprint": "f" * 64},
+                                    payload={
+                                        "analytical_query_version": (
+                                            summary.analytical_query_version
+                                        ),
+                                        "canonical_key_count": summary.counts.canonical_key_count,
+                                        "conflict_count": len(conflicts),
+                                        "reconciliation_fingerprint": summary.fingerprint.value,
+                                        "source_quarantined_count": (
+                                            summary.counts.source_quarantined_count
+                                        ),
+                                        "source_input_identity": summary.source_input_identity,
+                                        "target_input_identity": summary.target_input_identity,
+                                    },
+                                    event_payload_schema_version=(
+                                        RECONCILIATION_EVENT_PAYLOAD_SCHEMA_VERSION
+                                    ),
                                 ),
                             ),
                         )

@@ -5,11 +5,16 @@
  * and never allowed to advance durable state. The last coherent durable
  * view stays on screen during recovery under an explicit banner.
  */
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { Background, MiniMap, ReactFlow } from "@xyflow/react";
 
-import { fetchPipelineVersion } from "../../api/client";
+import {
+  controlRun,
+  fetchPipelineVersion,
+  isApiRequestError,
+  type RunControlDirection,
+} from "../../api/client";
 import { queryKeys } from "../../api/query-keys";
 import { ErrorState } from "../../components/states/error-state";
 import { Loading } from "../../components/states/loading";
@@ -46,6 +51,22 @@ export function RunLive({
   const run = durable.run;
   const [zoom, setZoom] = useState<SwimlaneZoom>("full");
   const [selectedNodeId, setSelectedNodeId] = useState<string | null>(null);
+  const queryClient = useQueryClient();
+
+  const lifecycle = useMutation({
+    mutationFn: (direction: RunControlDirection) => {
+      if (run === null) {
+        throw new Error("The authoritative run is not loaded.");
+      }
+      return controlRun(runId, direction, {
+        idempotencyKey: `run-control-${direction}-${runId}-${String(run.run_version)}`,
+      });
+    },
+    onSuccess: (updated) => {
+      queryClient.setQueryData(queryKeys.runDetail(runId), updated);
+    },
+    retry: 0,
+  });
 
   const pipelineVersion = useQuery({
     queryKey:
@@ -66,7 +87,7 @@ export function RunLive({
     if (data === undefined) {
       return null;
     }
-    const parsed = parsePipelineDocument(data.specification);
+    const parsed = parsePipelineDocument(data.specification.pipeline);
     return parsed.ok ? parsed.value : null;
   }, [pipelineVersion.data]);
 
@@ -92,6 +113,16 @@ export function RunLive({
   const queueView = useMemo(
     () => deriveQueuePanels(telemetry, runId),
     [telemetry, runId],
+  );
+  const sourceQuarantinedRecords = useMemo(
+    () =>
+      durable.events.reduce((total, event) => {
+        const value = event.payload.source_quarantined_count;
+        return typeof value === "number" && Number.isInteger(value) && value > 0
+          ? total + value
+          : total;
+      }, 0),
+    [durable.events],
   );
 
   if (durable.status === "error") {
@@ -185,6 +216,25 @@ export function RunLive({
           <span className="font-mono">WS /api/v1/live/runs/{runId}</span>. Durable facts
           outrank telemetry everywhere on this page.
         </p>
+        {run !== null && (
+          <RunLifecycleControls
+            state={run.state}
+            unavailable={
+              durable.status === "recovering" ||
+              durable.status === "stale" ||
+              lifecycle.isPending
+            }
+            pending={lifecycle.variables}
+            error={lifecycle.error}
+            onCommand={(direction) => lifecycle.mutate(direction)}
+          />
+        )}
+        {sourceQuarantinedRecords > 0 && (
+          <p className="mt-2 text-2xs text-muted" data-testid="run-quarantine">
+            Durable reconciliation reports {String(sourceQuarantinedRecords)} source
+            records quarantined during normalization.
+          </p>
+        )}
         {snapshot.stream.kind === "recovering" && (
           <p
             className="mt-1 text-2xs text-warning"
@@ -315,6 +365,69 @@ export function RunLive({
       </section>
     </div>
   );
+}
+
+function RunLifecycleControls({
+  state,
+  unavailable,
+  pending,
+  error,
+  onCommand,
+}: {
+  state: string;
+  unavailable: boolean;
+  pending: RunControlDirection | undefined;
+  error: unknown;
+  onCommand: (direction: RunControlDirection) => void;
+}) {
+  const actions: RunControlDirection[] =
+    state === "running"
+      ? ["pause", "cancel"]
+      : state === "paused"
+        ? ["resume", "cancel"]
+        : state === "queued"
+          ? ["cancel"]
+          : [];
+  if (actions.length === 0) {
+    return null;
+  }
+  return (
+    <div className="mt-3 border-t border-border pt-3" aria-label="Run controls">
+      <div className="flex flex-wrap gap-2">
+        {actions.map((action) => (
+          <button
+            key={action}
+            type="button"
+            data-testid={`run-${action}`}
+            className="rounded border border-border px-3 py-1.5 text-xs capitalize text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={unavailable}
+            onClick={() => onCommand(action)}
+          >
+            {pending === action ? `${action} pending` : action}
+          </button>
+        ))}
+      </div>
+      {unavailable && pending === undefined && (
+        <p className="mt-2 text-2xs text-warning" role="status">
+          Run controls are unavailable until durable state is coherent.
+        </p>
+      )}
+      {error !== null && (
+        <p className="mt-2 text-2xs text-danger" role="alert">
+          {describeControlError(error)}
+        </p>
+      )}
+    </div>
+  );
+}
+
+function describeControlError(error: unknown): string {
+  if (isApiRequestError(error)) {
+    return error.problem.detail ?? error.problem.title;
+  }
+  return error instanceof Error && error.message !== ""
+    ? error.message
+    : "The run command failed safely. Retry the same action.";
 }
 
 function describeRecovery(durable: { lastError: string | null }): string {
