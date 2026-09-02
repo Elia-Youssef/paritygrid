@@ -4,7 +4,7 @@
  * in one cache entry. Keys are hierarchical: invalidating the collection
  * root invalidates every run-scoped entry beneath it.
  */
-import type { PageParams } from "./client";
+import type { PageParams, RunPageParams } from "./client";
 
 export const queryKeys = {
   health: () => ["health"] as const,
@@ -58,16 +58,27 @@ export const queryKeys = {
   /** Root for all run-scoped data; invalidate to refresh everything run-related. */
   runsRoot: () => ["runs"] as const,
 
-  /** Run collection page; limit and cursor both change the result. */
-  runList: (params: PageParams) =>
+  /** Run collection page; limit, cursor, and state filter all change the result. */
+  runList: (params: RunPageParams) =>
     [
       "runs",
       "list",
-      { cursor: params.cursor ?? null, limit: params.limit ?? 50 },
+      {
+        cursor: params.cursor ?? null,
+        limit: params.limit ?? 50,
+        state: params.state ?? null,
+      },
     ] as const,
 
   /** Detail for one run. */
   runDetail: (runId: string) => ["runs", runId, "detail"] as const,
+
+  /**
+   * One comparison over an exact, ordered set of runs. The run ids are part
+   * of the key so two different selections never share one cache entry.
+   */
+  runCompare: (runIds: readonly string[]) =>
+    ["runs", "compare", { runIds: [...runIds] }] as const,
 
   /** Live channel state for one run (durable stream + telemetry). */
   runLive: (runId: string) => ["runs", runId, "live"] as const,

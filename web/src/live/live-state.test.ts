@@ -18,6 +18,7 @@ import {
   markTelemetryStale,
   markTelemetryUnavailable,
   MAX_EVENT_LOG,
+  MAX_NODE_EVENT_PROJECTION,
   MAX_TELEMETRY_RECORDS,
 } from "./live-state";
 import {
@@ -87,6 +88,7 @@ describe("durable run state", () => {
       run: null,
       status: "idle",
       events: [],
+      nodeEvents: [],
     });
   });
 
@@ -160,6 +162,47 @@ describe("durable run state", () => {
       state = applyDurableEvent(state, frame(sequence));
     }
     expect(state.events).toHaveLength(MAX_EVENT_LOG);
+  });
+
+  it("retains a quiet node projection after its event leaves the timeline", () => {
+    let state = initialDurableRunState(RUN_ID);
+    state = applyDurableEvent(state, frame(1, { payload: { node_id: "nod_quiet" } }));
+    for (let sequence = 2; sequence <= MAX_EVENT_LOG + 25; sequence += 1) {
+      state = applyDurableEvent(
+        state,
+        frame(sequence, { payload: { node_id: "nod_busy" } }),
+      );
+    }
+    expect(state.events.some((event) => event.payload.node_id === "nod_quiet")).toBe(
+      false,
+    );
+    expect(state.nodeEvents.map((event) => event.payload.node_id)).toEqual([
+      "nod_busy",
+      "nod_quiet",
+    ]);
+  });
+
+  it("recovers instead of letting excess foreign nodes evict a quiet node", () => {
+    let state = initialDurableRunState(RUN_ID);
+    state = applyDurableEvent(state, frame(1, { payload: { node_id: "nod_quiet" } }));
+    for (let sequence = 2; sequence <= MAX_NODE_EVENT_PROJECTION; sequence += 1) {
+      state = applyDurableEvent(
+        state,
+        frame(sequence, { payload: { node_id: `nod_foreign-${String(sequence)}` } }),
+      );
+    }
+    const overflow = applyDurableEvent(
+      state,
+      frame(MAX_NODE_EVENT_PROJECTION + 1, {
+        payload: { node_id: "nod_foreign-overflow" },
+      }),
+    );
+    expect(overflow.status).toBe("recovering");
+    expect(overflow.acceptedSequence).toBe(MAX_NODE_EVENT_PROJECTION);
+    expect(overflow.lastError).toContain("exceeds the pipeline node limit");
+    expect(
+      overflow.nodeEvents.some((event) => event.payload.node_id === "nod_quiet"),
+    ).toBe(true);
   });
 
   it("treats duplicate and older events as idempotent no-ops", () => {

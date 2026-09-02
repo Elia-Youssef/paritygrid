@@ -372,6 +372,7 @@ import {
   pipelineVersionFrontierSchema,
   pipelineVersionSchema,
   readinessSchema,
+  runStateSchema,
   runPageSchema,
   type CapabilitiesValue,
   type ConnectorResponseValue,
@@ -380,6 +381,7 @@ import {
   type PipelineVersionFrontierValue,
   type PipelineVersionValue,
   type RunResponseValue,
+  type RunStateValue,
 } from "./schemas";
 
 async function requestParsed<T>(
@@ -531,16 +533,32 @@ export function fetchConnectors(
   );
 }
 
-/** Durable recent-runs page for the operations overview. */
+/**
+ * Durable run page for the run list and operations overview. The optional
+ * `state` filter must be a value from the accepted `RunState` set; it is
+ * passed through only when defined so unfiltered pages keep one key shape.
+ */
 export function fetchRunPage(
-  params: PageParams = {},
+  params: RunPageParams = {},
   init: RequestLike = {},
 ): Promise<{ items: RunResponseValue[]; limit: number; next_cursor: string | null }> {
+  if (params.state !== undefined && !runStateSchema.safeParse(params.state).success) {
+    throw new RangeError("run state filter must use the accepted RunState contract");
+  }
   return requestParsed(
-    apiPath(["runs"], { cursor: params.cursor, limit: params.limit }),
+    apiPath(["runs"], {
+      cursor: params.cursor,
+      limit: params.limit,
+      state: params.state,
+    }),
     runPageSchema,
     init,
   );
+}
+
+export interface RunPageParams extends PageParams {
+  /** Durable run-state filter; one of the accepted `RunState` values. */
+  state?: RunStateValue;
 }
 
 export function fetchReadiness(init: RequestLike = {}): Promise<{

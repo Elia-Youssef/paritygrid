@@ -266,7 +266,12 @@ export class DurableRunStream {
     const controller = new AbortController();
     this.abortController = controller;
     const resumeFrom = this.acceptedSequence;
-    this.setStatus({ kind: "connecting", resumeFrom, reason: undefined });
+    this.setStatus({
+      kind: "connecting",
+      resumeFrom,
+      attemptsUsed: this.attemptsUsed,
+      reason: undefined,
+    });
     this.handlers.onConnecting(resumeFrom);
 
     const url = `/api/v1/stream/runs/${encodeURIComponent(this.runId)}?after=${resumeFrom}`;
@@ -275,11 +280,19 @@ export class DurableRunStream {
       result = await this.transport(url, {
         signal: controller.signal,
         onEvent: (message) => {
-          this.handleMessage(message);
+          // A recovery abort may settle after its replacement connection has
+          // already started. Frames from that superseded generation are
+          // ignored and cannot consume sequence or retry budget.
+          if (this.abortController === controller) {
+            this.handleMessage(message);
+          }
         },
       });
     } catch {
       result = { outcome: "completed" };
+    }
+    if (this.abortController !== controller) {
+      return;
     }
     this.connecting = false;
     this.abortController = null;
@@ -416,11 +429,15 @@ export class DurableRunStream {
     this.connecting = false;
     this.attemptsUsed += 1;
     if (this.attemptsUsed >= this.maxAttempts) {
-      this.setStatus({ kind: "disconnected", reason });
+      this.setStatus({
+        kind: "disconnected",
+        attemptsUsed: this.attemptsUsed,
+        reason,
+      });
       this.handlers.onExhausted(reason, this.attemptsUsed);
       return;
     }
-    this.setStatus({ kind: "recovering", reason });
+    this.setStatus({ kind: "recovering", attemptsUsed: this.attemptsUsed, reason });
     try {
       const resumeSequence = await this.handlers.onRecovery(
         reason,
@@ -447,11 +464,15 @@ export class DurableRunStream {
     }
     this.attemptsUsed += 1;
     if (this.attemptsUsed >= this.maxAttempts) {
-      this.setStatus({ kind: "disconnected", reason });
+      this.setStatus({
+        kind: "disconnected",
+        attemptsUsed: this.attemptsUsed,
+        reason,
+      });
       this.handlers.onExhausted(reason, this.attemptsUsed);
       return;
     }
-    this.setStatus({ kind: "recovering", reason });
+    this.setStatus({ kind: "recovering", attemptsUsed: this.attemptsUsed, reason });
     const delay = this.backoffDelay(this.attemptsUsed);
     this.cancelTimer?.();
     this.cancelTimer = this.scheduler.schedule(() => {
