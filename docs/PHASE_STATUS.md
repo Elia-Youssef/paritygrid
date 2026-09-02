@@ -24,14 +24,20 @@ This document is the durable index of accepted phases, their integration commits
 | 14 — UI design system and shell | Accepted | [`05d1724`](https://github.com/Elia-Youssef/paritygrid/commit/05d1724f64c049022457fe2d3012f1b0640dcbe8) | [Phase pull request #111](https://github.com/Elia-Youssef/paritygrid/pull/111) | Semantic design tokens, owned accessible primitives, stable routing, keyboard navigation shell, shared async states, responsive and reduced-motion behavior, and safe render-error recovery | Routes intentionally contain shell-level placeholders; typed API ownership, caching, durable/live reducers, and reconnecting browser transports remain Phase 15 work. |
 | 15 — Typed frontend data and live state | Accepted | [`1263101`](https://github.com/Elia-Youssef/paritygrid/commit/1263101fbb4bfe79108b8308c726b7c5a25e2979) | [Phase pull request #114](https://github.com/Elia-Youssef/paritygrid/pull/114) | Generated API client integration, deterministic query/cache ownership, bounded durable SSE recovery, advisory WebSocket telemetry, and sequence/version-aware coherent run state | Product screens and workflows remain Phase 16 through 18 work; the accepted layer supplies state and transport ownership without claiming those interfaces. |
 | 16 — Pipeline and overview interface | Accepted | [`0d2f8c7`](https://github.com/Elia-Youssef/paritygrid/commit/0d2f8c7aefcf3cd7ed92cba9abdfca0ea52ca312) | [Phase pull request #116](https://github.com/Elia-Youssef/paritygrid/pull/116) | Truthful public and operations overviews, searchable pipeline library with URL-backed state, typed React Flow node set, studio canvas with keyboard authoring, node inspector, and frontier-fenced versioned plan publication | Reconciliation, repair, live execution observability, and comparison screens remain Phase 17 and 18 work; their routes stay explicit placeholders. |
+| 17 — Live execution observability | Accepted | [`28fc5f4`](https://github.com/Elia-Youssef/paritygrid/commit/28fc5f43a56f16e5a11803216905b40a3c35cda3) | [Phase pull request #118](https://github.com/Elia-Youssef/paritygrid/pull/118) | URL-backed run history, coherent durable/live state, accessible graph and table evidence, queue and timeline views, runner comparison, and truthful capability reporting | The required browser target is Chromium; release-wide multi-browser verification remains deferred. |
+| 18 — Reconciliation and repair interface | Accepted | [`16f705a`](https://github.com/Elia-Youssef/paritygrid/commit/16f705a4b8dddceb33cf1e2d2fcb100f336e19c4) | [Phase pull request #119](https://github.com/Elia-Youssef/paritygrid/pull/119) | Reconciliation summary and conflict inspection, stale-safe repair review and application, durable progress, strict runtime schemas, and deterministic Windows and Linux visual baselines | Visual baselines cover the required Chromium target on Windows and Linux, not a release-wide browser matrix. |
+| 19 — Canonical scenario and datasets | Accepted | [`6573f3e`](https://github.com/Elia-Youssef/paritygrid/commit/6573f3e8db16d41a6875841bb122119dce5189d7) | [Phase pull request #120](https://github.com/Elia-Youssef/paritygrid/pull/120) | Canonical deterministic showcase datasets, scenario catalog and runner, exact expected evidence, artifact safety fencing, and execution-manifest verification | The showcase is bounded synthetic evidence; it is not a production-data or external-service integration. |
+| 20 — Demo orchestration and smoke proof | Accepted | [`7c4827d`](https://github.com/Elia-Youssef/paritygrid/commit/7c4827dd11b241071171d0a0841de28bdbfe1fc0) | [Phase pull request #121](https://github.com/Elia-Youssef/paritygrid/pull/121) | Isolated demo CLI and public-run launcher, controlled faults and interruption recovery, safe ownership and reset, headless and browser smoke proof, and installed-package execution without Node.js | Run-control browser proof uses the product API; dedicated pause, resume, and cancel buttons are not claimed by this phase. The broader cross-platform performance and stress matrix remains Phase 21. |
 
 ## Active boundary
 
-Phase 17 is the next delivery boundary. No Phase 17 implementation has been accepted.
+Phase 21 is the next delivery boundary. No Phase 21 implementation has been accepted.
 
-- Accepted Phase 16 integration: [`0d2f8c7`](https://github.com/Elia-Youssef/paritygrid/commit/0d2f8c7aefcf3cd7ed92cba9abdfca0ea52ca312).
-- Phase 16 acceptance evidence: [pull request #116](https://github.com/Elia-Youssef/paritygrid/pull/116) and its exact-head Windows, Ubuntu, policy, frontend, Chromium, and smoke checks.
-- Phase 17 must begin from accepted Phase 16 and satisfy its own complete gate before acceptance.
+- Accepted Phase 17 integration: [`28fc5f4`](https://github.com/Elia-Youssef/paritygrid/commit/28fc5f43a56f16e5a11803216905b40a3c35cda3) through [pull request #118](https://github.com/Elia-Youssef/paritygrid/pull/118).
+- Accepted Phase 18 integration: [`16f705a`](https://github.com/Elia-Youssef/paritygrid/commit/16f705a4b8dddceb33cf1e2d2fcb100f336e19c4) through [pull request #119](https://github.com/Elia-Youssef/paritygrid/pull/119).
+- Accepted Phase 19 integration: [`6573f3e`](https://github.com/Elia-Youssef/paritygrid/commit/6573f3e8db16d41a6875841bb122119dce5189d7) through [pull request #120](https://github.com/Elia-Youssef/paritygrid/pull/120).
+- Accepted Phase 20 integration: [`7c4827d`](https://github.com/Elia-Youssef/paritygrid/commit/7c4827dd11b241071171d0a0841de28bdbfe1fc0) through [pull request #121](https://github.com/Elia-Youssef/paritygrid/pull/121).
+- Phase 21 must begin from accepted Phase 20 and satisfy its own complete gate before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -613,9 +619,25 @@ evidence, with no open hard gate.
 - The required browser acceptance lane is Chromium; the broader release
   browser matrix remains assigned to later release verification.
 
+## Phase 17 acceptance record
+
+Phase 17 was accepted through [pull request #118](https://github.com/Elia-Youssef/paritygrid/pull/118) at merge commit [`28fc5f4`](https://github.com/Elia-Youssef/paritygrid/commit/28fc5f43a56f16e5a11803216905b40a3c35cda3). Its single candidate commit, `acff030dd873af23dfccbc488ddb556accec534f`, passed both the exact-head [push workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33648960239) and [pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33648966526). The accepted scope covers P17.1–P17.7: run history, coherent durable/live state, accessible execution evidence, queue and timeline views, runner comparison, and capability reporting. Durable events remain authoritative, telemetry remains advisory, and gaps or incompatible versions fail closed to authoritative recovery.
+
+## Phase 18 acceptance record
+
+Phase 18 was accepted through [pull request #119](https://github.com/Elia-Youssef/paritygrid/pull/119) at merge commit [`16f705a`](https://github.com/Elia-Youssef/paritygrid/commit/16f705a4b8dddceb33cf1e2d2fcb100f336e19c4). Its single candidate commit, `b08ed5f5acd0c19c9e733ed98943f0c6a2eff2b9`, passed both the exact-head [push workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33654338472) and [pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33654339427). The accepted scope covers P18.1–P18.6: scalable conflict inspection, stale-safe repair approval and application, durable progress, strict runtime schemas, and deterministic Chromium visual baselines on Windows and Linux. The visual suite passed twice unchanged on both platforms after pinned local fonts removed host-font dependence.
+
+## Phase 19 acceptance record
+
+Phase 19 was accepted through [pull request #120](https://github.com/Elia-Youssef/paritygrid/pull/120) at merge commit [`6573f3e`](https://github.com/Elia-Youssef/paritygrid/commit/6573f3e8db16d41a6875841bb122119dce5189d7). Its single candidate commit, `a05070427488d279e424ee895302c8639551d2ba`, passed both the exact-head [push workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33656960804) and [pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33656965419). The accepted scope locks the deterministic scenario, fast and showcase datasets, exact expected counts, safe artifact verification, and a cross-runner execution-evidence manifest without claiming target-state equivalence.
+
+## Phase 20 acceptance record
+
+Phase 20 was accepted through [pull request #121](https://github.com/Elia-Youssef/paritygrid/pull/121) at merge commit [`7c4827d`](https://github.com/Elia-Youssef/paritygrid/commit/7c4827dd11b241071171d0a0841de28bdbfe1fc0). Its single candidate commit, `8a17d291df05148c6d8e6da1bd4a596e6033120a`, passed both the exact-head [push workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33666193344) and [pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33666200815). Both matrices passed repository policy, Ubuntu and Windows Python, frontend, and the dependent Frontend API smoke job; the latter exercised the real packaged demo through Chromium. The accepted implementation provides isolated orchestration, controlled faults, forced interruption and recovery, safe reset ownership, the canonical browser story, and installed-wheel proof with Node.js unavailable at runtime. Audit fixes closed the durable-envelope and strict pipeline-schema drifts reported by the initial browser proof while preserving fail-closed behavior.
+
 ## Advancement rule
 
-Phase 16 is accepted on top of accepted Phase 15. Phase 17 may begin from the
-accepted Phase 16 integration commit and may merge only after its own
+Phase 20 is accepted on top of accepted Phase 19. Phase 21 may begin from the
+accepted Phase 20 integration commit and may merge only after its own
 complete gate and remote CI pass; acceptance of a later phase does not bypass
 acceptance of its prerequisites.
