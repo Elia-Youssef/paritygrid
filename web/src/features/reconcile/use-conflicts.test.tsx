@@ -304,12 +304,15 @@ describe("useConflicts", () => {
       expect(screen.getByTestId("resident-identity")).toHaveTextContent(
         `4:${FINGERPRINT_V2}`,
       );
+      // The probe publishes its hook view from a passive effect. Wait for
+      // that publication as well as the DOM commit so hosted-runner
+      // scheduling cannot expose the preceding reset state here.
+      expect(latestView?.state.loadedPages).toBe(1);
+      expect(latestView?.state.identity).toEqual(IDENTITY_V2);
     });
     // The selection did not survive the fingerprint/run version change, and
     // the fresh chain restarted at the first page.
     expect(screen.getByTestId("selection")).toHaveTextContent("none");
-    expect(latestView?.state.loadedPages).toBe(1);
-    expect(latestView?.state.identity).toEqual(IDENTITY_V2);
     expect(screen.getByTestId("rejected-pages")).toHaveTextContent(/^0$/);
     expect(requests[2]).not.toContain("cursor=");
     expect(requests).toHaveLength(3);
