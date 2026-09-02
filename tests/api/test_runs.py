@@ -2,7 +2,9 @@
 
 import httpx
 import pytest
+from sqlalchemy import update
 
+from paritygrid.adapters.persistence.schema import runs as runs_table
 from paritygrid.application.ports.run_control import RunControlEvidence
 from paritygrid.application.writes.execution import TransitionRunResult
 from paritygrid.domain.execution import RunState
@@ -85,6 +87,30 @@ class _DurableTestExecutionOwner:
         result = receipts[-1].result
         assert isinstance(result, TransitionRunResult)
         return RunControlEvidence(result.run, tuple(item.submission_id for item in receipts))
+
+
+class _AdvancingResumeExecutionOwner(_DurableTestExecutionOwner):
+    """Model engine progress committed after its proven resume transition."""
+
+    def resume(
+        self,
+        *,
+        correlation_id: str | None,
+        timeout_seconds: float,
+        converge_on_duplicate: bool,
+    ) -> RunControlEvidence:
+        evidence = super().resume(
+            correlation_id=correlation_id,
+            timeout_seconds=timeout_seconds,
+            converge_on_duplicate=converge_on_duplicate,
+        )
+        with self._container.database.transaction() as session:
+            session.execute(
+                update(runs_table)
+                .where(runs_table.c.run_id == self._run_id)
+                .values(row_version=runs_table.c.row_version + 1)
+            )
+        return evidence
 
 
 def _run_body(run_id: str = RUN_ID, **overrides: object) -> dict[str, object]:
@@ -189,6 +215,24 @@ async def test_pause_resumes_and_cancels_follow_the_domain_machine(
     for direction in ("pause", "resume", "cancel"):
         response = await client.post(f"/api/v1/runs/{RUN_ID}/{direction}")
         assert response.status_code == 409, direction
+
+
+@pytest.mark.anyio
+async def test_resume_accepts_newer_durable_progress_after_owner_evidence(
+    container: RuntimeContainer, client: httpx.AsyncClient
+) -> None:
+    await seed_scenario(client)
+    transition_run(container, RUN_ID, RunState.RUNNING)
+    transition_run(container, RUN_ID, RunState.PAUSING)
+    transition_run(container, RUN_ID, RunState.PAUSED)
+    owner = _AdvancingResumeExecutionOwner(container, RUN_ID)
+    container.active_run_controls.register(RunId(RUN_ID), owner)
+
+    resumed = await client.post(f"/api/v1/runs/{RUN_ID}/resume")
+
+    assert resumed.status_code == 200
+    assert resumed.json()["state"] == "running"
+    assert resumed.json()["run_version"] == 7
 
 
 @pytest.mark.anyio

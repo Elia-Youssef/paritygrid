@@ -37,7 +37,12 @@ test.use({
  * captures nondeterministic; the sticky chrome is outside the content
  * elements and never enters their bounding boxes.
  */
-async function screenshot(page: Page, locator: Locator, name: string): Promise<void> {
+async function screenshot(
+  page: Page,
+  locator: Locator,
+  name: string,
+  mask: Locator[] = [],
+): Promise<void> {
   // The shell's sticky chrome paints at scroll-dependent positions inside
   // captures that exceed the viewport; pinning the scroll to the top keeps
   // that overlay at one deterministic place for every capture.
@@ -45,6 +50,8 @@ async function screenshot(page: Page, locator: Locator, name: string): Promise<v
   await expect(locator).toHaveScreenshot(name, {
     animations: "disabled",
     caret: "hide",
+    mask,
+    maskColor: "#071017",
   });
 }
 
@@ -165,6 +172,7 @@ test("6 — repair application in progress with durable notifications", async ({
     page,
     page.getByTestId("repair-review"),
     "p18-repair-applying-progress.png",
+    [page.getByText(/Stream connection:/)],
   );
 });
 
@@ -186,5 +194,10 @@ test("7 — repair completed state", async ({ page }) => {
   await expect(page.getByText(/Stream connection: live/)).toBeVisible();
   void FINGERPRINT_CONTENT;
   void FINGERPRINT_RECON;
-  await screenshot(page, page.getByTestId("repair-review"), "p18-repair-completed.png");
+  await screenshot(
+    page,
+    page.getByTestId("repair-review"),
+    "p18-repair-completed.png",
+    [page.getByText(/Stream connection:/)],
+  );
 });

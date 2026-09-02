@@ -1,5 +1,7 @@
 """Durable reconciliation persistence, planning, and approval fences (P11.1/P11.2)."""
 
+import json
+
 import pytest
 from sqlalchemy import func, select
 
@@ -86,8 +88,16 @@ class TestReconciliationPersistence:
             assert session.scalar(select(func.count()).select_from(execution_events)) == 1
             run_row = session.execute(select(runs.c.row_version)).scalar_one()
             assert run_row == 4
-            event = session.execute(select(execution_events.c.event_kind)).scalars().all()
-            assert "reconciliation_persisted" in event
+            event = session.execute(
+                select(
+                    execution_events.c.event_kind,
+                    execution_events.c.payload_schema_version,
+                    execution_events.c.payload_json,
+                )
+            ).one()
+            assert event.event_kind == "reconciliation_persisted"
+            assert event.payload_schema_version == 2
+            assert json.loads(event.payload_json)["source_quarantined_count"] == 0
 
     def test_exact_replay_returns_the_stored_fact_without_new_evidence(
         self,
@@ -187,7 +197,16 @@ class TestReconciliationPersistence:
             actor="operator-1",
             correlation_id="corr-11",
             occurred_at=created,
-            payload={"reconciliation_fingerprint": result.summary.fingerprint.value},
+            payload={
+                "analytical_query_version": result.summary.analytical_query_version,
+                "canonical_key_count": result.summary.counts.canonical_key_count,
+                "conflict_count": 1,
+                "reconciliation_fingerprint": result.summary.fingerprint.value,
+                "source_input_identity": result.summary.source_input_identity,
+                "source_quarantined_count": result.summary.counts.source_quarantined_count,
+                "target_input_identity": result.summary.target_input_identity,
+            },
+            event_payload_schema_version=2,
         )
         command = PersistReconciliation(
             run_id=RUN_ID,

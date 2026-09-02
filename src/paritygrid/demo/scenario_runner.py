@@ -23,6 +23,7 @@ directories before any byte is written.
 import asyncio
 import os
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path, PureWindowsPath
@@ -64,7 +65,12 @@ from paritygrid.adapters.persistence.repositories import (
     SqlAlchemyRunRepository,
     SqlAlchemyWorkItemRepository,
 )
-from paritygrid.adapters.persistence.schema import run_event_counters
+from paritygrid.adapters.persistence.schema import (
+    artifact_manifests,
+    run_event_counters,
+    work_attempts,
+    work_items,
+)
 from paritygrid.adapters.persistence.sqlite import (
     SQLiteDatabase,
     SQLiteDatabaseConfig,
@@ -106,10 +112,12 @@ from paritygrid.application.ports.analytics import AnalyticalDatabaseConfig
 from paritygrid.application.ports.artifacts import ArtifactRelativePath
 from paritygrid.application.ports.configuration import ConfigurationDocument
 from paritygrid.application.ports.connectors import (
+    ConnectorAmbiguousError,
     ConnectorCallContext,
     ConnectorRateLimitedError,
     SourceOutcome,
     SourceRecord,
+    TargetWritePrecondition,
     TargetWriteRequest,
 )
 from paritygrid.application.ports.consistency import (
@@ -121,6 +129,10 @@ from paritygrid.application.ports.consistency import (
 from paritygrid.application.ports.parquet import ReconciliationConflictBatch
 from paritygrid.application.ports.reconciliation_persistence import (
     TargetVerificationVerdict,
+)
+from paritygrid.application.ports.repair_audit import (
+    RepairActionRecord,
+    RepairPlanAggregate,
 )
 from paritygrid.application.ports.run_aggregates import WorkMetricDelta
 from paritygrid.application.ports.writer import EventAppendRequest
@@ -142,6 +154,7 @@ from paritygrid.application.repair import (
     build_expected_inventory,
 )
 from paritygrid.application.repair.errors import RepairPlanStateError
+from paritygrid.application.repair.payloads import render_effect_payload
 from paritygrid.application.services.connectors import ConnectorService
 from paritygrid.application.services.pipelines import PipelineService
 from paritygrid.application.writes.execution import (
@@ -215,6 +228,20 @@ _TARGET_POSITION_BASE = 1_000_000
 _SOURCE_NODE_FOR_KEY: dict[str, str] = {
     "async_http": scenario.NODE_ASYNC_SOURCE,
 }
+
+# Named durable story boundaries.  A failpoint hook is invoked only after the
+# boundary's commits returned durably, so interrupting at a name never guesses
+# with timing and never loses a committed fact.
+STORY_FAILPOINT_ATTEMPTS_RECORDED = "attempts.recorded"
+STORY_FAILPOINT_RECONCILIATION_PERSISTED = "reconciliation.persisted"
+STORY_FAILPOINT_REPAIR_APPROVED = "repair.approved"
+STORY_FAILPOINT_REPAIR_APPLIED = "repair.applied"
+STORY_FAILPOINT_NAMES: tuple[str, ...] = (
+    STORY_FAILPOINT_ATTEMPTS_RECORDED,
+    STORY_FAILPOINT_RECONCILIATION_PERSISTED,
+    STORY_FAILPOINT_REPAIR_APPROVED,
+    STORY_FAILPOINT_REPAIR_APPLIED,
+)
 
 _SAFE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
 _RESERVED_NAMES = frozenset(
@@ -474,7 +501,6 @@ async def run_canonical_scenario(
 
     database = SQLiteDatabase.open(SQLiteDatabaseConfig(scenario_root.database_path()))
     writer: SQLiteTransactionalWriter | None = None
-    analytics: DuckDBLifecycleCoordinator | None = None
     async_source = AsyncInventorySource(
         evidence.slice_for("async_http").dataset,
         evidence.source_failure_script,
@@ -503,23 +529,162 @@ async def run_canonical_scenario(
         await async_source.start()
         blocking_source.start()
         await warehouse.start()
-        for service_name, base_url in (
-            ("async-source", async_source.base_url),
-            ("blocking-source", blocking_source.base_url),
-            ("warehouse", warehouse.base_url),
-        ):
-            await probe_service_health(
-                base_url, expected_service=service_name, timeout_seconds=10.0
-            )
-
-        reads = await _read_all_sources(
-            evidence, scenario_root, clock, run_id, async_source, blocking_source
+        return await execute_canonical_story(
+            scenario_root=scenario_root,
+            database=database,
+            writer=writer,
+            clock=clock,
+            run_id=run_id,
+            evidence=evidence,
+            profile=profile,
+            async_source=async_source,
+            blocking_source=blocking_source,
+            warehouse=warehouse,
         )
-        target = await _load_and_observe_target(warehouse, evidence)
-        analysis = _analyze(evidence, reads, target)
-        _verify_derived_counts(evidence, analysis, async_source, blocking_source, warehouse)
-        _record_durable_attempts(database, writer, clock, run_id, reads)
+    finally:
+        # Every teardown step runs even when an earlier one fails; the first
+        # failure is re-raised only after later resources were also closed,
+        # so no simulator, writer thread, or database handle can leak.
+        first_error: BaseException | None = None
+        for close in (
+            warehouse.aclose,
+            async_source.aclose,
+            blocking_source.aclose,
+        ):
+            try:
+                await close()
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        if writer is not None:
+            try:
+                writer.close(timeout_seconds=10.0)
+            except BaseException as error:
+                if first_error is None:
+                    first_error = error
+        database.close()
+        if first_error is not None:
+            raise first_error
 
+
+async def _replay_applied_repair_effects(
+    aggregate: RepairPlanAggregate,
+    target_connector: WarehouseTargetConnector,
+) -> int:
+    """Reconstruct the target's repaired state from durable plan facts.
+
+    Recovery replays every applied action's exact request — same SKU, same
+    rendered payload, same precondition, and crucially the same external
+    idempotency key.  The demo's persisted target simulator returns its
+    durable receipt for those keys, so restart cannot apply a second logical
+    effect.  Ambiguous connection losses resolve by same-key replay just like
+    the accepted applier.
+    """
+    replayed = 0
+    context = ConnectorCallContext(correlation_id=CANONICAL_CORRELATION_ID)
+    for action in aggregate.actions:
+        request = _warm_start_request(action)
+        ambiguous = 0
+        while True:
+            try:
+                await target_connector.write_record_async(request, context)
+            except ConnectorAmbiguousError:
+                ambiguous += 1
+                if ambiguous > 3:
+                    raise
+                continue
+            replayed += 1
+            break
+    return replayed
+
+
+def _warm_start_request(action: RepairActionRecord) -> TargetWriteRequest:
+    proposed = action.effect.proposed
+    expected_target = action.effect.expected_target
+    return TargetWriteRequest(
+        sku=proposed.sku,
+        payload=render_effect_payload(proposed),
+        idempotency_key=action.external_idempotency_key,
+        precondition=(
+            TargetWritePrecondition.must_be_absent()
+            if expected_target is None
+            else TargetWritePrecondition.expected_payload(render_effect_payload(expected_target))
+        ),
+    )
+
+
+async def execute_canonical_story(
+    *,
+    scenario_root: ScenarioRoot,
+    database: SQLiteDatabase,
+    writer: SQLiteTransactionalWriter,
+    clock: ScenarioClock,
+    run_id: RunId,
+    evidence: ScenarioExpectedEvidence,
+    profile: CanonicalScenarioProfile,
+    async_source: AsyncInventorySource,
+    blocking_source: BlockingInventorySource,
+    warehouse: SimulatedWarehouse,
+    resume_enabled: bool = False,
+    failpoint: Callable[[str], None] | None = None,
+) -> CanonicalScenarioResult:
+    """Run the durable canonical story from readiness probes to the manifest.
+
+    The three simulators must already be started.  Every checkpoint boundary
+    named in ``STORY_FAILPOINT_NAMES`` is invoked on ``failpoint`` only after
+    its commits returned durably, so an interruption harness can stop exactly
+    at a committed boundary without timing guesses.  ``resume_enabled`` makes
+    each stage tolerate durable evidence an earlier process committed — it
+    replays idempotent service calls, skips recorded attempts and registered
+    artifacts, and replays the persisted target's idempotency receipts from
+    the durable plan.  The single-shot canonical run keeps
+    its strict first-pass assertions.
+    """
+
+    completed_before_start = scenario_root.manifest_path().is_file()
+
+    def _failpoint(name: str) -> None:
+        if failpoint is not None:
+            failpoint(name)
+
+    for service_name, base_url in (
+        ("async-source", async_source.base_url),
+        ("blocking-source", blocking_source.base_url),
+        ("warehouse", warehouse.base_url),
+    ):
+        await probe_service_health(base_url, expected_service=service_name, timeout_seconds=10.0)
+
+    reads = await _read_all_sources(
+        evidence, scenario_root, clock, run_id, async_source, blocking_source
+    )
+    if resume_enabled and (
+        _has_durably_applied_repair(database, run_id)
+        or _has_persisted_initial_target(warehouse, evidence)
+    ):
+        # The external target survives a demo-child restart.  Reloading the
+        # already-persisted divergent baseline, or a repaired target, would
+        # move scripted fault sequencing onto idempotency replays and could
+        # become an untruthful second mutation.  The immutable durable
+        # reconciliation and repair records below still fence this locked
+        # baseline analysis; the later parity verifier independently reads
+        # the persisted target and refuses any divergence.
+        target = _locked_target_observation(evidence)
+    else:
+        target = await _load_and_observe_target(warehouse, evidence)
+    analysis = _analyze(evidence, reads, target)
+    _verify_derived_counts(evidence, analysis, async_source, blocking_source, warehouse)
+    _record_durable_attempts(
+        database,
+        writer,
+        clock,
+        run_id,
+        reads,
+        skip_attempts=_durable_attempt_keys(database, run_id),
+    )
+    _failpoint(STORY_FAILPOINT_ATTEMPTS_RECORDED)
+
+    analytics: DuckDBLifecycleCoordinator | None = None
+    try:
         analytics = DuckDBLifecycleCoordinator(
             AnalyticalDatabaseConfig(scenario_root.analytics_path().resolve())
         )
@@ -539,48 +704,52 @@ async def run_canonical_scenario(
         if report.fingerprint is None:
             raise ScenarioError("finalization produced no execution-evidence fingerprint")
         execution_fingerprint = report.fingerprint.value
-        analytics.close()
-        analytics = None
+    finally:
+        if analytics is not None:
+            analytics.close()
 
-        _publish_conflict_artifact(database, scenario_root, clock, run_id, analysis)
-        _verify_artifact_accounting(database, scenario_root, run_id)
+    _publish_conflict_artifact(database, scenario_root, clock, run_id, analysis, skip_existing=True)
+    _verify_artifact_accounting(database, scenario_root, run_id)
 
-        reader = SQLiteRepairWorkflowReader(database)
-        persisted = ReconciliationResultService(writer, reader, now=clock.now).persist(
-            run_id=run_id,
-            analysis=analysis,
-            actor="canonical-operator",
-            correlation_id=CANONICAL_CORRELATION_ID,
+    reader = SQLiteRepairWorkflowReader(database)
+    persisted = ReconciliationResultService(writer, reader, now=clock.now).persist(
+        run_id=run_id,
+        analysis=analysis,
+        actor="canonical-operator",
+        correlation_id=CANONICAL_CORRELATION_ID,
+    )
+    if persisted.replayed and not resume_enabled:
+        raise ScenarioError("the canonical reconciliation must persist exactly once")
+    created = RepairPlanningService(writer, reader, now=clock.now).create(
+        run_id=run_id,
+        analysis=analysis,
+        actor="canonical-operator",
+        correlation_id=CANONICAL_CORRELATION_ID,
+    )
+    generated_plan = created.generated.plan
+    if generated_plan is None:
+        raise ScenarioError("the canonical scenario must produce a repair plan")
+    durable_plan = created.aggregate.plan if created.aggregate is not None else None
+    if durable_plan is None:
+        raise ScenarioError("the canonical scenario must durably persist the repair plan")
+    for action in generated_plan.actions:
+        if action.kind.value not in ("create_target", "update_target"):
+            raise ScenarioError("the plan carries a non-representable action kind")
+    _failpoint(STORY_FAILPOINT_RECONCILIATION_PERSISTED)
+
+    target_connector = WarehouseTargetConnector(WarehouseTargetConfig(warehouse.base_url))
+    await target_connector.open_async()
+    try:
+        applier = RepairApplicationService(
+            writer,
+            reader,
+            now=clock.now,
+            policy=RepairApplicationPolicy(delay_seconds=0.0, timeout_seconds=30.0),
         )
-        if persisted.replayed:
-            raise ScenarioError("the canonical reconciliation must persist exactly once")
-        created = RepairPlanningService(writer, reader, now=clock.now).create(
-            run_id=run_id,
-            analysis=analysis,
-            actor="canonical-operator",
-            correlation_id=CANONICAL_CORRELATION_ID,
-        )
-        generated_plan = created.generated.plan
-        if generated_plan is None:
-            raise ScenarioError("the canonical scenario must produce a repair plan")
-        durable_plan = created.aggregate.plan if created.aggregate is not None else None
-        if durable_plan is None:
-            raise ScenarioError("the canonical scenario must durably persist the repair plan")
-        for action in generated_plan.actions:
-            if action.kind.value not in ("create_target", "update_target"):
-                raise ScenarioError("the plan carries a non-representable action kind")
-
-        target_connector = WarehouseTargetConnector(WarehouseTargetConfig(warehouse.base_url))
-        await target_connector.open_async()
-        try:
-            applier = RepairApplicationService(
-                writer,
-                reader,
-                now=clock.now,
-                policy=RepairApplicationPolicy(delay_seconds=0.0, timeout_seconds=30.0),
-            )
-            # The story proves the approval gate on every run: an unapproved
-            # plan can never reach the target.
+        already_approved = created.aggregate is not None and created.aggregate.approval is not None
+        if not (resume_enabled and already_approved):
+            # The story proves the approval gate on every first pass: an
+            # unapproved plan can never reach the target.
             try:
                 await applier.apply(
                     run_id=run_id,
@@ -592,115 +761,121 @@ async def run_canonical_scenario(
                 pass
             else:
                 raise ScenarioError("application succeeded before the explicit approval gate")
-            RepairApprovalService(writer, reader, now=clock.now).approve(
-                RepairApprovalRequest(
-                    run_id=run_id,
-                    repair_plan_id=durable_plan.repair_plan_id,
-                    approved_by="canonical-approver",
-                    correlation_id=CANONICAL_CORRELATION_ID,
-                    approved_content_fingerprint=durable_plan.content_fingerprint,
-                    approved_reconciliation_fingerprint=analysis.summary.fingerprint,
-                    detail=RedactedDocument.from_mapping({"decision": "canonical-demo"}),
-                )
-            )
-            application = await applier.apply(
+        RepairApprovalService(writer, reader, now=clock.now).approve(
+            RepairApprovalRequest(
                 run_id=run_id,
                 repair_plan_id=durable_plan.repair_plan_id,
-                target=target_connector,
-                context_id=CANONICAL_CORRELATION_ID,
-            )
-            if application.disposition.value != "completed":
-                raise ScenarioError("the canonical repair application must complete")
-            inventory = build_expected_inventory(analysis, generated_plan)
-            verifier = TargetParityVerifier(now=clock.now)
-            verification = await verifier.verify(
-                target=target_connector,
-                inventory=inventory,
-                context_id=CANONICAL_CORRELATION_ID,
-            )
-            if verification.verdict is not TargetVerificationVerdict.PARITY_HOLDING:
-                raise ScenarioError("independent target observation did not reach parity")
-            if verification.observed is None:
-                raise ScenarioError("parity verification produced no observed identity")
-            observed_fingerprint = verification.observed.fingerprint.value
-            if observed_fingerprint != evidence.expected_target_fingerprint:
-                raise ScenarioError("the observed target state diverges from the locked value")
-            await TargetVerificationService(writer, reader, now=clock.now).verify_and_record(
-                run_id=run_id,
-                target=target_connector,
-                inventory=inventory,
-                reconciliation_fingerprint=analysis.summary.fingerprint,
-                repair_plan_id=durable_plan.repair_plan_id,
-                plan_content_fingerprint=durable_plan.content_fingerprint,
-                actor="canonical-operator",
+                approved_by="canonical-approver",
                 correlation_id=CANONICAL_CORRELATION_ID,
+                approved_content_fingerprint=durable_plan.content_fingerprint,
+                approved_reconciliation_fingerprint=analysis.summary.fingerprint,
+                detail=RedactedDocument.from_mapping({"decision": "canonical-demo"}),
             )
-            requests_before_replay = warehouse.request_count()
-            replay = await RepairApplicationService(
-                writer,
-                reader,
-                now=clock.now,
-                policy=RepairApplicationPolicy(delay_seconds=0.0, timeout_seconds=30.0),
-            ).apply(
-                run_id=run_id,
-                repair_plan_id=durable_plan.repair_plan_id,
-                target=target_connector,
-                context_id=f"{CANONICAL_CORRELATION_ID}-replay",
-            )
-            if replay.disposition.value != "already_applied":
-                raise ScenarioError("repair replay must be an idempotent no-op")
-            if warehouse.request_count() != requests_before_replay:
-                raise ScenarioError("repair replay must not touch the target")
-            reverify = await verifier.verify(
-                target=target_connector,
-                inventory=inventory,
-                context_id=f"{CANONICAL_CORRELATION_ID}-reverify",
-            )
-            if reverify.observed is None or (
-                reverify.observed.fingerprint.value != observed_fingerprint
-            ):
-                raise ScenarioError("re-verification diverged from the first observation")
-        finally:
-            await target_connector.aclose()
-
-        expected_faults = (
-            AppliedFailure(
-                sequence=len(evidence.target.payloads) + profile.warehouse_fault_action,
-                kind=ScriptedFailureKind.CONNECTION_LOSS,
-            ),
         )
-        if warehouse.applied_failures() != expected_faults:
-            raise ScenarioError(
-                "the warehouse must apply exactly the locked transient connection loss"
-            )
-        manifest = build_manifest(
-            evidence,
-            execution_evidence_fingerprint=execution_fingerprint,
-            verification_result="parity_holding",
+        _failpoint(STORY_FAILPOINT_REPAIR_APPROVED)
+        application = await applier.apply(
+            run_id=run_id,
+            repair_plan_id=durable_plan.repair_plan_id,
+            target=target_connector,
+            context_id=CANONICAL_CORRELATION_ID,
         )
-        manifest_bytes = manifest.canonical_bytes()
-        _publish_manifest(scenario_root, manifest_bytes)
-        return CanonicalScenarioResult(
-            manifest=manifest,
-            manifest_bytes=manifest_bytes,
-            manifest_path=scenario_root.manifest_path(),
-            run_id=run_id.value,
-            execution_evidence_fingerprint=execution_fingerprint,
-            observed_target_fingerprint=observed_fingerprint,
-            reconciliation_fingerprint=analysis.summary.fingerprint.value,
-            analysis=analysis,
-            total_target_requests=warehouse.request_count(),
-            repair_replay_disposition=replay.disposition.value,
+        if application.disposition.value == "already_applied":
+            if not resume_enabled:
+                raise ScenarioError("an unexpected already-applied disposition")
+            # A previous process committed the repair effects durably.  The
+            # persisted simulator holds those same-key receipts, so replay
+            # cannot apply a second logical effect.
+            if created.aggregate is None:
+                raise ScenarioError("an applied plan must carry its durable aggregate")
+            if not completed_before_start:
+                # A process interrupted after the external commit must prove
+                # the persisted same-key receipts across restart. A root that
+                # already carried a verified final manifest has completed that
+                # proof; reissuing target writes on every ordinary rerun would
+                # mutate request diagnostics and break byte-stable replay.
+                await _replay_applied_repair_effects(created.aggregate, target_connector)
+        elif application.disposition.value != "completed":
+            raise ScenarioError("the canonical repair application must complete")
+        _failpoint(STORY_FAILPOINT_REPAIR_APPLIED)
+        inventory = build_expected_inventory(analysis, generated_plan)
+        verifier = TargetParityVerifier(now=clock.now)
+        verification = await verifier.verify(
+            target=target_connector,
+            inventory=inventory,
+            context_id=CANONICAL_CORRELATION_ID,
         )
+        if verification.verdict is not TargetVerificationVerdict.PARITY_HOLDING:
+            raise ScenarioError("independent target observation did not reach parity")
+        if verification.observed is None:
+            raise ScenarioError("parity verification produced no observed identity")
+        observed_fingerprint = verification.observed.fingerprint.value
+        if observed_fingerprint != evidence.expected_target_fingerprint:
+            raise ScenarioError("the observed target state diverges from the locked value")
+        await TargetVerificationService(writer, reader, now=clock.now).verify_and_record(
+            run_id=run_id,
+            target=target_connector,
+            inventory=inventory,
+            reconciliation_fingerprint=analysis.summary.fingerprint,
+            repair_plan_id=durable_plan.repair_plan_id,
+            plan_content_fingerprint=durable_plan.content_fingerprint,
+            actor="canonical-operator",
+            correlation_id=CANONICAL_CORRELATION_ID,
+        )
+        requests_before_replay = warehouse.request_count()
+        replay = await RepairApplicationService(
+            writer,
+            reader,
+            now=clock.now,
+            policy=RepairApplicationPolicy(delay_seconds=0.0, timeout_seconds=30.0),
+        ).apply(
+            run_id=run_id,
+            repair_plan_id=durable_plan.repair_plan_id,
+            target=target_connector,
+            context_id=f"{CANONICAL_CORRELATION_ID}-replay",
+        )
+        if replay.disposition.value != "already_applied":
+            raise ScenarioError("repair replay must be an idempotent no-op")
+        if warehouse.request_count() != requests_before_replay:
+            raise ScenarioError("repair replay must not touch the target")
+        reverify = await verifier.verify(
+            target=target_connector,
+            inventory=inventory,
+            context_id=f"{CANONICAL_CORRELATION_ID}-reverify",
+        )
+        if reverify.observed is None or (
+            reverify.observed.fingerprint.value != observed_fingerprint
+        ):
+            raise ScenarioError("re-verification diverged from the first observation")
     finally:
-        await warehouse.aclose()
-        await async_source.aclose()
-        await blocking_source.aclose()
-        if analytics is not None:
-            analytics.close()
-        if writer is not None:
-            writer.close(timeout_seconds=10.0)
-        database.close()
+        await target_connector.aclose()
+
+    expected_faults = (
+        AppliedFailure(
+            sequence=len(evidence.target.payloads) + profile.warehouse_fault_action,
+            kind=ScriptedFailureKind.CONNECTION_LOSS,
+        ),
+    )
+    if warehouse.applied_failures() != expected_faults:
+        raise ScenarioError("the warehouse must apply exactly the locked transient connection loss")
+    manifest = build_manifest(
+        evidence,
+        execution_evidence_fingerprint=execution_fingerprint,
+        verification_result="parity_holding",
+    )
+    manifest_bytes = manifest.canonical_bytes()
+    _publish_manifest(scenario_root, manifest_bytes)
+    return CanonicalScenarioResult(
+        manifest=manifest,
+        manifest_bytes=manifest_bytes,
+        manifest_path=scenario_root.manifest_path(),
+        run_id=run_id.value,
+        execution_evidence_fingerprint=execution_fingerprint,
+        observed_target_fingerprint=observed_fingerprint,
+        reconciliation_fingerprint=analysis.summary.fingerprint.value,
+        analysis=analysis,
+        total_target_requests=warehouse.request_count(),
+        repair_replay_disposition=replay.disposition.value,
+    )
 
 
 def _publish_manifest(scenario_root: ScenarioRoot, manifest_bytes: bytes) -> None:
@@ -1143,6 +1318,64 @@ async def _load_and_observe_target(
         await connector.aclose()
 
 
+def _locked_target_observation(
+    evidence: ScenarioExpectedEvidence,
+) -> tuple[list[SourceRecord], int]:
+    """Rebuild the immutable pre-repair target projection during recovery.
+
+    This is available only after a durable applied repair plan exists.  It is
+    not a substitute for target verification: the resumed workflow still
+    observes the preserved target independently before it records success.
+    """
+    records = [
+        SourceRecord(
+            position=_TARGET_POSITION_BASE + index,
+            outcome=SourceOutcome.VALID,
+            payload=dict(payload),
+        )
+        for index, payload in enumerate(evidence.target.payloads)
+    ]
+    return records, len(records)
+
+
+def _has_durably_applied_repair(database: SQLiteDatabase, run_id: RunId) -> bool:
+    """Return whether recovery must preserve an already-mutated target."""
+    from paritygrid.adapters.persistence.schema import repair_plans
+
+    with database.transaction() as session:
+        rows = session.execute(
+            select(repair_plans.c.status).where(repair_plans.c.run_id == run_id.value)
+        ).all()
+    if len(rows) > 1:
+        raise ScenarioError("the canonical run carries more than one repair plan")
+    return bool(rows) and str(rows[0].status) == "applied"
+
+
+def _has_persisted_initial_target(
+    warehouse: SimulatedWarehouse,
+    evidence: ScenarioExpectedEvidence,
+) -> bool:
+    """Recognize the complete immutable baseline loaded by an earlier child.
+
+    Reissuing the baseline load after a crash would move the deterministic
+    warehouse fault's request sequence onto an idempotency replay.  Require
+    the whole expected inventory, version, and every stable load receipt
+    before using the locked projection; a partial or divergent target still
+    follows the ordinary HTTP load path and fails closed if it cannot recover.
+    """
+    snapshot = warehouse.behavior.state_snapshot()
+    expected_records = {
+        cast("str", payload["sku"]): {"payload": payload, "record_version": 1}
+        for payload in evidence.target.payloads
+    }
+    expected_keys = tuple(
+        f"canonical-load-{index:06d}" for index, _payload in enumerate(evidence.target.payloads)
+    )
+    return snapshot["records"] == expected_records and warehouse.behavior.has_idempotency_keys(
+        expected_keys
+    )
+
+
 def _analyze(
     evidence: ScenarioExpectedEvidence,
     reads: dict[str, SourceRead],
@@ -1247,12 +1480,25 @@ def _verify_derived_counts(
         raise ScenarioError("the reconciliation fingerprint diverged from the locked value")
 
 
+def _durable_attempt_keys(database: SQLiteDatabase, run_id: RunId) -> frozenset[tuple[str, int]]:
+    """Return the (node, attempt) pairs already durably recorded for one run."""
+    with database.transaction() as session:
+        rows = session.execute(
+            select(work_items.c.node_id, work_attempts.c.attempt_number)
+            .join(work_items, work_attempts.c.work_item_id == work_items.c.work_item_id)
+            .where(work_items.c.run_id == run_id.value)
+        ).all()
+    return frozenset((str(row.node_id), int(row.attempt_number)) for row in rows)
+
+
 def _record_durable_attempts(
     database: SQLiteDatabase,
     writer: SQLiteTransactionalWriter,
     clock: ScenarioClock,
     run_id: RunId,
     reads: dict[str, SourceRead],
+    *,
+    skip_attempts: frozenset[tuple[str, int]] = frozenset(),
 ) -> None:
     """Record the real attempts as durable work-item attempts.
 
@@ -1261,7 +1507,8 @@ def _record_durable_attempts(
     covered by the finalization fingerprint.  The other three concurrent
     acquisitions are scenario inputs locked by the input manifest; the
     accepted planner has no version-1 multi-input aggregation contract and we
-    do not fabricate one here.
+    do not fabricate one here.  Attempts whose (node, attempt) identity is
+    already durable are skipped so a resumed story never duplicates them.
     """
     service = WorkLeaseService(
         writer,
@@ -1282,6 +1529,8 @@ def _record_durable_attempts(
         accepted = sum(1 for record in read.records if record.outcome is SourceOutcome.VALID)
         malformed = len(read.records) - accepted
         for attempt_evidence in read.attempts:
+            if (node_name, attempt_evidence.attempt) in skip_attempts:
+                continue
             lease = service.acquire(
                 AcquireWorkLeaseRequest(
                     run_id=run_id,
@@ -1405,14 +1654,39 @@ def _verify_artifact_accounting(
         raise ScenarioError("the durable artifacts must match the locked artifact count")
 
 
+def _conflict_artifact_registered(database: SQLiteDatabase, run_id: RunId) -> bool:
+    """Report whether the run's canonical conflict artifact is already durable."""
+    with database.transaction() as session:
+        registered = (
+            session.execute(
+                select(artifact_manifests.c.artifact_id).where(
+                    artifact_manifests.c.run_id == run_id.value,
+                    artifact_manifests.c.artifact_id == scenario.CONFLICT_ARTIFACT_ID,
+                )
+            )
+            .scalars()
+            .first()
+        )
+    return registered is not None
+
+
 def _publish_conflict_artifact(
     database: SQLiteDatabase,
     scenario_root: ScenarioRoot,
     clock: ScenarioClock,
     run_id: RunId,
     analysis: ReconciliationAnalysis,
+    *,
+    skip_existing: bool = False,
 ) -> None:
-    """Publish the conflict Parquet artifact through the accepted protocol."""
+    """Publish the conflict Parquet artifact through the accepted protocol.
+
+    A resumed story finds the artifact already durably registered by the
+    interrupted process and keeps the committed original; a single-shot run
+    always publishes exactly once.
+    """
+    if skip_existing and _conflict_artifact_registered(database, run_id):
+        return
     artifact_writer = FileSystemArtifactWriter(
         scenario_root.artifacts,
         maximum_bytes=_ARTIFACT_BYTE_LIMIT,

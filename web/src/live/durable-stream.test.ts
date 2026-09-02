@@ -215,7 +215,7 @@ describe("durable run stream", () => {
     ["wrong channel", durableFrameJson(2, { channel: "telemetry" })],
     [
       "unsupported payload schema version",
-      durableFrameJson(2, { payload_schema_version: 2 }),
+      durableFrameJson(2, { payload_schema_version: 3 }),
     ],
     [
       "non-integer payload_schema_version",
@@ -236,6 +236,27 @@ describe("durable run stream", () => {
 
     expect(stream.getAcceptedSequence()).toBe(1);
     expect(recorded.recoveries[0]?.reason.kind).toBe("malformed-frame");
+  });
+
+  it("accepts the current version-2 work payload without weakening the envelope", () => {
+    const { transport, connections } = FakeSseConnection.transport();
+    const { recorded, handlers } = recordingHandlers();
+    const stream = new DurableRunStream({
+      runId: RUN_ID,
+      handlers,
+      transport,
+      scheduler: new ManualScheduler(),
+    });
+    stream.start();
+    connections[0]?.emitData(
+      durableFrameJson(1, {
+        event_kind: "work_claimed",
+        payload_schema_version: 2,
+      }),
+    );
+
+    expect(stream.getAcceptedSequence()).toBe(1);
+    expect(recorded.recoveries).toEqual([]);
   });
 
   it("recovers on a foreign run id and on id disagreement", () => {

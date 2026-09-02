@@ -332,37 +332,41 @@ export function pipelineVersionE2E(): Record<string, unknown> {
     pipeline_id: "pip_e2e-001",
     version: 1,
     specification: {
-      schema_version: 1,
-      canonical_format_version: 1,
-      nodes: [
-        {
-          id: "nod_e2e-source-001",
-          kind: "source.csv",
-          configuration_version: 1,
-          configuration: {},
-          connector_id: null,
-        },
-        {
-          id: "nod_e2e-export-001",
-          kind: "export.parquet",
-          configuration_version: 1,
-          configuration: {},
-          connector_id: null,
-        },
-      ],
-      edges: [
-        {
-          source_node_id: "nod_e2e-source-001",
-          source_port: "records",
-          target_node_id: "nod_e2e-export-001",
-          target_port: "records",
-        },
-      ],
-      resource_policy: {},
-      layout: [
-        { node_id: "nod_e2e-source-001", x: 0, y: 0 },
-        { node_id: "nod_e2e-export-001", x: 300, y: 0 },
-      ],
+      published_specification_version: 1,
+      connector_bindings: [],
+      pipeline: {
+        schema_version: 1,
+        canonical_format_version: 1,
+        nodes: [
+          {
+            id: "nod_e2e-source-001",
+            kind: "source.csv",
+            configuration_version: 1,
+            configuration: {},
+            connector_id: null,
+          },
+          {
+            id: "nod_e2e-export-001",
+            kind: "export.parquet",
+            configuration_version: 1,
+            configuration: {},
+            connector_id: null,
+          },
+        ],
+        edges: [
+          {
+            source_node_id: "nod_e2e-source-001",
+            source_port: "records",
+            target_node_id: "nod_e2e-export-001",
+            target_port: "records",
+          },
+        ],
+        resource_policy: {},
+        layout: [
+          { node_id: "nod_e2e-source-001", x: 0, y: 0 },
+          { node_id: "nod_e2e-export-001", x: 300, y: 0 },
+        ],
+      },
     },
     specification_sha256: "a".repeat(64),
     planner_format_version: 1,

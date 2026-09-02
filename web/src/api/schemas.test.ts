@@ -83,7 +83,28 @@ const VERSION: PipelineVersionValue = {
   schema_version: 1,
   pipeline_id: "pip_demo-alpha",
   version: 1,
-  specification: WIRE_DOCUMENT,
+  specification: {
+    published_specification_version: 1,
+    pipeline: WIRE_DOCUMENT,
+    connector_bindings: [
+      {
+        connector_id: "con_source-001",
+        kind: "csv_source",
+        revision: 1,
+        configuration: { path: "items.csv" },
+        capabilities: {
+          read: true,
+          write: false,
+          async_io: false,
+          blocking_io: true,
+          idempotency: false,
+          schema_discovery: false,
+        },
+        schema_discovery: null,
+        secret_references: [],
+      },
+    ],
+  },
   specification_sha256: "b".repeat(64),
   planner_format_version: 1,
   published_at: "2026-01-01 00:00:00",
@@ -234,16 +255,19 @@ describe("pipeline version schema", () => {
     const brokenDocument = {
       ...VERSION,
       specification: {
-        ...WIRE_DOCUMENT,
-        nodes: [
-          {
-            id: "not-a-node-id",
-            kind: "source.csv",
-            configuration_version: 1,
-            configuration: {},
-            connector_id: "con_source-001",
-          },
-        ],
+        ...VERSION.specification,
+        pipeline: {
+          ...WIRE_DOCUMENT,
+          nodes: [
+            {
+              id: "not-a-node-id",
+              kind: "source.csv",
+              configuration_version: 1,
+              configuration: {},
+              connector_id: "con_source-001",
+            },
+          ],
+        },
       },
     };
     expect(pipelineVersionSchema.safeParse(brokenDocument).success).toBe(false);
@@ -251,17 +275,20 @@ describe("pipeline version schema", () => {
     const unknownKind = {
       ...VERSION,
       specification: {
-        ...WIRE_DOCUMENT,
-        nodes: [
-          {
-            id: "nod_script-001",
-            kind: "script.python",
-            configuration_version: 1,
-            configuration: {},
-            connector_id: null,
-          },
-        ],
-        edges: [],
+        ...VERSION.specification,
+        pipeline: {
+          ...WIRE_DOCUMENT,
+          nodes: [
+            {
+              id: "nod_script-001",
+              kind: "script.python",
+              configuration_version: 1,
+              configuration: {},
+              connector_id: null,
+            },
+          ],
+          edges: [],
+        },
       },
     };
     // The wire schema accepts the shape; the DOCUMENT semantics reject it

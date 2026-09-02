@@ -10,10 +10,13 @@ repair verification can observe exact convergence.
 """
 
 import base64
+import contextlib
 import json
+import os
 import re
 from dataclasses import dataclass
 from hashlib import sha256
+from pathlib import Path
 from typing import cast
 
 from paritygrid.application.ports.connectors import canonical_target_payload_sha256
@@ -38,6 +41,9 @@ WAREHOUSE_SERVICE_NAME = "warehouse"
 WAREHOUSE_CAPACITY = 10_000
 WAREHOUSE_MAX_LIST_PAGE = 500
 WAREHOUSE_FINGERPRINT_VERSION = 1
+WAREHOUSE_STATE_FORMAT = "paritygrid.demo.warehouse-state"
+WAREHOUSE_STATE_VERSION = 1
+WAREHOUSE_STATE_FILENAME = "warehouse-state.json"
 
 _EMPTY_FINGERPRINT = sha256(b"paritygrid-warehouse-empty-v1").hexdigest()
 _SKU_PATTERN = re.compile(r"[A-Z0-9]+(?:-[A-Z0-9]+)*", flags=re.ASCII)
@@ -45,6 +51,12 @@ _MAX_IDEMPOTENCY_ENTRIES = 10_000
 _IDEMPOTENCY_KEY_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,127}", flags=re.ASCII)
 _CURSOR_PREFIX = "wh1"
 _TARGET_PRECONDITION_HEADER = "x-paritygrid-target-precondition"
+_MAX_WAREHOUSE_STATE_BYTES = 16 * 1024 * 1024
+_MAX_WAREHOUSE_STATE_DEPTH = 12
+_MAX_WAREHOUSE_STATE_ITEMS = 10_000
+_MAX_WAREHOUSE_STATE_STRING_LENGTH = 16_384
+_MAX_COUNTER = 2_147_483_647
+_SHA256_PATTERN = re.compile(r"[0-9a-f]{64}", flags=re.ASCII)
 
 
 class WarehouseError(ValueError):
@@ -91,6 +103,8 @@ class WarehouseBehavior:
         self,
         script: FailureScript,
         settings: WarehouseSettings | None = None,
+        *,
+        state_root: Path | None = None,
     ) -> None:
         self._script = require_transport_script(script, subject="warehouse")
         self._settings = settings if settings is not None else WarehouseSettings()
@@ -99,6 +113,10 @@ class WarehouseBehavior:
         self._idempotency: dict[str, _IdempotencyEntry] = {}
         self._request_count = 0
         self._applied: list[AppliedFailure] = []
+        self._effect_commits: dict[str, int] = {}
+        self._state_path = _persistent_state_path(state_root)
+        if self._state_path is not None:
+            self._load_persisted_state()
 
     @property
     def settings(self) -> WarehouseSettings:
@@ -122,6 +140,21 @@ class WarehouseBehavior:
     def applied_failures(self) -> tuple[AppliedFailure, ...]:
         """Return every applied scripted failure in application order."""
         return tuple(self._applied)
+
+    def external_effect_counts(self) -> dict[str, int]:
+        """Return durable logical-effect commits keyed by idempotency key.
+
+        This is intentionally separate from request counts: a retry can be a
+        real HTTP request without being a second target effect.  The
+        interruption proof compares these durable counts to the repair-action
+        keys, so process restart cannot be mistaken for exactly-once external
+        behavior merely because a new in-memory simulator was started.
+        """
+        return dict(self._effect_commits)
+
+    def has_idempotency_keys(self, keys: tuple[str, ...]) -> bool:
+        """Report whether every exact durable request receipt is present."""
+        return all(key in self._idempotency for key in keys)
 
     def content_fingerprint(self) -> str:
         """Return the deterministic fingerprint of the logical content."""
@@ -215,9 +248,11 @@ class WarehouseBehavior:
 
     def _handle_upsert(self, sku: str, request: HttpRequest) -> PlannedResponse:
         self._request_count += 1
+        self._persist_state()
         failure = self._script.failure_for(self._request_count)
         if failure is not None:
             self._applied.append(AppliedFailure(sequence=failure.sequence, kind=failure.kind))
+            self._persist_state()
             planned = self._pre_commit_transport_failure(failure)
             if planned is not None:
                 return planned
@@ -288,6 +323,7 @@ class WarehouseBehavior:
                 status=200,
             )
             self._store_idempotency(key, entry)
+            self._persist_state()
             response = json_response(
                 200,
                 {
@@ -309,6 +345,8 @@ class WarehouseBehavior:
             status=200,
         )
         self._store_idempotency(key, entry)
+        self._effect_commits[key] = self._effect_commits.get(key, 0) + 1
+        self._persist_state()
         response = json_response(
             200,
             {
@@ -327,6 +365,110 @@ class WarehouseBehavior:
             # weakening idempotency by eviction.
             raise WarehouseError("the idempotency registry is exhausted")
         self._idempotency[key] = entry
+
+    def _state_document(self) -> dict[str, object]:
+        """Return the exact bounded durable target state document."""
+        return {
+            "applied_failures": [
+                {"kind": failure.kind.value, "sequence": failure.sequence}
+                for failure in self._applied
+            ],
+            "effect_commits": dict(sorted(self._effect_commits.items())),
+            "format": WAREHOUSE_STATE_FORMAT,
+            "idempotency": {
+                key: {
+                    "outcome": entry.outcome,
+                    "record_version": entry.record_version,
+                    "request_fingerprint": entry.request_fingerprint,
+                    "status": entry.status,
+                    "target_version": entry.target_version,
+                }
+                for key, entry in sorted(self._idempotency.items())
+            },
+            "records": {
+                sku: {"payload": payload, "record_version": record_version}
+                for sku, (payload, record_version) in sorted(self._records.items())
+            },
+            "request_count": self._request_count,
+            "target_version": self._target_version,
+            "version": WAREHOUSE_STATE_VERSION,
+        }
+
+    def _load_persisted_state(self) -> None:
+        state_path = self._state_path
+        if state_path is None or not state_path.exists():
+            return
+        _reject_link_or_non_file(state_path, label="warehouse state")
+        try:
+            raw = state_path.read_bytes()
+        except OSError as error:
+            raise WarehouseError("the persistent warehouse state is unreadable") from error
+        if len(raw) > _MAX_WAREHOUSE_STATE_BYTES:
+            raise WarehouseError("the persistent warehouse state is oversized")
+        try:
+            decoded: object = json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as error:
+            raise WarehouseError("the persistent warehouse state is malformed") from error
+        if not isinstance(decoded, dict):
+            raise WarehouseError("the persistent warehouse state must be a JSON object")
+        document = cast("dict[str, object]", decoded)
+        expected_keys = {
+            "applied_failures",
+            "effect_commits",
+            "format",
+            "idempotency",
+            "records",
+            "request_count",
+            "target_version",
+            "version",
+        }
+        if set(document) != expected_keys:
+            raise WarehouseError("the persistent warehouse state has an unexpected schema")
+        if (
+            document["format"] != WAREHOUSE_STATE_FORMAT
+            or document["version"] != WAREHOUSE_STATE_VERSION
+        ):
+            raise WarehouseError("the persistent warehouse state has an unsupported version")
+        self._target_version = _state_counter(document["target_version"], "target_version")
+        self._request_count = _state_counter(document["request_count"], "request_count", minimum=0)
+        self._records = _state_records(document["records"], self._target_version, self._settings)
+        self._idempotency = _state_idempotency(document["idempotency"], self._target_version)
+        self._effect_commits = _state_effect_commits(
+            document["effect_commits"], self._idempotency, self._target_version
+        )
+        self._applied = _state_applied_failures(document["applied_failures"])
+
+    def _persist_state(self) -> None:
+        state_path = self._state_path
+        if state_path is None:
+            return
+        payload = json.dumps(
+            self._state_document(), ensure_ascii=True, separators=(",", ":"), sort_keys=True
+        ).encode("ascii")
+        if len(payload) > _MAX_WAREHOUSE_STATE_BYTES:
+            raise WarehouseError("the persistent warehouse state exceeds its bounded size")
+        import uuid
+
+        partial = state_path.with_name(f"{state_path.name}.{uuid.uuid4().hex}.partial")
+        _reject_link_or_non_file(partial, label="warehouse state partial", allow_missing=True)
+        handle: int | None = None
+        try:
+            handle = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            written = 0
+            while written < len(payload):
+                written += os.write(handle, payload[written:])
+            os.fsync(handle)
+            os.close(handle)
+            handle = None
+            os.replace(partial, state_path)
+        except OSError as error:
+            raise WarehouseError("the persistent warehouse state could not be committed") from error
+        finally:
+            if handle is not None:
+                os.close(handle)
+            if partial.exists():
+                with contextlib.suppress(OSError):
+                    partial.unlink()
 
     def _record_document(self, sku: str) -> dict[str, object]:
         payload, record_version = self._records[sku]
@@ -426,10 +568,12 @@ class SimulatedWarehouse:
         script: FailureScript | None = None,
         *,
         settings: WarehouseSettings | None = None,
+        state_root: Path | None = None,
     ) -> None:
         self._behavior = WarehouseBehavior(
             script if script is not None else FailureScript.empty(),
             settings,
+            state_root=state_root,
         )
         self._service = AsyncHttpService(
             service_name=WAREHOUSE_SERVICE_NAME,
@@ -470,6 +614,213 @@ class SimulatedWarehouse:
     async def aclose(self) -> None:
         """Stop serving and release the owned listener."""
         await self._service.aclose()
+
+
+def _persistent_state_path(state_root: Path | None) -> Path | None:
+    """Resolve one exact, link-free state file beneath an existing root.
+
+    Persistence is deliberately opt-in.  Ordinary simulator tests and
+    callers remain fully in-memory; the demo lifecycle supplies its already
+    validated ``scenario`` directory so only that owned location gains a
+    durable external-target model across an interruption restart.
+    """
+    if state_root is None:
+        return None
+    if not state_root.is_absolute():
+        raise WarehouseError("the persistent warehouse state root must be an absolute Path")
+    if not state_root.is_dir() or state_root.is_symlink() or state_root.is_junction():
+        raise WarehouseError("the persistent warehouse state root must be a plain directory")
+    resolved = state_root.resolve(strict=True)
+    if str(resolved).casefold() != str(state_root).casefold():
+        raise WarehouseError("the persistent warehouse state root traverses a link")
+    for component in (state_root, *state_root.parents):
+        if component.is_symlink() or component.is_junction():
+            raise WarehouseError("the persistent warehouse state root traverses a link")
+    return state_root / WAREHOUSE_STATE_FILENAME
+
+
+def _reject_link_or_non_file(path: Path, *, label: str, allow_missing: bool = False) -> None:
+    """Reject link/reparse and non-regular-file state targets before I/O."""
+    if path.is_symlink() or path.is_junction():
+        raise WarehouseError(f"the {label} must not be a symbolic link or junction")
+    if not path.exists():
+        if allow_missing:
+            return
+        raise WarehouseError(f"the {label} is missing")
+    if not path.is_file():
+        raise WarehouseError(f"the {label} must be a regular file")
+
+
+def _state_counter(value: object, field: str, *, minimum: int = 1) -> int:
+    if type(value) is not int or not minimum <= value <= _MAX_COUNTER:
+        raise WarehouseError(f"persistent warehouse state field {field} is invalid")
+    return value
+
+
+def _state_records(
+    value: object,
+    target_version: int,
+    settings: WarehouseSettings,
+) -> dict[str, tuple[dict[str, object], int]]:
+    if not isinstance(value, dict):
+        raise WarehouseError("persistent warehouse records are invalid")
+    entries = cast("dict[object, object]", value)
+    if len(entries) > settings.capacity:
+        raise WarehouseError("persistent warehouse records are invalid")
+    records: dict[str, tuple[dict[str, object], int]] = {}
+    for sku_value, entry_value in entries.items():
+        if (
+            type(sku_value) is not str
+            or _SKU_PATTERN.fullmatch(sku_value) is None
+            or not isinstance(entry_value, dict)
+            or set(cast("dict[object, object]", entry_value)) != {"payload", "record_version"}
+        ):
+            raise WarehouseError("persistent warehouse record entry is invalid")
+        entry = cast("dict[str, object]", entry_value)
+        payload_value = _state_json_value(entry["payload"], depth=0)
+        if not isinstance(payload_value, dict):
+            raise WarehouseError("persistent warehouse record payload must be an object")
+        record_version = _state_counter(entry["record_version"], "record_version")
+        if record_version > target_version:
+            raise WarehouseError("persistent warehouse record version exceeds target version")
+        records[sku_value] = (cast("dict[str, object]", payload_value), record_version)
+    if target_version == 0 and records:
+        raise WarehouseError("a zero-version persistent warehouse cannot carry records")
+    return records
+
+
+def _state_idempotency(
+    value: object,
+    target_version: int,
+) -> dict[str, _IdempotencyEntry]:
+    if not isinstance(value, dict):
+        raise WarehouseError("persistent warehouse idempotency state is invalid")
+    entries_value = cast("dict[object, object]", value)
+    if len(entries_value) > _MAX_IDEMPOTENCY_ENTRIES:
+        raise WarehouseError("persistent warehouse idempotency state is invalid")
+    entries: dict[str, _IdempotencyEntry] = {}
+    expected = {
+        "outcome",
+        "record_version",
+        "request_fingerprint",
+        "status",
+        "target_version",
+    }
+    for key, entry_value in entries_value.items():
+        if (
+            type(key) is not str
+            or _IDEMPOTENCY_KEY_PATTERN.fullmatch(key) is None
+            or not isinstance(entry_value, dict)
+            or set(cast("dict[object, object]", entry_value)) != expected
+        ):
+            raise WarehouseError("persistent warehouse idempotency entry is invalid")
+        entry = cast("dict[str, object]", entry_value)
+        fingerprint = entry["request_fingerprint"]
+        outcome = entry["outcome"]
+        if (
+            type(fingerprint) is not str
+            or _SHA256_PATTERN.fullmatch(fingerprint) is None
+            or outcome not in ("applied", "unchanged")
+            or entry["status"] != 200
+        ):
+            raise WarehouseError("persistent warehouse idempotency receipt is invalid")
+        entry_target_version = _state_counter(
+            entry["target_version"], "idempotency target_version", minimum=0
+        )
+        entry_record_version = _state_counter(entry["record_version"], "idempotency record_version")
+        if entry_target_version > target_version or entry_record_version > target_version:
+            raise WarehouseError("persistent warehouse idempotency receipt exceeds target state")
+        entries[key] = _IdempotencyEntry(
+            request_fingerprint=fingerprint,
+            outcome=cast("str", outcome),
+            target_version=entry_target_version,
+            record_version=entry_record_version,
+            status=200,
+        )
+    return entries
+
+
+def _state_effect_commits(
+    value: object,
+    idempotency: dict[str, _IdempotencyEntry],
+    target_version: int,
+) -> dict[str, int]:
+    if not isinstance(value, dict):
+        raise WarehouseError("persistent warehouse effect counts are invalid")
+    entries = cast("dict[object, object]", value)
+    if len(entries) > _MAX_IDEMPOTENCY_ENTRIES:
+        raise WarehouseError("persistent warehouse effect counts are invalid")
+    effects: dict[str, int] = {}
+    for key, count_value in entries.items():
+        if type(key) is not str:
+            raise WarehouseError("persistent warehouse effect key is invalid")
+        entry = idempotency.get(key)
+        if entry is None or entry.outcome != "applied":
+            raise WarehouseError("persistent warehouse effect lacks an applied idempotency receipt")
+        effects[key] = _state_counter(count_value, "effect_commit")
+    if sum(effects.values()) != target_version:
+        raise WarehouseError("persistent warehouse effect count diverges from target version")
+    return effects
+
+
+def _state_applied_failures(value: object) -> list[AppliedFailure]:
+    if not isinstance(value, list):
+        raise WarehouseError("persistent warehouse applied failures are invalid")
+    entries = cast("list[object]", value)
+    if len(entries) > _MAX_WAREHOUSE_STATE_ITEMS:
+        raise WarehouseError("persistent warehouse applied failures are invalid")
+    applied: list[AppliedFailure] = []
+    for item in entries:
+        if not isinstance(item, dict) or set(cast("dict[object, object]", item)) != {
+            "kind",
+            "sequence",
+        }:
+            raise WarehouseError("persistent warehouse applied failure is invalid")
+        entry = cast("dict[str, object]", item)
+        sequence = _state_counter(entry["sequence"], "failure sequence")
+        kind_value = entry["kind"]
+        if type(kind_value) is not str:
+            raise WarehouseError("persistent warehouse applied failure kind is invalid")
+        try:
+            kind = ScriptedFailureKind(kind_value)
+        except ValueError as error:
+            raise WarehouseError(
+                "persistent warehouse applied failure kind is unsupported"
+            ) from error
+        applied.append(AppliedFailure(sequence=sequence, kind=kind))
+    return applied
+
+
+def _state_json_value(value: object, *, depth: int) -> object:
+    """Validate persisted payload values without admitting executable objects."""
+    if depth > _MAX_WAREHOUSE_STATE_DEPTH:
+        raise WarehouseError("persistent warehouse payload nesting is too deep")
+    if value is None or type(value) in (bool, int):
+        return value
+    if type(value) is float:
+        if value != value or value in (float("inf"), float("-inf")):
+            raise WarehouseError("persistent warehouse payload carries a non-finite number")
+        return value
+    if type(value) is str:
+        if len(value) > _MAX_WAREHOUSE_STATE_STRING_LENGTH:
+            raise WarehouseError("persistent warehouse payload text is too long")
+        return value
+    if isinstance(value, list):
+        items = cast("list[object]", value)
+        if len(items) > _MAX_WAREHOUSE_STATE_ITEMS:
+            raise WarehouseError("persistent warehouse payload list is too large")
+        return [_state_json_value(item, depth=depth + 1) for item in items]
+    if isinstance(value, dict):
+        entries = cast("dict[object, object]", value)
+        if len(entries) > _MAX_WAREHOUSE_STATE_ITEMS:
+            raise WarehouseError("persistent warehouse payload object is too large")
+        converted: dict[str, object] = {}
+        for key, nested in entries.items():
+            if type(key) is not str or len(key) > _MAX_WAREHOUSE_STATE_STRING_LENGTH:
+                raise WarehouseError("persistent warehouse payload object key is invalid")
+            converted[key] = _state_json_value(nested, depth=depth + 1)
+        return converted
+    raise WarehouseError("persistent warehouse payload carries an unsupported value")
 
 
 def _request_fingerprint(

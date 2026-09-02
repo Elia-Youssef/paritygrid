@@ -134,6 +134,63 @@ def test_runtime_ownership_cancels_through_real_engine_and_retires(
     _wait_until(lambda: registry.active_count == 0)
 
 
+def test_runtime_shutdown_joins_an_already_requested_cancellation(
+    harness: ConcurrentScenarioHarness,
+) -> None:
+    """Shutdown must join, not re-request, an accepted cancellation in flight."""
+    entered = Event()
+    release = Event()
+
+    def block_first_assignment(_assignment: object) -> None:
+        entered.set()
+        assert release.wait(timeout=2.0)
+
+    run_id = scenario_run_id(703)
+    bootstrap_scenario_run(harness, run_id)
+    engine = build_scenario_engine(
+        harness,
+        run_id,
+        strategy=SequentialFullPlanStrategy(),
+        executor=ScriptedConcurrentExecutor(harness, on_execute=block_first_assignment),
+    )
+    registry = RuntimeActiveRunControlRegistry()
+    ownership = RuntimeExecutionOwnership(
+        active_run_controls=registry,
+        read_run=lambda identity: _read_run(harness, identity),
+    )
+
+    owner = ownership.start_concurrent(engine)
+    assert entered.wait(timeout=2.0)
+    cancelled = _in_thread(
+        lambda: owner.cancel(
+            correlation_id="corr-owner-cancel-close",
+            timeout_seconds=2.0,
+            converge_on_duplicate=False,
+        )
+    )
+    _wait_until(lambda: engine.cancellation.is_requested)
+
+    close_errors: list[BaseException] = []
+
+    def close_owner() -> None:
+        try:
+            owner.close(timeout_seconds=2.0)
+        except BaseException as error:  # pragma: no cover - assertion owns evidence
+            close_errors.append(error)
+
+    close_thread = Thread(target=close_owner, daemon=False)
+    close_thread.start()
+    release.set()
+
+    cancel_evidence = cancelled()
+    close_thread.join(timeout=2.0)
+    assert not close_thread.is_alive()
+    assert not close_errors
+    assert cancel_evidence.run.state is RunState.CANCELLED
+    assert _read_run(harness, run_id).state is RunState.CANCELLED
+    _wait_until(lambda: registry.active_count == 0)
+
+
 def _read_run(harness: ConcurrentScenarioHarness, run_id: RunId) -> RunRecord:
     with harness.database.transaction() as session:
         run = SqlAlchemyRunRepository(session).get(run_id)

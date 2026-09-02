@@ -250,12 +250,18 @@ class RuntimeConcurrentRunOwner(ActiveRunControlOwner):
             self._closed = True
             phase = self._phase
             if phase == "running":
-                try:
-                    self._engine.request_cancellation(correlation_id=None)
-                except ConcurrentEngineError as error:
-                    raise ActiveRunControlEvidenceError(
-                        "accepted execution engine rejected shutdown cancellation"
-                    ) from error
+                # An accepted HTTP cancellation can make the durable run
+                # terminal just before the engine thread publishes its
+                # boundary report here.  Its token is the ownership proof
+                # that cancellation is already in flight; asking the engine
+                # again in that narrow window can race its shutdown guard.
+                if not self._engine.cancellation.is_requested:
+                    try:
+                        self._engine.request_cancellation(correlation_id=None)
+                    except ConcurrentEngineError as error:
+                        raise ActiveRunControlEvidenceError(
+                            "accepted execution engine rejected shutdown cancellation"
+                        ) from error
                 self._wait_for_pass(deadline)
             elif phase == "paused":
                 # A paused engine has released worker admission.  Its durable

@@ -71,8 +71,14 @@ def build_companions(
     correlation_id: str,
     occurred_at: UtcTimestamp,
     payload: Mapping[str, object],
+    event_payload_schema_version: int = REPAIR_EVENT_PAYLOAD_SCHEMA_VERSION,
 ) -> RepairCompanions:
     """Build the atomic audit, event, and run-advance facts for one mutation."""
+    if (
+        type(event_payload_schema_version) is not int
+        or not 1 <= event_payload_schema_version <= 2_147_483_647
+    ):
+        raise ValueError("repair event payload schema version is outside the supported range")
     document = RedactedDocument.from_mapping(payload)
     event = EventAppendRequest(
         EventSequence(frontier.next_event_sequence),
@@ -83,7 +89,7 @@ def build_companions(
             subject_kind=EventSubjectKind.RUN,
             subject_id=run_id,
             correlation_id=correlation_id,
-            payload_schema_version=REPAIR_EVENT_PAYLOAD_SCHEMA_VERSION,
+            payload_schema_version=event_payload_schema_version,
             payload=document,
         ),
     )

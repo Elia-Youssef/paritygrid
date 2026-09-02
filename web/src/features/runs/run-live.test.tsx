@@ -7,7 +7,14 @@
  * authority, refresh stability, and safe rendering of hostile text.
  */
 import { QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import {
+  act,
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+} from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RunLive } from "./run-live";
@@ -80,7 +87,11 @@ function versionBody(pipelineId = "pip_a", version = 1): Record<string, unknown>
     schema_version: 1,
     pipeline_id: pipelineId,
     version,
-    specification: wireDocument(),
+    specification: {
+      published_specification_version: 1,
+      pipeline: wireDocument(),
+      connector_bindings: [],
+    },
     specification_sha256: "a".repeat(64),
     planner_format_version: 1,
     published_at: "2026-01-01T00:00:00Z",
@@ -203,7 +214,20 @@ describe("RunLive", () => {
         event_kind: "work_succeeded",
         subject_kind: "work_item",
         subject_id: "work-9",
-        payload: { node_id: "nod_alpha-001", attempt_number: 1 },
+        payload_schema_version: 2,
+        payload: {
+          node_id: "nod_alpha-001",
+          attempt_number: 1,
+        },
+      }),
+    );
+    connection.emitData(
+      durableFrameJsonString(3, {
+        event_kind: "reconciliation_persisted",
+        subject_kind: "run",
+        subject_id: RUN_ID,
+        payload_schema_version: 2,
+        payload: { source_quarantined_count: 2 },
       }),
     );
 
@@ -221,7 +245,54 @@ describe("RunLive", () => {
     // The durable timeline lists both events with sequences, separate from
     // telemetry.
     expect(screen.getByTestId("event-row-2")).toHaveTextContent("work_succeeded");
-    expect(screen.getByTestId("stream-status")).toHaveTextContent("sequence 2");
+    expect(screen.getByTestId("stream-status")).toHaveTextContent("sequence 3");
+    expect(screen.getByTestId("run-quarantine")).toHaveTextContent(
+      "2 source records quarantined",
+    );
+  });
+
+  it("drives pause through the UI with one stable command and updates controls", async () => {
+    const fetchMock = vi.fn<typeof fetch>((input: RequestInfo | URL, init) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      if (url.endsWith(`/api/v1/runs/${RUN_ID}/pause`)) {
+        return Promise.resolve(
+          jsonResponse({ ...RUN, state: "paused", run_version: 3 }),
+        );
+      }
+      if (url.includes(`/api/v1/runs/${RUN_ID}`) && init?.method !== "POST") {
+        return Promise.resolve(jsonResponse(RUN));
+      }
+      if (url.includes("/api/v1/pipelines/pip_a/versions/1")) {
+        return Promise.resolve(jsonResponse(versionBody()));
+      }
+      return Promise.resolve(new Response("not found", { status: 404 }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderRunLive();
+    const pause = await screen.findByTestId("run-pause");
+    fireEvent.click(pause);
+
+    await screen.findByTestId("run-resume");
+    expect(screen.queryByTestId("run-pause")).toBeNull();
+    const pauseCall = fetchMock.mock.calls.find(([input]) => {
+      const url =
+        typeof input === "string"
+          ? input
+          : input instanceof URL
+            ? input.href
+            : input.url;
+      return url.endsWith(`/api/v1/runs/${RUN_ID}/pause`);
+    });
+    expect(pauseCall?.[1]?.headers).toMatchObject({
+      "Idempotency-Key": `run-control-pause-${RUN_ID}-2`,
+    });
+    expect(pauseCall?.[1]?.body).toBeUndefined();
   });
 
   it("rejects an incompatible embedded run version and keeps the coherent view", async () => {

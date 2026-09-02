@@ -89,7 +89,7 @@ function Studio({ pipelineId }: { pipelineId: string }) {
     if (publishedVersion.data === undefined) {
       return null;
     }
-    const parsed = parsePipelineDocument(publishedVersion.data.specification);
+    const parsed = parsePipelineDocument(publishedVersion.data.specification.pipeline);
     return parsed.ok ? parsed.value : null;
   }, [publishedVersion.data]);
 

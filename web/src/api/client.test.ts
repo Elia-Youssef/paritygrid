@@ -5,6 +5,7 @@ import {
   applyRepairPlan,
   createRepairPlan,
   createRun,
+  controlRun,
   fetchConflicts,
   fetchHealth,
   fetchReconciliation,
@@ -342,6 +343,33 @@ describe("typed REST client", () => {
     expect(init.headers["Idempotency-Key"]).toBe("retry-safe-key");
     expect(init.headers["Content-Type"]).toBe("application/json");
     expect(JSON.parse(init.body)).toMatchObject({ run_id: "run-9" });
+  });
+
+  it("sends bodyless run controls and rejects a mismatched acknowledgement", async () => {
+    const fetchMock = vi.fn<typeof fetch>(() =>
+      Promise.resolve(jsonResponse({ ...RUN, state: "paused", run_version: 4 })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await controlRun("run-1", "pause", { idempotencyKey: "pause-run-1-v3" });
+    const firstCall = fetchMock.mock.calls[0];
+    expect(firstCall).toBeDefined();
+    if (firstCall === undefined) {
+      throw new Error("the pause request was not sent");
+    }
+    const [path, init] = firstCall;
+    expect(path).toBe("/api/v1/runs/run-1/pause");
+    expect(init?.method).toBe("POST");
+    expect(init?.body).toBeUndefined();
+    expect(new Headers(init?.headers).get("Idempotency-Key")).toBe("pause-run-1-v3");
+
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse({ ...RUN, run_id: "run-other" }))),
+    );
+    await expect(
+      controlRun("run-1", "cancel", { idempotencyKey: "cancel-run-1-v4" }),
+    ).rejects.toMatchObject({ kind: "invalid-response" });
   });
 
   it("sends repair-plan creation with the generated request shape", async () => {

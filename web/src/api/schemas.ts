@@ -59,6 +59,69 @@ export const RUN_STATES = [
 export type RunStateValue = (typeof RUN_STATES)[number];
 export const runStateSchema = z.enum(RUN_STATES);
 
+export const connectorCapabilitiesSchema = z
+  .object({
+    read: z.boolean().optional(),
+    write: z.boolean().optional(),
+    async_io: z.boolean().optional(),
+    blocking_io: z.boolean().optional(),
+    idempotency: z.boolean().optional(),
+    schema_discovery: z.boolean().optional(),
+  })
+  .strict();
+
+const connectorSnapshotCapabilitiesSchema = z
+  .object({
+    read: z.boolean(),
+    write: z.boolean(),
+    async_io: z.boolean(),
+    blocking_io: z.boolean(),
+    idempotency: z.boolean(),
+    schema_discovery: z.boolean(),
+  })
+  .strict();
+
+const openDocument = z.record(z.string(), z.unknown());
+
+const connectorReferenceSnapshotSchema = z
+  .object({
+    reference_name: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/),
+    environment_variable_name: z
+      .string()
+      .min(1)
+      .max(128)
+      .regex(/^[A-Z][A-Z0-9_]*$/),
+  })
+  .strict();
+
+const connectorBindingSnapshotSchema = z
+  .object({
+    connector_id: connectorIdSchema,
+    kind: z
+      .string()
+      .min(1)
+      .max(96)
+      .regex(/^[a-z][a-z0-9]*(?:[._-][a-z0-9]+)*$/),
+    revision: positiveVersion,
+    configuration: openDocument,
+    capabilities: connectorSnapshotCapabilitiesSchema,
+    schema_discovery: openDocument.nullable(),
+    secret_references: z.array(connectorReferenceSnapshotSchema).max(64),
+  })
+  .strict();
+
+export const publishedPipelineSpecificationSchema = z
+  .object({
+    published_specification_version: schemaVersion1,
+    pipeline: pipelineDocumentSchema,
+    connector_bindings: z.array(connectorBindingSnapshotSchema).max(256),
+  })
+  .strict();
+
 // ---------------------------------------------------------------------------
 // Pipelines
 // ---------------------------------------------------------------------------
@@ -127,7 +190,7 @@ export const pipelineVersionSchema = z
     schema_version: schemaVersion1,
     pipeline_id: pipelineIdSchema,
     version: positiveVersion,
-    specification: pipelineDocumentSchema,
+    specification: publishedPipelineSpecificationSchema,
     specification_sha256: sha256Schema,
     planner_format_version: z
       .number()
@@ -143,19 +206,6 @@ export type PipelineVersionValue = z.infer<typeof pipelineVersionSchema>;
 // ---------------------------------------------------------------------------
 // Connectors (inspector bindings)
 // ---------------------------------------------------------------------------
-
-export const connectorCapabilitiesSchema = z
-  .object({
-    read: z.boolean().optional(),
-    write: z.boolean().optional(),
-    async_io: z.boolean().optional(),
-    blocking_io: z.boolean().optional(),
-    idempotency: z.boolean().optional(),
-    schema_discovery: z.boolean().optional(),
-  })
-  .strict();
-
-const openDocument = z.record(z.string(), z.unknown());
 
 export const connectorResponseSchema = z
   .object({
