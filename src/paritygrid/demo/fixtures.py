@@ -95,14 +95,13 @@ class FixtureBounds:
             raise FixtureError(f"max bytes must not exceed {MAX_FIXTURE_BYTES}")
 
 
-def write_csv_fixture(
-    dataset: SyntheticDataset,
-    destination: Path,
-    *,
-    bounds: FixtureBounds | None = None,
-) -> FixtureManifest:
-    """Write the dataset as a deterministic UTF-8 LF-terminated CSV file."""
-    effective_bounds = bounds if bounds is not None else FixtureBounds()
+def render_csv_fixture(dataset: SyntheticDataset) -> tuple[bytes, int, int]:
+    """Render the deterministic UTF-8 LF-terminated CSV payload.
+
+    Returns the exact bytes a :func:`write_csv_fixture` call writes plus the
+    deliberately corrupted and duplicated row counts, so derivation and
+    writing share one rendering path.
+    """
     buffer = io.StringIO(newline="")
     writer = csv.writer(buffer, lineterminator="\n")
     writer.writerow(_CSV_COLUMNS)
@@ -121,31 +120,11 @@ def write_csv_fixture(
         if row.role is RowRole.DUPLICATE:
             duplicate_rows += 1
         writer.writerow(_csv_fields(row.payload))
-    payload = buffer.getvalue().encode(FIXTURE_ENCODING)
-    _validate_bounds(
-        row_count=len(dataset.rows),
-        byte_size=len(payload),
-        bounds=effective_bounds,
-        subject="csv fixture",
-    )
-    return _write_payload(
-        destination,
-        payload,
-        kind="csv",
-        dataset=dataset,
-        malformed_rows=malformed_rows,
-        duplicate_rows=duplicate_rows,
-    )
+    return buffer.getvalue().encode(FIXTURE_ENCODING), malformed_rows, duplicate_rows
 
 
-def write_jsonl_fixture(
-    dataset: SyntheticDataset,
-    destination: Path,
-    *,
-    bounds: FixtureBounds | None = None,
-) -> FixtureManifest:
-    """Write the dataset as deterministic UTF-8 LF-terminated JSON Lines."""
-    effective_bounds = bounds if bounds is not None else FixtureBounds()
+def render_jsonl_fixture(dataset: SyntheticDataset) -> tuple[bytes, int, int]:
+    """Render the deterministic UTF-8 LF-terminated JSON Lines payload."""
     lines: list[bytes] = []
     malformed_rows = 0
     duplicate_rows = 0
@@ -170,7 +149,43 @@ def write_jsonl_fixture(
             dict(row.payload), ensure_ascii=True, separators=(",", ":"), sort_keys=True
         )
         lines.append(canonical.encode("ascii"))
-    payload = b"".join(line + b"\n" for line in lines)
+    return b"".join(line + b"\n" for line in lines), malformed_rows, duplicate_rows
+
+
+def write_csv_fixture(
+    dataset: SyntheticDataset,
+    destination: Path,
+    *,
+    bounds: FixtureBounds | None = None,
+) -> FixtureManifest:
+    """Write the dataset as a deterministic UTF-8 LF-terminated CSV file."""
+    effective_bounds = bounds if bounds is not None else FixtureBounds()
+    payload, malformed_rows, duplicate_rows = render_csv_fixture(dataset)
+    _validate_bounds(
+        row_count=len(dataset.rows),
+        byte_size=len(payload),
+        bounds=effective_bounds,
+        subject="csv fixture",
+    )
+    return _write_payload(
+        destination,
+        payload,
+        kind="csv",
+        dataset=dataset,
+        malformed_rows=malformed_rows,
+        duplicate_rows=duplicate_rows,
+    )
+
+
+def write_jsonl_fixture(
+    dataset: SyntheticDataset,
+    destination: Path,
+    *,
+    bounds: FixtureBounds | None = None,
+) -> FixtureManifest:
+    """Write the dataset as deterministic UTF-8 LF-terminated JSON Lines."""
+    effective_bounds = bounds if bounds is not None else FixtureBounds()
+    payload, malformed_rows, duplicate_rows = render_jsonl_fixture(dataset)
     _validate_bounds(
         row_count=len(dataset.rows),
         byte_size=len(payload),
