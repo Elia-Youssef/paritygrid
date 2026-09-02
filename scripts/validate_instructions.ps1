@@ -171,8 +171,10 @@ $generatedFileInventory = @(
     'docs/generated/openapi.json',
     'web/src/api/generated/schema.d.ts',
     'web/dist/index.html',
-    'web/dist/assets/index-DacWRX6X.css',
-    'web/dist/assets/index-D4J1i5t0.js'
+    'web/dist/assets/index-CoE9DoJ8.css',
+    'web/dist/assets/index-Bz2LA2AQ.js',
+    'web/dist/assets/inter-latin-wght-normal-Dx4kXJAl.woff2',
+    'web/dist/assets/roboto-mono-latin-wght-normal-CZtBPCCa.woff2'
 )
 $unsafeTrackedExtensions = @(
     '.cer', '.crt', '.db', '.der', '.duckdb', '.key', '.kdbx', '.log', '.parquet',
@@ -300,7 +302,22 @@ foreach ($generatedFile in $generatedFileInventory) {
 }
 
 $mediaExtensions = @('.gif', '.ico', '.jpeg', '.jpg', '.mov', '.mp3', '.mp4', '.pdf', '.png', '.svg', '.wav', '.webm', '.webp')
-$trackedMediaInventory = @()
+$trackedMediaInventory = @(
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-conflict-table-inspector-linux.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-conflict-table-inspector-win32.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-reconciliation-empty-linux.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-reconciliation-empty-win32.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-reconciliation-summary-linux.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-reconciliation-summary-win32.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-repair-applying-progress-linux.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-repair-applying-progress-win32.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-repair-completed-linux.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-repair-completed-win32.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-repair-proposed-review-linux.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-repair-proposed-review-win32.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-repair-stale-blocked-linux.png',
+    'web/e2e/phase18-visual.spec.ts-snapshots/p18-repair-stale-blocked-win32.png'
+)
 $unlistedMedia = $trackedFiles | Where-Object {
     $mediaExtensions -contains [IO.Path]::GetExtension($_).ToLowerInvariant() -and
     $trackedMediaInventory -notcontains $_

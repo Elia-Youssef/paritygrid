@@ -80,23 +80,23 @@ describe("generated-client compile-time examples", () => {
             limit: 25,
             next_cursor: null,
             observed_at: "2026-01-01T00:00:00Z",
-            run_id: "run-1",
+            run_id: "run-example",
             run_version: 1,
             state: "running",
-            reconciliation_fingerprint: "fp",
+            reconciliation_fingerprint: "a".repeat(64),
           }),
         ),
       ),
     );
     const conflicts = await queryExamples.conflicts();
-    expect(conflicts.reconciliation_fingerprint).toBe("fp");
+    expect(conflicts.reconciliation_fingerprint).toBe("a".repeat(64));
 
     vi.stubGlobal(
       "fetch",
       vi.fn(() =>
         Promise.resolve(
           jsonOk({
-            run_id: "run-1",
+            run_id: "run-example",
             run_version: 1,
             state: "running",
             observed_at: "2026-01-01T00:00:00Z",
@@ -120,23 +120,31 @@ describe("generated-client compile-time examples", () => {
       vi.fn(() =>
         Promise.resolve(
           jsonOk({
-            run_id: "run-1",
+            run_id: "run-example",
             run_version: 1,
             state: "running",
             observed_at: "2026-01-01T00:00:00Z",
             reconciliation_observed_at: "2026-01-01T00:00:01Z",
-            reconciliation_fingerprint: "fp-1",
-            source_input_identity: "a",
-            target_input_identity: "b",
+            reconciliation_fingerprint: "b".repeat(64),
+            source_input_identity: "c".repeat(64),
+            target_input_identity: "d".repeat(64),
             analytical_query_version: 1,
             total_count: 0,
-            counts: {},
+            counts: {
+              match: 0,
+              missing_from_target: 0,
+              missing_from_source: 0,
+              field_mismatch: 0,
+              duplicate_source: 0,
+              duplicate_target: 0,
+              duplicate_both: 0,
+            },
           }),
         ),
       ),
     );
     const reconciliation = await queryExamples.reconciliation();
-    expect(reconciliation.reconciliation_fingerprint).toBe("fp-1");
+    expect(reconciliation.reconciliation_fingerprint).toBe("b".repeat(64));
 
     vi.stubGlobal(
       "fetch",
