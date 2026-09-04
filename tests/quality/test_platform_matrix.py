@@ -126,9 +126,7 @@ class TestWindowsPathCoverage:
         mixed_parent = short_root / "harness" / "performance"
         mixed_parent.mkdir(parents=True)
         scenario_root = open_scenario_root(mixed_parent / "scenario")
-        assert scenario_root.path == (
-            long_root / "harness" / "performance" / "scenario"
-        ).resolve()
+        assert scenario_root.path == (long_root / "harness" / "performance" / "scenario").resolve()
         shutil.rmtree(long_root, ignore_errors=True)
 
     def test_junction_root_is_still_rejected(self, tmp_path: Path) -> None:
