@@ -107,18 +107,17 @@ class TestWindowsPathCoverage:
         shutil.rmtree(long_root, ignore_errors=True)
 
     def test_junction_root_is_still_rejected(self, tmp_path: Path) -> None:
+        if os.name != "nt":
+            pytest.skip("junctions are Windows-specific")
+
         import _winapi
         import shutil
-
-        import pytest
 
         from paritygrid.demo.scenario_runner import (
             ScenarioPathError,
             open_scenario_root,
         )
 
-        if os.name != "nt":
-            pytest.skip("junctions are Windows-specific")
         target = tmp_path / "real-target"
         target.mkdir()
         link = tmp_path / "j-link"

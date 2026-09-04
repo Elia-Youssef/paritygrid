@@ -259,16 +259,16 @@ class TestNightlyActionsAndBounds:
                     assert _mapping(step, "with")["retention-days"] == 14
         assert retention_steps >= 1
 
-    def test_action_steps_do_not_use_run_only_working_directory(
-        self, nightly: dict[str, object]
-    ) -> None:
-        jobs = _mapping(nightly, "jobs")
-        for job_value in jobs.values():
-            steps = _items(cast("dict[str, object]", job_value), "steps")
-            for step_value in steps:
-                step = cast("dict[str, object]", step_value)
-                if "uses" in step:
-                    assert "working-directory" not in step
+    def test_action_steps_do_not_use_run_only_working_directory(self) -> None:
+        for workflow in (_NIGHTLY, _CI):
+            document = _parse_simple_yaml(workflow.read_text(encoding="utf-8").splitlines())
+            jobs = _mapping(document, "jobs")
+            for job_value in jobs.values():
+                steps = _items(cast("dict[str, object]", job_value), "steps")
+                for step_value in steps:
+                    step = cast("dict[str, object]", step_value)
+                    if "uses" in step:
+                        assert "working-directory" not in step, workflow.name
 
     def test_nightly_jobs_exist_with_expected_content(self, nightly: dict[str, object]) -> None:
         jobs = _mapping(nightly, "jobs")

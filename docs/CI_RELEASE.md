@@ -40,6 +40,30 @@ npm --prefix web run test:browser
 uv run python scripts/verify_frontend_api_path.py
 ```
 
+The pre-push portability checks supplement the host-native `pyright` run:
+
+```powershell
+uv run pyright --pythonplatform Windows
+uv run pyright --pythonplatform Linux
+```
+
+Both target checks are required when platform-specific source or tests change.
+Runtime tests on the applicable hosted operating systems remain authoritative;
+targeted static analysis does not emulate operating-system behavior. Tests that
+use platform-only modules must evaluate their platform skip or capability gate
+before importing those modules.
+
+When a GitHub Actions workflow changes, run its repository contract tests before
+the first push. For the current workflow set this includes:
+
+```powershell
+uv run pytest tests/quality/test_nightly_workflow.py
+```
+
+The contract must inspect every changed workflow and reject invalid step
+semantics, including command-only keys on action (`uses`) steps. A generic YAML
+parse alone is insufficient.
+
 The Chromium command exercises the built production shell with deterministic locale, timezone, viewport, and reduced-motion settings. In CI, the frontend-only job runs the mocked browser suite through `web/playwright.frontend.config.ts`. The dependent Frontend API smoke job, which installs both locked Python and Node environments, separately runs `web/e2e/demo.spec.ts` against the real packaged demo after exercising the Vite development proxy against the FastAPI application factory. This keeps each test in a job that provides its declared runtime without skipping either suite. Later phases add the stable `paritygrid verify` profiles without removing these underlying checks.
 
 The dependency audit exports every locked group to a temporary hash-pinned requirements file, omits only the unpublished local project, and audits that exact set in strict mode. The scoped coverage command consumes the same `.coverage` data as the aggregate report and independently requires at least 90 percent branch coverage for `paritygrid.application.execution`, 95 percent for the sequential runner, and 90 percent for `paritygrid.adapters.runners`. Every new runner adapter remains inside that registered gate.
