@@ -22,6 +22,14 @@ owned demo root, and requires no Node.js and no external service.
 | `paritygrid demo-faults` | Print the closed fault-control catalog |
 | `paritygrid demo-compare` | Compare cross-runner execution evidence |
 | `paritygrid demo-interruption` | Prove controlled interruption and durable recovery |
+| `paritygrid stress performance` | Correctness-gated showcase performance harness |
+| `paritygrid stress resources` | Memory, queue, cleanup, and orphan bounds exercise |
+| `paritygrid stress capabilities` | Closed runtime capability matrix |
+| `paritygrid stress wal` | Bounded SQLite WAL stress workload |
+
+The `stress` commands are bounded verification workloads, not demo flows: each
+writes a versioned JSON evidence report and is documented with the Phase 21
+verification commands in [CI and release](CI_RELEASE.md).
 
 ## Stable exit codes
 

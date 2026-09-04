@@ -1,5 +1,6 @@
 """ParityGrid command-line entry point."""
 
+import json
 from enum import StrEnum
 from pathlib import Path
 from typing import Annotated
@@ -328,6 +329,204 @@ def database_upgrade(
     typer.echo(
         f"Database revision: {report.previous_revision or 'empty'} -> {report.current_revision}"
     )
+
+
+@stress_app.command("performance")
+def stress_performance(
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root",
+            dir_okay=True,
+            file_okay=False,
+            resolve_path=False,
+            help="Fresh bounded root directory that owns every harness artifact.",
+        ),
+    ],
+    report_path: Annotated[
+        Path,
+        typer.Option(
+            "--report",
+            dir_okay=False,
+            resolve_path=False,
+            help="Absolute path for the versioned performance JSON report.",
+        ),
+    ],
+    story_warmups: Annotated[
+        int,
+        typer.Option("--story-warmups", min=0, max=5, help="Untimed story warm-up runs."),
+    ] = 1,
+    story_repetitions: Annotated[
+        int,
+        typer.Option("--story-repetitions", min=1, max=20, help="Measured story repetitions."),
+    ] = 3,
+    runner_warmups: Annotated[
+        int,
+        typer.Option("--runner-warmups", min=0, max=5, help="Untimed runner warm-up runs."),
+    ] = 1,
+    runner_repetitions: Annotated[
+        int,
+        typer.Option("--runner-repetitions", min=1, max=20, help="Measured runner repetitions."),
+    ] = 3,
+    create_parent: Annotated[
+        bool,
+        typer.Option(
+            "--create-parent",
+            help="Create missing report parent directories explicitly.",
+        ),
+    ] = False,
+) -> None:
+    """Run the correctness-gated showcase performance harness.
+
+    Correctness evidence is proven before any timing is accepted; the
+    measurement report is a versioned, reproducible JSON document without
+    hostnames, usernames, or local paths.
+    """
+    from paritygrid.quality.performance_harness import (
+        PerformanceConfig,
+        PerformanceHarnessError,
+        build_performance_report,
+        performance_report_bytes,
+    )
+
+    config = PerformanceConfig(
+        story_warmup_runs=story_warmups,
+        story_measured_runs=story_repetitions,
+        runner_warmup_runs=runner_warmups,
+        runner_measured_runs=runner_repetitions,
+    )
+    try:
+        document = build_performance_report(root, config)
+        _write_report_atomic(report_path, performance_report_bytes(document), create_parent)
+    except (OSError, PerformanceHarnessError, ValueError) as error:
+        typer.echo(f"performance harness failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
+    story = document["story"]
+    assert isinstance(story, dict)
+    typer.echo(
+        "Performance harness passed: "
+        f"story_repetitions={config.story_measured_runs}, "
+        f"runner_repetitions={config.runner_measured_runs}, "
+        f"story_p50_seconds={story['latency_p50_seconds']:.3f}, report=written"
+    )
+
+
+@stress_app.command("resources")
+def stress_resources(
+    root: Annotated[
+        Path,
+        typer.Option(
+            "--root",
+            dir_okay=True,
+            file_okay=False,
+            resolve_path=False,
+            help="Fresh bounded root directory that owns every exercise artifact.",
+        ),
+    ],
+    report_path: Annotated[
+        Path,
+        typer.Option(
+            "--report",
+            dir_okay=False,
+            resolve_path=False,
+            help="Absolute path for the versioned resource-bounds JSON report.",
+        ),
+    ],
+    repetitions: Annotated[
+        int,
+        typer.Option("--repetitions", min=1, max=10, help="Repeated engine executions."),
+    ] = 3,
+    create_parent: Annotated[
+        bool,
+        typer.Option(
+            "--create-parent",
+            help="Create missing report parent directories explicitly.",
+        ),
+    ] = False,
+) -> None:
+    """Prove memory, queue, cleanup, and orphan bounds over real owners."""
+    from paritygrid.quality.resource_bounds import (
+        ResourceBoundsError,
+        run_resource_bounds_exercise,
+    )
+
+    try:
+        document = run_resource_bounds_exercise(root, repetitions=repetitions)
+        _write_report_atomic(
+            report_path,
+            json.dumps(document, ensure_ascii=True, separators=(",", ":"), sort_keys=True).encode(
+                "ascii"
+            ),
+            create_parent,
+        )
+    except (OSError, ResourceBoundsError, ValueError) as error:
+        typer.echo(f"resource bounds exercise failed: {error}", err=True)
+        raise typer.Exit(code=1) from None
+    typer.echo(
+        "Resource bounds exercise passed: "
+        f"repetitions={repetitions}, zero_orphans=true, report=written"
+    )
+
+
+@stress_app.command("capabilities")
+def stress_capabilities(
+    json_output: Annotated[
+        bool,
+        typer.Option("--json", help="Print the canonical capability matrix document."),
+    ] = False,
+    report_path: Annotated[
+        Path | None,
+        typer.Option(
+            "--report",
+            dir_okay=False,
+            resolve_path=False,
+            help="Optional absolute path for the capability matrix JSON report.",
+        ),
+    ] = None,
+    create_parent: Annotated[
+        bool,
+        typer.Option(
+            "--create-parent",
+            help="Create missing report parent directories explicitly.",
+        ),
+    ] = False,
+) -> None:
+    """Report every known runtime profile as available, unavailable, or unsupported."""
+    from paritygrid.quality.capability_matrix import (
+        capability_matrix_bytes,
+        parse_capability_matrix,
+    )
+
+    payload = capability_matrix_bytes()
+    document = parse_capability_matrix(payload)
+    if report_path is not None:
+        try:
+            _write_report_atomic(report_path, payload, create_parent)
+        except OSError as error:
+            typer.echo(f"capability report failed: {error}", err=True)
+            raise typer.Exit(code=1) from None
+    if json_output:
+        typer.echo(payload.decode("ascii"))
+        return
+    for entry in document.profiles:
+        state = entry.state.value
+        detail = f": {entry.reason}" if entry.reason is not None else ""
+        typer.echo(f"{entry.profile_id} ({entry.kind.value}): {state}{detail}")
+
+
+def _write_report_atomic(path: Path, payload: bytes, create_parent: bool) -> None:
+    """Write one bounded report atomically without leaving partial files."""
+    parent = path.parent
+    if create_parent:
+        parent.mkdir(parents=True, exist_ok=True)
+    if not parent.is_dir():
+        raise OSError(f"report parent directory does not exist: {parent.name}")
+    temporary = parent / f".{path.name}.partial"
+    try:
+        temporary.write_bytes(payload)
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 @stress_app.command("wal")

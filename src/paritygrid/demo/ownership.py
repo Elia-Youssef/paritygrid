@@ -39,7 +39,7 @@ _BROAD_HOME_FOLDERS = ("Desktop", "Documents", "Downloads")
 _SYSTEM_ROOT_VARIABLES = ("SystemRoot", "ProgramFiles", "ProgramFiles(x86)")
 # ``~`` is part of ordinary Windows 8.3 aliases (for example RUNNER~1 on
 # hosted CI) and carries no traversal or alternate-stream semantics.
-_SAFE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,63}\Z")
+_SAFE_COMPONENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._~-]{0,63}\Z")
 _OWNERSHIP_ID = re.compile(r"[0-9a-f]{64}\Z")
 _RESERVED_NAMES = frozenset(
     {

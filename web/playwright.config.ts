@@ -22,7 +22,9 @@ export default defineConfig({
     video: "off",
   },
   webServer: {
-    command: "npm run preview -- --host 127.0.0.1 --port 4173 --strictPort",
+    // The built SPA is served by the abort-tolerant static server; the
+    // preview server dies on the client-abort timing WebKit produces.
+    command: "node e2e/static-server.mjs",
     url: "http://127.0.0.1:4173",
     reuseExistingServer: false,
     timeout: 30_000,

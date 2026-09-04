@@ -58,6 +58,7 @@ include = [
   "scripts/verify_python_coverage.py",
   "scripts/verify_wheel_install.py",
   "scripts/verify_demo_no_node.py",
+  "scripts/verify_platform_matrix.py",
 ]
 exclude = [".venv", "tests/fixtures"]
 pythonVersion = "3.14"

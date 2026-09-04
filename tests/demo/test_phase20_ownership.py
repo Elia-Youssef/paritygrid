@@ -289,6 +289,11 @@ class TestRootRejection:
 
         assert resolve_demo_root(candidate) == candidate.resolve(strict=False)
 
+    def test_safe_leading_underscore_component_is_accepted(self, tmp_path: Path) -> None:
+        candidate = tmp_path / "_temp" / "demo"
+
+        assert resolve_demo_root(candidate) == candidate.resolve(strict=False)
+
     def test_independent_proof_registry_is_never_a_demo_root(self, tmp_path: Path) -> None:
         registry = tmp_path / "proof-registry-parent" / ownership.OWNERSHIP_PROOF_DIRECTORY_NAME
 

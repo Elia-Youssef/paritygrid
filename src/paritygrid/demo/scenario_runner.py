@@ -243,7 +243,11 @@ STORY_FAILPOINT_NAMES: tuple[str, ...] = (
     STORY_FAILPOINT_REPAIR_APPLIED,
 )
 
-_SAFE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}\Z")
+# The tilde is accepted because valid Windows 8.3 short-name components
+# (such as RUNNER~1 on standard runner accounts) may appear in any parent
+# directory of an explicitly chosen root; traversal, reserved-name, and
+# link checks are independent of this character class.
+_SAFE_COMPONENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._~-]{0,63}\Z")
 _RESERVED_NAMES = frozenset(
     {
         "CON",
@@ -260,6 +264,48 @@ _BROAD_HOME_FOLDERS = ("Desktop", "Documents", "Downloads")
 def _only_case_change(candidate: Path, resolved: Path) -> bool:
     """Report whether resolve() only changed the drive-letter case."""
     return str(candidate).lower() == str(resolved).lower()
+
+
+def _is_short_name_alias(candidate: Path, resolved: Path) -> bool:
+    """Report whether candidate is the 8.3 short-name form of resolved.
+
+    Windows ``resolve()`` expands 8.3 short-name components of existing
+    directories, so a perfectly ordinary ``RUNNER~1``-style root would
+    otherwise look like a link escape.  The operating system itself
+    confirms the alias mapping on the deepest existing ancestor — final
+    components may not exist yet because the root creates them — by
+    requiring the long-name expansion of the candidate prefix to equal
+    the resolved prefix.  Expanding the candidate is important when only
+    one ancestor uses its 8.3 spelling while later components retain their
+    long names.  Junctions and symlinks never match this check because
+    long-name expansion preserves the link path while ``resolve()``
+    rewrites it to the target.
+    """
+    if os.name != "nt":
+        return False
+    probe_candidate = candidate
+    probe_resolved = resolved
+    while not probe_candidate.exists() and probe_candidate.parent != probe_candidate:
+        probe_candidate = probe_candidate.parent
+        probe_resolved = probe_resolved.parent
+    if not probe_candidate.exists():
+        return False
+    for existing in (probe_candidate, *probe_candidate.parents):
+        if existing.is_symlink() or existing.is_junction():
+            return False
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.windll.kernel32
+    get_long_path_name = getattr(kernel32, "GetLongPathNameW", None)
+    if get_long_path_name is None:
+        return False
+    get_long_path_name.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    get_long_path_name.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    if get_long_path_name(str(probe_candidate), buffer, len(buffer)) == 0:
+        return False
+    return buffer.value.lower() == str(probe_resolved).lower()
 
 
 class ScenarioPathError(ScenarioError):
@@ -379,9 +425,15 @@ def open_scenario_root(root: Path) -> ScenarioRoot:
             continue
         _validate_component(part)
     resolved = cleaned.resolve()
-    if resolved != cleaned and not _only_case_change(cleaned, resolved):
-        # resolve() rewrites the path exactly when a symlink or junction is
-        # involved, so any textual divergence is an escape attempt.
+    if (
+        resolved != cleaned
+        and not _only_case_change(cleaned, resolved)
+        and not _is_short_name_alias(cleaned, resolved)
+    ):
+        # resolve() rewrites the path when a symlink or junction is
+        # involved, so textual divergence is an escape attempt — unless the
+        # operating system confirms the candidate is just the 8.3
+        # short-name rendering of the same existing directory.
         raise ScenarioPathError("the scenario root traverses a symbolic link or junction")
     for existing in (resolved, *resolved.parents):
         if existing == resolved:

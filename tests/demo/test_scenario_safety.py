@@ -72,6 +72,11 @@ class TestRootConfinement:
             with pytest.raises(ScenarioPathError):
                 root.child(f"fixtures/{name}")
 
+    def test_safe_leading_underscore_component_is_accepted(self, tmp_path: Path) -> None:
+        root = tmp_path / "_temp" / "scenario"
+
+        assert open_scenario_root(root).path == root.resolve()
+
     def test_already_published_roots_are_rejected(self, tmp_path: Path) -> None:
         root = tmp_path / "scenario"
         open_scenario_root(root)

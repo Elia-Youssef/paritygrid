@@ -57,6 +57,32 @@ The standalone Phase 8–28 implementation prompts operate only inside a branch 
 
 Draft pull requests may run reduced checks while work is changing rapidly. The complete required lane must pass on the final commit before merge.
 
+### Pre-push parity gate
+
+Before the first remote push of an integration candidate, and again before any
+later reviewable push, the root integrator must map every changed file to its
+applicable local and CI checks, run those checks from the final worktree, and
+independently review the resulting diff and evidence. Focused tests are useful
+during repair, but they do not replace an applicable candidate gate.
+
+- Changes to platform-specific code or tests require strict static analysis
+  targeted at both Windows and Linux when the tool supports target selection.
+  Platform capability or skip checks must execute before importing or accessing
+  platform-only modules. A pass on the host operating system alone is not
+  cross-platform evidence.
+- Changes to GitHub workflow files require the repository workflow contract
+  tests for every changed workflow. Those tests must cover action-versus-command
+  step semantics and other schema constraints used by the change; merely parsing
+  the file as YAML is not evidence that GitHub Actions will accept it.
+- Delegated implementation or review reports are inputs, not acceptance. The
+  root integrator inspects the final diff, verifies each reported command and
+  result, and records any unavailable check before deciding whether to push.
+
+After a push, judge required checks on the exact pull-request head. Superseded
+or concurrency-cancelled runs are not successful evidence and must be
+distinguished from genuine test failures. Every new commit invalidates older
+exact-head evidence and requires a fresh required-check set.
+
 ## Commit policy
 
 Commits use a concise conventional form:
