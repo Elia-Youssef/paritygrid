@@ -299,10 +299,12 @@ class TestNightlyContent:
     def test_nightly_prepares_empty_roots_for_fail_closed_harnesses(self) -> None:
         text = _NIGHTLY.read_text(encoding="utf-8")
         setup = text.index("Prepare fresh-owned stress roots")
+        wal = text.index("Verify bounded SQLite WAL stress")
         performance = text.index("Run the correctness-gated performance harness")
         resources = text.index("Prove memory, queue, cleanup, and orphan bounds")
-        assert setup < performance < resources
-        assert 'mkdir -p "${performance_root}" "${resources_root}"' in text
+        assert setup < wal < performance < resources
+        assert 'mkdir -p "${evidence_root}" "${performance_root}" "${resources_root}"' in text
+        assert 'evidence_root="${{ github.workspace }}/${{ env.EVIDENCE_DIR }}"' in text
         assert 'find "${performance_root}" -mindepth 1 -print -quit' in text
         assert 'find "${resources_root}" -mindepth 1 -print -quit' in text
 

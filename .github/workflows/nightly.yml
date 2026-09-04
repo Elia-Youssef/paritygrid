@@ -54,6 +54,15 @@ jobs:
           tests/execution/test_process_pool.py
           tests/persistence
           -q
+      - name: Prepare fresh-owned stress roots
+        shell: bash
+        run: |
+          evidence_root="${{ github.workspace }}/${{ env.EVIDENCE_DIR }}"
+          performance_root="${{ runner.temp }}/paritygrid-nightly/performance"
+          resources_root="${{ runner.temp }}/paritygrid-nightly/resources"
+          mkdir -p "${evidence_root}" "${performance_root}" "${resources_root}"
+          test -z "$(find "${performance_root}" -mindepth 1 -print -quit)"
+          test -z "$(find "${resources_root}" -mindepth 1 -print -quit)"
       - name: Verify bounded SQLite WAL stress
         shell: bash
         run: >
@@ -63,14 +72,6 @@ jobs:
           --profile local
           --seed 19
           --create-parent
-      - name: Prepare fresh-owned stress roots
-        shell: bash
-        run: |
-          performance_root="${{ runner.temp }}/paritygrid-nightly/performance"
-          resources_root="${{ runner.temp }}/paritygrid-nightly/resources"
-          mkdir -p "${performance_root}" "${resources_root}"
-          test -z "$(find "${performance_root}" -mindepth 1 -print -quit)"
-          test -z "$(find "${resources_root}" -mindepth 1 -print -quit)"
       - name: Run the correctness-gated performance harness
         shell: bash
         run: >
