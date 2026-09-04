@@ -259,6 +259,17 @@ class TestNightlyActionsAndBounds:
                     assert _mapping(step, "with")["retention-days"] == 14
         assert retention_steps >= 1
 
+    def test_action_steps_do_not_use_run_only_working_directory(
+        self, nightly: dict[str, object]
+    ) -> None:
+        jobs = _mapping(nightly, "jobs")
+        for job_value in jobs.values():
+            steps = _items(cast("dict[str, object]", job_value), "steps")
+            for step_value in steps:
+                step = cast("dict[str, object]", step_value)
+                if "uses" in step:
+                    assert "working-directory" not in step
+
     def test_nightly_jobs_exist_with_expected_content(self, nightly: dict[str, object]) -> None:
         jobs = _mapping(nightly, "jobs")
         assert frozenset(jobs) == {"python-nightly", "browser-nightly", "nightly-gate"}
@@ -304,7 +315,9 @@ class TestNightlyContent:
 
     def test_browser_lane_covers_chromium_firefox_and_webkit(self) -> None:
         text = _NIGHTLY.read_text(encoding="utf-8")
-        for browser in ("chromium", "firefox", "webkit"):
+        assert "playwright install --with-deps chromium firefox webkit" in text
+        assert "--browser=chromium" not in text
+        for browser in ("firefox", "webkit"):
             assert f"--browser={browser}" in text, browser
 
     def test_locked_python_and_frontend_dependencies_are_audited(self) -> None:
