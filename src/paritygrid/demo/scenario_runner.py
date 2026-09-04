@@ -247,7 +247,7 @@ STORY_FAILPOINT_NAMES: tuple[str, ...] = (
 # (such as RUNNER~1 on standard runner accounts) may appear in any parent
 # directory of an explicitly chosen root; traversal, reserved-name, and
 # link checks are independent of this character class.
-_SAFE_COMPONENT = re.compile(r"[A-Za-z0-9][A-Za-z0-9._~-]{0,63}\Z")
+_SAFE_COMPONENT = re.compile(r"[A-Za-z0-9_][A-Za-z0-9._~-]{0,63}\Z")
 _RESERVED_NAMES = frozenset(
     {
         "CON",
