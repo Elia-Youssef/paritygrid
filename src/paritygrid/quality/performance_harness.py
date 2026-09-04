@@ -219,6 +219,8 @@ def _read_total_memory() -> TotalMemoryFacts:
 
 
 def _read_total_memory_windows() -> TotalMemoryFacts:
+    if sys.platform != "win32":
+        return TotalMemoryFacts(None, None)
     import ctypes
     from ctypes import wintypes
 

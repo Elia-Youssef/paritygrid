@@ -243,7 +243,7 @@ def _venv_paritygrid(venv_root: Path) -> Path:
 
 def windows_short_path(path: Path) -> Path | None:
     """Return the 8.3 short path for one directory, or None when unavailable."""
-    if os.name != "nt":
+    if sys.platform != "win32":
         return None
     import ctypes
     from ctypes import wintypes
@@ -303,6 +303,8 @@ def _path_is_within(candidate: str, root: str) -> bool:
 
 
 def _venv_children_windows(resolved_venv: str) -> list[int] | None:
+    if sys.platform != "win32":
+        return None
     import ctypes
     from ctypes import wintypes
 
@@ -348,6 +350,8 @@ def _venv_children_windows(resolved_venv: str) -> list[int] | None:
 
 
 def _process_image_path(process_id: int) -> str | None:
+    if sys.platform != "win32":
+        return None
     import ctypes
     from ctypes import wintypes
 
@@ -677,6 +681,8 @@ def _windows_steps(
     isolated: Mapping[str, str],
 ) -> list[dict[str, object]]:
     """Run the Windows-specific path, junction, and handle-cleanup coverage."""
+    if sys.platform != "win32":
+        raise MatrixStepError("Windows-specific steps require Windows")
     steps: list[dict[str, object]] = []
     scenario_probe = (
         "from pathlib import Path; import sys; "
