@@ -106,6 +106,31 @@ class TestWindowsPathCoverage:
         assert scenario_root.path == (long_root / "scenario").resolve()
         shutil.rmtree(long_root, ignore_errors=True)
 
+    def test_scenario_root_with_one_short_ancestor_and_long_descendants_is_accepted(
+        self, tmp_path: Path
+    ) -> None:
+        """A mixed 8.3/long spelling is not mistaken for a junction."""
+        if os.name != "nt":
+            pytest.skip("8.3 short-name aliases are Windows-specific")
+
+        import shutil
+
+        from paritygrid.demo.scenario_runner import open_scenario_root
+        from paritygrid.quality.platform_matrix import windows_short_path
+
+        long_root = tmp_path / "paritygrid-platform-mixedalias"
+        long_root.mkdir()
+        short_root = windows_short_path(long_root)
+        if short_root is None or str(short_root) == str(long_root):
+            pytest.skip("8.3 short-name generation is disabled on this volume")
+        mixed_parent = short_root / "harness" / "performance"
+        mixed_parent.mkdir(parents=True)
+        scenario_root = open_scenario_root(mixed_parent / "scenario")
+        assert scenario_root.path == (
+            long_root / "harness" / "performance" / "scenario"
+        ).resolve()
+        shutil.rmtree(long_root, ignore_errors=True)
+
     def test_junction_root_is_still_rejected(self, tmp_path: Path) -> None:
         if os.name != "nt":
             pytest.skip("junctions are Windows-specific")
@@ -120,7 +145,7 @@ class TestWindowsPathCoverage:
 
         target = tmp_path / "real-target"
         target.mkdir()
-        link = tmp_path / "j-link"
+        link = tmp_path / "JUNCTI~1"
         _winapi.CreateJunction(str(target), str(link))
         try:
             with pytest.raises(ScenarioPathError):

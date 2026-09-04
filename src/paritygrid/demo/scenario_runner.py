@@ -274,10 +274,12 @@ def _is_short_name_alias(candidate: Path, resolved: Path) -> bool:
     otherwise look like a link escape.  The operating system itself
     confirms the alias mapping on the deepest existing ancestor — final
     components may not exist yet because the root creates them — by
-    requiring the short-name rendering of the resolved path to equal the
-    candidate prefix.  Junctions and symlinks never match this check
-    because resolve() rewrites them to their target, whose rendering
-    differs from the junction path text.
+    requiring the long-name expansion of the candidate prefix to equal
+    the resolved prefix.  Expanding the candidate is important when only
+    one ancestor uses its 8.3 spelling while later components retain their
+    long names.  Junctions and symlinks never match this check because
+    long-name expansion preserves the link path while ``resolve()``
+    rewrites it to the target.
     """
     if os.name != "nt":
         return False
@@ -288,19 +290,22 @@ def _is_short_name_alias(candidate: Path, resolved: Path) -> bool:
         probe_resolved = probe_resolved.parent
     if not probe_candidate.exists():
         return False
+    for existing in (probe_candidate, *probe_candidate.parents):
+        if existing.is_symlink() or existing.is_junction():
+            return False
     import ctypes
     from ctypes import wintypes
 
     kernel32 = ctypes.windll.kernel32
-    get_short_path_name = getattr(kernel32, "GetShortPathNameW", None)
-    if get_short_path_name is None:
+    get_long_path_name = getattr(kernel32, "GetLongPathNameW", None)
+    if get_long_path_name is None:
         return False
-    get_short_path_name.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
-    get_short_path_name.restype = wintypes.DWORD
-    buffer = ctypes.create_unicode_buffer(1024)
-    if get_short_path_name(str(probe_resolved), buffer, 1024) == 0:
+    get_long_path_name.argtypes = (wintypes.LPCWSTR, wintypes.LPWSTR, wintypes.DWORD)
+    get_long_path_name.restype = wintypes.DWORD
+    buffer = ctypes.create_unicode_buffer(32768)
+    if get_long_path_name(str(probe_candidate), buffer, len(buffer)) == 0:
         return False
-    return buffer.value.lower() == str(probe_candidate).lower()
+    return buffer.value.lower() == str(probe_resolved).lower()
 
 
 class ScenarioPathError(ScenarioError):
