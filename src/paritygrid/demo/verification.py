@@ -41,7 +41,11 @@ from paritygrid.application.execution.capacity import ScheduledWorkLimiters
 from paritygrid.application.execution.channels import ChannelSet
 from paritygrid.application.execution.concurrency_settings import CapturedConcurrencySettings
 from paritygrid.application.execution.concurrent_cleanup import ConcurrentCleanupCoordinator
-from paritygrid.application.execution.concurrent_engine import ConcurrentRunEngine, EngineStatus
+from paritygrid.application.execution.concurrent_engine import (
+    AdmissionStateReader,
+    ConcurrentRunEngine,
+    EngineStatus,
+)
 from paritygrid.application.execution.concurrent_lifecycle import (
     ConcurrentLifecycleCoordinator,
     ConcurrentPauseSignal,
@@ -66,7 +70,10 @@ from paritygrid.application.execution.full_plan_strategy import (
     WorkOperationExecutor,
 )
 from paritygrid.application.execution.leasing import WorkLeaseService
-from paritygrid.application.execution.result_coordinator import ConcurrentResultCoordinator
+from paritygrid.application.execution.result_coordinator import (
+    ConcurrentResultCoordinator,
+    ResultCoordinatorWriter,
+)
 from paritygrid.application.execution.result_coordinator_writer import (
     TransactionalResultCoordinatorWriter,
 )
@@ -665,6 +672,33 @@ def build_canonical_engine(
     executor: WorkOperationExecutor,
 ) -> ConcurrentRunEngine:
     """Compose one canonical engine over the accepted Phase 7 components."""
+    engine, _channels = build_canonical_engine_with_observation(
+        harness, run_id, strategy=strategy, executor=executor
+    )
+    return engine
+
+
+def build_canonical_engine_with_observation(
+    harness: ConcurrentScenarioHarness,
+    run_id: RunId,
+    *,
+    strategy: FullPlanStrategy,
+    executor: WorkOperationExecutor,
+    admission_reader: AdmissionStateReader | None = None,
+    result_writer: ResultCoordinatorWriter | None = None,
+) -> tuple[ConcurrentRunEngine, ChannelSet]:
+    """Compose one canonical engine and expose its owned channels.
+
+    Observability-minded callers (the performance harness and resource
+    bound exercises) need the ``ChannelSet`` after the run to read real
+    per-channel high-water marks, and may supply an alternative admission
+    reader with the accepted ``read`` surface to timestamp admissions or
+    an alternative result writer with the accepted ``submit`` surface to
+    time durable commit transactions.  The composition is otherwise
+    identical to :func:`build_canonical_engine`; the engine stays the
+    sole owner of the returned channels and closes them during its own
+    cleanup.
+    """
     captured = CapturedConcurrencySettings()
     channels = ChannelSet(
         assignment_capacity=captured.assignment_channel_capacity,
@@ -686,15 +720,25 @@ def build_canonical_engine(
         node_ids=CANONICAL_NODES,
         clock=harness.clock,
     )
+    resolved_result_writer = (
+        result_writer
+        if result_writer is not None
+        else TransactionalResultCoordinatorWriter(
+            harness.writer,
+            DurableResultCommitFactory(correlation_id=CANONICAL_CORRELATION_ID),
+        )
+    )
+    resolved_admission_reader = (
+        admission_reader
+        if admission_reader is not None
+        else SQLiteAdmissionStateReader(harness.database)
+    )
     coordinator = ConcurrentResultCoordinator(
         run_id=str(run_id),
         plan_fingerprint=canonical_plan_fingerprint(),
         control_generation=1,
         reader=SQLiteResultCoordinatorReader(harness.database, harness.clock),
-        writer=TransactionalResultCoordinatorWriter(
-            harness.writer,
-            DurableResultCommitFactory(correlation_id=CANONICAL_CORRELATION_ID),
-        ),
+        writer=resolved_result_writer,
         result_channel=channels.result,
         scheduler=scheduler,
         capacity=capacity,
@@ -719,7 +763,7 @@ def build_canonical_engine(
     def clock_wait(target_micros: int) -> None:
         harness.clock.advance_to_micros(target_micros)
 
-    return ConcurrentRunEngine(
+    engine = ConcurrentRunEngine(
         run_id=str(run_id),
         plan_fingerprint=canonical_plan_fingerprint(),
         node_order=CANONICAL_NODES,
@@ -730,7 +774,7 @@ def build_canonical_engine(
         clock=harness.clock,
         strategy=strategy,
         executor=executor,
-        admission_reader=SQLiteAdmissionStateReader(harness.database),
+        admission_reader=resolved_admission_reader,
         lease_service=lease_service,
         lifecycle=lifecycle,
         coordinator=coordinator,
@@ -745,6 +789,7 @@ def build_canonical_engine(
         artifact_allowance=artifact_allowance,
         clock_wait=clock_wait,
     )
+    return engine, channels
 
 
 def _submit(

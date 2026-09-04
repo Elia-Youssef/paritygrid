@@ -10,142 +10,15 @@ import tempfile
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 
-_SPAWN_PROBE = """from __future__ import annotations
-
-import multiprocessing
-import sys
-from pathlib import Path
-
-
-def import_in_child(queue: object) -> None:
-    import paritygrid
-
-    queue.put(str(Path(paritygrid.__file__).resolve()))
-
-
-def process_pool_probe() -> None:
-    from datetime import UTC, datetime
-
-    from paritygrid.adapters.runners import SubordinateProcessPool
-    from paritygrid.application.execution.capacity import (
-        ScheduledWorkLimiters,
-        SubordinateCallLimiter,
-    )
-    from paritygrid.application.execution.clock_policy import ManualClock
-    from paritygrid.application.execution.concurrency_settings import CapturedConcurrencySettings
-    from paritygrid.domain.models import UtcTimestamp
-
-    timestamp = UtcTimestamp(datetime(2026, 8, 25, 8, 0, 0, tzinfo=UTC))
-    clock = ManualClock(timestamp)
-    settings = CapturedConcurrencySettings(cpu_pool_operations=1)
-    parent = ScheduledWorkLimiters(
-        settings,
-        strategy_id="threaded",
-        node_ids=("wheel-probe",),
-        clock=clock,
-    )
-    capacity = SubordinateCallLimiter(
-        category="cpu_pool",
-        limit=1,
-        clock=clock,
-        parent_limiter=parent,
-    )
-    owner = "wheel-process-probe"
-    permits = parent.acquire(owner, "wheel-probe")
-    pool = SubordinateProcessPool(capacity=capacity, timeout_seconds=10.0)
-    try:
-        result = pool.submit(
-            owner,
-            "sort_integers",
-            {"values": [3, 1, 2]},
-            parent=permits,
-        )
-        if result.operation_id != "sort_integers" or result.result != {"sorted": [1, 2, 3]}:
-            raise SystemExit("installed process-pool probe returned an invalid result")
-    finally:
-        pool.close()
-        parent.release(owner, "wheel-probe")
-
-
-if __name__ == "__main__":
-    checkout = Path(sys.argv[1]).resolve()
-    environment = Path(sys.argv[2]).resolve()
-    context = multiprocessing.get_context("spawn")
-    queue = context.Queue()
-    process = context.Process(target=import_in_child, args=(queue,))
-    process.start()
-    process.join(30)
-    if process.is_alive():
-        process.terminate()
-        process.join(5)
-        raise SystemExit("spawned import probe timed out")
-    if process.exitcode != 0:
-        raise SystemExit(f"spawned import probe exited with {process.exitcode}")
-    module_path = Path(queue.get(timeout=5)).resolve()
-    if not module_path.is_relative_to(environment):
-        raise SystemExit(f"spawned process imported outside venv: {module_path}")
-    if module_path.is_relative_to(checkout):
-        raise SystemExit(f"spawned process imported from checkout: {module_path}")
-    process_pool_probe()
-    print(f"Spawned-process import passed: {module_path}")
-"""
-
-_FRONTEND_PROBE = """from __future__ import annotations
-
-import asyncio
-from pathlib import Path
-
-import paritygrid
-from paritygrid.runtime.composition import create_runtime_app
-
-
-async def request_shell() -> None:
-    app = create_runtime_app()
-    messages: list[dict[str, object]] = []
-    delivered = False
-
-    async def receive() -> dict[str, object]:
-        nonlocal delivered
-        if delivered:
-            return {"type": "http.disconnect"}
-        delivered = True
-        return {"type": "http.request", "body": b"", "more_body": False}
-
-    async def send(message: dict[str, object]) -> None:
-        messages.append(message)
-
-    await app(
-        {
-            "type": "http",
-            "asgi": {"version": "3.0", "spec_version": "2.3"},
-            "http_version": "1.1",
-            "method": "GET",
-            "scheme": "http",
-            "path": "/",
-            "raw_path": b"/",
-            "query_string": b"",
-            "root_path": "",
-            "headers": [(b"host", b"127.0.0.1")],
-            "client": ("127.0.0.1", 12345),
-            "server": ("127.0.0.1", 8000),
-        },
-        receive,
-        send,
-    )
-    start = next(message for message in messages if message["type"] == "http.response.start")
-    assert start["status"] == 200, start
-    body = b"".join(
-        message.get("body", b"")
-        for message in messages
-        if message["type"] == "http.response.body"
-    )
-    assert b"<!doctype html" in body.lower()
-    package_root = Path(paritygrid.__file__).resolve().parent
-    assert (package_root / "_frontend" / "index.html").is_file()
-
-
-asyncio.run(request_shell())
-"""
+from paritygrid.quality.platform_matrix import (
+    FRONTEND_PROBE as _FRONTEND_PROBE,
+)
+from paritygrid.quality.platform_matrix import (
+    SPAWN_PROBE as _SPAWN_PROBE,
+)
+from paritygrid.quality.platform_matrix import (
+    isolated_environment as _isolated_environment,
+)
 
 
 def _run(
@@ -157,20 +30,6 @@ def _run(
     command = tuple(str(argument) for argument in arguments)
     print(f"+ {' '.join(command)}")
     subprocess.run(command, cwd=cwd, env=environment, check=True)
-
-
-def _isolated_environment() -> dict[str, str]:
-    environment = dict(os.environ)
-    for name in ("PYTHONHOME", "PYTHONPATH", "VIRTUAL_ENV"):
-        environment.pop(name, None)
-    environment.update(
-        {
-            "PYTHONIOENCODING": "utf-8",
-            "PYTHONNOUSERSITE": "1",
-            "PYTHONUTF8": "1",
-        }
-    )
-    return environment
 
 
 def verify_wheel(checkout: Path) -> None:

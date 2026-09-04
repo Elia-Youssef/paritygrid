@@ -243,20 +243,9 @@ Chromium runs on each change. Chromium, Firefox, and WebKit run nightly and for 
 
 ### Performance verification
 
-Record:
-
-- Hardware, operating system, and runtime.
-- Runner and configured concurrency.
-- Dataset size.
-- Total duration and records per second.
-- p50, p95, and p99 latency.
-- Queue wait and service time.
-- Retry count.
-- Peak in-flight work and memory.
-- SQLite transaction latency.
-- DuckDB query duration.
-
 Correctness gates are absolute. Performance gates compare against a recorded baseline with disclosed tolerance and environment.
+
+The Phase 21 harness (`paritygrid stress performance`) enforces that order mechanically: the showcase derivation, the executed story manifest, and cross-runner execution-evidence equality must hold before any repetition is timed, and every measured repetition re-proves its own manifest equality. Elapsed measurements use the monotonic `time.perf_counter` clock; percentiles use the nearest-rank definition over the sorted per-repetition durations; queue wait, service time, peak in-flight work, durable-commit latency, and DuckDB query duration are timed at the real admission, executor, writer, and analytics boundaries of the canonical engine. Reports are versioned JSON with the hardware, operating system, runtime, runner, configured concurrency, dataset identity and size, seed, warm-up and repetition counts, exact metric definitions and units, raw bounded per-repetition observations, structured unavailability reasons, and cleanup evidence — and never hostnames, usernames, local paths, or environment values. No release performance threshold exists until a measured baseline has been collected and documented from these reports.
 
 ### Mutation verification
 

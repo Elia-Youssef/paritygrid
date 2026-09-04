@@ -1,0 +1,188 @@
+name: Nightly stress
+
+on:
+  schedule:
+    # 03:00 UTC every day, well outside the daytime push lanes.
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A historical rerun can never cancel a newer verification of the same
+# ref; with no cancellation, GitHub keeps only the newest pending run.
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}"
+  cancel-in-progress: false
+
+jobs:
+  python-nightly:
+    name: "Nightly Python (${{ matrix.os }})"
+    runs-on: "${{ matrix.os }}"
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
+    env:
+      EVIDENCE_DIR: evidence
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install locked Python toolchain
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: 0.12.0
+          python-version: "3.14.4"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Synchronize locked dependencies
+        run: uv sync --locked --all-groups
+      - name: Audit locked Python environment
+        run: uv run python scripts/verify_python_dependencies.py
+      - name: Run the complete test suite with the full Hypothesis profile
+        env:
+          HYPOTHESIS_PROFILE: nightly
+        run: uv run pytest
+      - name: Repeat the scheduling, lifecycle, and cleanup stress cells
+        run: >
+          uv run pytest
+          tests/execution/test_lifecycle_matrix.py
+          tests/execution/test_stress_shuffled.py
+          tests/execution/test_process_pool.py
+          tests/persistence
+          -q
+      - name: Verify bounded SQLite WAL stress
+        shell: bash
+        run: >
+          uv run paritygrid stress wal
+          --database "${{ runner.temp }}/paritygrid-nightly/wal/stress.db"
+          --report "${{ github.workspace }}/${{ env.EVIDENCE_DIR }}/wal-stress-${{ matrix.os }}.json"
+          --profile local
+          --seed 19
+          --create-parent
+      - name: Prepare fresh-owned stress roots
+        shell: bash
+        run: |
+          performance_root="${{ runner.temp }}/paritygrid-nightly/performance"
+          resources_root="${{ runner.temp }}/paritygrid-nightly/resources"
+          mkdir -p "${performance_root}" "${resources_root}"
+          test -z "$(find "${performance_root}" -mindepth 1 -print -quit)"
+          test -z "$(find "${resources_root}" -mindepth 1 -print -quit)"
+      - name: Run the correctness-gated performance harness
+        shell: bash
+        run: >
+          uv run paritygrid stress performance
+          --root "${{ runner.temp }}/paritygrid-nightly/performance"
+          --report "${{ github.workspace }}/${{ env.EVIDENCE_DIR }}/performance-${{ matrix.os }}.json"
+          --story-warmups 1
+          --story-repetitions 3
+          --runner-warmups 1
+          --runner-repetitions 3
+          --create-parent
+      - name: Prove memory, queue, cleanup, and orphan bounds
+        shell: bash
+        run: >
+          uv run paritygrid stress resources
+          --root "${{ runner.temp }}/paritygrid-nightly/resources"
+          --report "${{ github.workspace }}/${{ env.EVIDENCE_DIR }}/resource-bounds-${{ matrix.os }}.json"
+          --repetitions 3
+          --create-parent
+      - name: Record the runtime capability matrix
+        shell: bash
+        run: >
+          uv run paritygrid stress capabilities
+          --json
+          --report "${{ github.workspace }}/${{ env.EVIDENCE_DIR }}/capability-matrix-${{ matrix.os }}.json"
+          --create-parent
+      - name: Run the isolated installed-wheel platform matrix
+        shell: bash
+        run: >
+          uv run python scripts/verify_platform_matrix.py
+          --summary "${{ github.workspace }}/${{ env.EVIDENCE_DIR }}/platform-matrix-${{ matrix.os }}.json"
+      - name: Upload bounded nightly evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-python-evidence-${{ matrix.os }}
+          path: ${{ github.workspace }}/${{ env.EVIDENCE_DIR }}/
+          retention-days: 14
+          if-no-files-found: warn
+
+  browser-nightly:
+    name: Nightly browsers
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version-file: .nvmrc
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - name: Install locked frontend dependencies
+        working-directory: web
+        run: npm ci
+      - name: Audit locked frontend dependencies
+        working-directory: web
+        run: npm audit --audit-level=high
+      - name: Build production frontend
+        working-directory: web
+        run: npm run build
+      - name: Install Chromium, Firefox, and WebKit
+        working-directory: web
+        run: npm exec -- playwright install --with-deps chromium firefox webkit
+      - name: Run the functional browser suite on Chromium
+        working-directory: web
+        run: >
+          npm exec -- playwright test
+          --config=playwright.frontend.config.ts
+          --browser=chromium
+      - name: Run the functional browser suite on Firefox
+        working-directory: web
+        run: >
+          npm exec -- playwright test
+          --config=playwright.frontend.config.ts
+          --browser=firefox
+          shell.spec.ts overview.spec.ts runs.spec.ts pipeline.spec.ts
+          reconcile-p18.spec.ts repair-p18.spec.ts
+      - name: Run the functional browser suite on WebKit
+        working-directory: web
+        run: >
+          npm exec -- playwright test
+          --config=playwright.frontend.config.ts
+          --browser=webkit
+          shell.spec.ts overview.spec.ts runs.spec.ts pipeline.spec.ts
+          reconcile-p18.spec.ts repair-p18.spec.ts
+      - name: Upload failed-browser evidence
+        if: failure()
+        working-directory: web
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: nightly-browser-traces
+          path: web/test-results/
+          retention-days: 14
+          if-no-files-found: ignore
+
+  nightly-gate:
+    name: Nightly gate
+    needs:
+      - python-nightly
+      - browser-nightly
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    if: always()
+    steps:
+      - name: Fail when a required nightly job did not succeed
+        run: |
+          python_result="${{ needs.python-nightly.result }}"
+          browser_result="${{ needs.browser-nightly.result }}"
+          echo "python-nightly=${python_result} browser-nightly=${browser_result}"
+          if [ "${python_result}" != "success" ] || [ "${browser_result}" != "success" ]; then
+            echo "A required nightly job was skipped, cancelled, or failed."
+            exit 1
+          fi

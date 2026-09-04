@@ -88,8 +88,23 @@ test("serves a direct nested console address from the production SPA", async ({
   await expect(page).toHaveTitle("Reconcile · ParityGrid console");
 });
 
+test("static fallback never exposes files outside the production distribution", async ({
+  request,
+}) => {
+  for (const candidate of [
+    "/..%2Fe2e%2Fstatic-server.mjs",
+    "/%2e%2e%5ce2e%5cstatic-server.mjs",
+  ]) {
+    const response = await request.get(candidate);
+    expect(response.status()).toBe(200);
+    expect(response.headers()["content-type"]).toContain("text/html");
+    expect(await response.text()).not.toContain("createServer");
+  }
+});
+
 test("keeps one accessible navigation, supports the skip link, and focuses a keyboard route", async ({
   page,
+  browserName,
 }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
   await page.goto("/app");
@@ -100,6 +115,13 @@ test("keeps one accessible navigation, supports the skip link, and focuses a key
 
   await page.keyboard.press("Tab");
   const skipLink = page.getByRole("link", { name: "Skip to content" });
+  if (browserName === "webkit") {
+    // WebKit follows the Safari keyboard model and does not stop Tab on
+    // links unless the user enables full keyboard access, so the first-Tab
+    // assertion holds only on Chromium and Firefox.  Focusing the skip
+    // link directly keeps the activation and focus path identical.
+    await skipLink.focus();
+  }
   await expect(skipLink).toBeFocused();
   await page.keyboard.press("Enter");
   await expect(page).toHaveURL(/#main-content$/);

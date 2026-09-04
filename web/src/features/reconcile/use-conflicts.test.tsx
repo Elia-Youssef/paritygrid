@@ -162,11 +162,6 @@ function ConflictProbe(props: {
             ? view.pageError.message
             : "error"}
       </div>
-      <ul data-testid="resident-ids">
-        {view.state.conflicts.map((conflict) => (
-          <li key={conflict.conflict_id}>{conflict.conflict_id}</li>
-        ))}
-      </ul>
       <button type="button" onClick={() => view.loadMore()}>
         load more
       </button>
@@ -255,7 +250,7 @@ describe("useConflicts", () => {
     expect(requests).toHaveLength(2);
     expect(requests[1]).toContain("cursor=KEY-000100");
     expect(latestView?.state.loadedPages).toBe(2);
-    expect(screen.getAllByRole("listitem")).toHaveLength(200);
+    expect(latestView?.state.conflicts).toHaveLength(200);
     // Conflicts flatten in server order across pages.
     expect(latestView?.state.conflicts[0]?.conflict_id).toBe("cnf-000001");
     expect(latestView?.state.conflicts[199]?.conflict_id).toBe("cnf-000200");
@@ -370,7 +365,7 @@ describe("useConflicts", () => {
       });
     }
 
-    expect(screen.getAllByRole("listitem")).toHaveLength(2_000);
+    expect(latestView?.state.conflicts).toHaveLength(2_000);
     expect(latestView?.state.pages.length).toBeLessThanOrEqual(20);
     expect(latestView?.state.residentCount).toBeLessThanOrEqual(20 * PAGE_SIZE);
     expect(latestView?.state.loadedPages).toBe(21);
