@@ -28,16 +28,15 @@ This document is the durable index of accepted phases, their integration commits
 | 18 — Reconciliation and repair interface | Accepted | [`16f705a`](https://github.com/Elia-Youssef/paritygrid/commit/16f705a4b8dddceb33cf1e2d2fcb100f336e19c4) | [Phase pull request #119](https://github.com/Elia-Youssef/paritygrid/pull/119) | Reconciliation summary and conflict inspection, stale-safe repair review and application, durable progress, strict runtime schemas, and deterministic Windows and Linux visual baselines | Visual baselines cover the required Chromium target on Windows and Linux, not a release-wide browser matrix. |
 | 19 — Canonical scenario and datasets | Accepted | [`6573f3e`](https://github.com/Elia-Youssef/paritygrid/commit/6573f3e8db16d41a6875841bb122119dce5189d7) | [Phase pull request #120](https://github.com/Elia-Youssef/paritygrid/pull/120) | Canonical deterministic showcase datasets, scenario catalog and runner, exact expected evidence, artifact safety fencing, and execution-manifest verification | The showcase is bounded synthetic evidence; it is not a production-data or external-service integration. |
 | 20 — Demo orchestration and smoke proof | Accepted | [`7c4827d`](https://github.com/Elia-Youssef/paritygrid/commit/7c4827dd11b241071171d0a0841de28bdbfe1fc0) | [Phase pull request #121](https://github.com/Elia-Youssef/paritygrid/pull/121) | Isolated demo CLI and public-run launcher, controlled faults and interruption recovery, safe ownership and reset, headless and browser smoke proof, and installed-package execution without Node.js | Run-control browser proof uses the product API; dedicated pause, resume, and cancel buttons are not claimed by this phase. The broader cross-platform performance and stress matrix remains Phase 21. |
+| 21 — Cross-platform performance and stress | Accepted | [`8d2772b`](https://github.com/Elia-Youssef/paritygrid/commit/8d2772be95e146a7b44cb2a648b53aeacd109e63) | [Phase pull request #124](https://github.com/Elia-Youssef/paritygrid/pull/124) | Windows and Linux installed-wheel matrices, closed runtime capabilities, correctness-gated diagnostic performance, bounded resource and orphan verification, and a scheduled/manual multi-browser nightly lane with manual exact-head and post-merge proof | Performance measurements are diagnostic rather than release thresholds; macOS and optional unavailable capabilities are not required first-release targets. |
 
 ## Active boundary
 
-Phase 21 is the next delivery boundary. No Phase 21 implementation has been accepted.
+Phase 22 is the next delivery boundary. No Phase 22 implementation has been accepted.
 
-- Accepted Phase 17 integration: [`28fc5f4`](https://github.com/Elia-Youssef/paritygrid/commit/28fc5f43a56f16e5a11803216905b40a3c35cda3) through [pull request #118](https://github.com/Elia-Youssef/paritygrid/pull/118).
-- Accepted Phase 18 integration: [`16f705a`](https://github.com/Elia-Youssef/paritygrid/commit/16f705a4b8dddceb33cf1e2d2fcb100f336e19c4) through [pull request #119](https://github.com/Elia-Youssef/paritygrid/pull/119).
-- Accepted Phase 19 integration: [`6573f3e`](https://github.com/Elia-Youssef/paritygrid/commit/6573f3e8db16d41a6875841bb122119dce5189d7) through [pull request #120](https://github.com/Elia-Youssef/paritygrid/pull/120).
 - Accepted Phase 20 integration: [`7c4827d`](https://github.com/Elia-Youssef/paritygrid/commit/7c4827dd11b241071171d0a0841de28bdbfe1fc0) through [pull request #121](https://github.com/Elia-Youssef/paritygrid/pull/121).
-- Phase 21 must begin from accepted Phase 20 and satisfy its own complete gate before acceptance.
+- Accepted Phase 21 integration: [`8d2772b`](https://github.com/Elia-Youssef/paritygrid/commit/8d2772be95e146a7b44cb2a648b53aeacd109e63) through [pull request #124](https://github.com/Elia-Youssef/paritygrid/pull/124).
+- Phase 22 must begin from accepted Phase 21 and satisfy its own complete gate before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -635,9 +634,17 @@ Phase 19 was accepted through [pull request #120](https://github.com/Elia-Yousse
 
 Phase 20 was accepted through [pull request #121](https://github.com/Elia-Youssef/paritygrid/pull/121) at merge commit [`7c4827d`](https://github.com/Elia-Youssef/paritygrid/commit/7c4827dd11b241071171d0a0841de28bdbfe1fc0). Its single candidate commit, `8a17d291df05148c6d8e6da1bd4a596e6033120a`, passed both the exact-head [push workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33666193344) and [pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33666200815). Both matrices passed repository policy, Ubuntu and Windows Python, frontend, and the dependent Frontend API smoke job; the latter exercised the real packaged demo through Chromium. The accepted implementation provides isolated orchestration, controlled faults, forced interruption and recovery, safe reset ownership, the canonical browser story, and installed-wheel proof with Node.js unavailable at runtime. Audit fixes closed the durable-envelope and strict pipeline-schema drifts reported by the initial browser proof while preserving fail-closed behavior.
 
+## Phase 21 acceptance record
+
+Phase 21 was accepted through [pull request #124](https://github.com/Elia-Youssef/paritygrid/pull/124) at merge commit [`8d2772b`](https://github.com/Elia-Youssef/paritygrid/commit/8d2772be95e146a7b44cb2a648b53aeacd109e63). Candidate `25b9a7c7b9dde90e8d442eabd3eba09f2409fdcc` passed the exact-head [pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33864501260), [push workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33864497084), and [complete nightly workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33864497205). The merge commit then passed [main CI](https://github.com/Elia-Youssef/paritygrid/actions/runs/33868199674) and the [complete post-merge nightly workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33868220054).
+
+The accepted scope covers P21.1–P21.6: reproducible Windows and Linux installed-wheel verification; a closed, truthful runtime capability matrix; correctness-gated diagnostic performance evidence; bounded memory, queue, cancellation, rollback, restart, cleanup, handle, and orphan proof; and the scheduled/manual multi-browser nightly lane. The accepted path correction distinguishes valid mixed Windows 8.3/long-name aliases from symlinks and junctions without weakening traversal, alternate-stream, reserved-name, broad-root, or empty-root safety.
+
+Both post-merge workflow retries were limited to confirmed npm advisory-endpoint transport failures on the unchanged merge commit. The final attempts passed; no vulnerability result was suppressed or downgraded. Phase 22 owns durable dependency-audit transport semantics and must preserve the distinction between scan findings and registry availability.
+
 ## Advancement rule
 
-Phase 20 is accepted on top of accepted Phase 19. Phase 21 may begin from the
-accepted Phase 20 integration commit and may merge only after its own
+Phase 21 is accepted on top of accepted Phase 20. Phase 22 may begin from the
+accepted Phase 21 integration commit and may merge only after its own
 complete gate and remote CI pass; acceptance of a later phase does not bypass
 acceptance of its prerequisites.
