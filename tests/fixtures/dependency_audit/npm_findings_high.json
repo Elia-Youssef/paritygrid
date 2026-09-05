@@ -1,0 +1,37 @@
+{
+  "auditReportVersion": 2,
+  "vulnerabilities": {
+    "synthetic-package": {
+      "name": "synthetic-package",
+      "severity": "high",
+      "isDirect": false,
+      "via": ["GHSA-c4wx-2mqr-f35j"],
+      "effects": [],
+      "range": "<9.9.9",
+      "nodes": ["node_modules/synthetic-package"],
+      "fixAvailable": {
+        "name": "synthetic-package",
+        "version": "9.9.9",
+        "isSemVerMajor": true
+      }
+    }
+  },
+  "metadata": {
+    "vulnerabilities": {
+      "info": 0,
+      "low": 0,
+      "moderate": 0,
+      "high": 1,
+      "critical": 0,
+      "total": 1
+    },
+    "dependencies": {
+      "prod": 13,
+      "dev": 24,
+      "optional": 0,
+      "peer": 0,
+      "peerOptional": 0,
+      "total": 489
+    }
+  }
+}

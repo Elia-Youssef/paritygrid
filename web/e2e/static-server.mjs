@@ -34,6 +34,28 @@ const contentTypes = new Map([
     [".woff2", "font/woff2"],
 ]);
 
+// The exact production policies from
+// `src/paritygrid/api/middleware/security_headers.py`, so the whole
+// browser lane runs under the shipped Content Security Policy and any
+// policy-breaking change in the shell fails this lane too.
+const shellCsp =
+    "default-src 'none'; script-src 'self'; style-src 'self'; " +
+    "img-src 'self'; font-src 'self'; connect-src 'self'; " +
+    "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; " +
+    "form-action 'self'";
+const denyAllCsp = "default-src 'none'; frame-ancestors 'none'";
+
+function securityHeaders(contentType) {
+    const csp = contentType.startsWith("text/html") ? shellCsp : denyAllCsp;
+    return {
+        "content-security-policy": csp,
+        "x-content-type-options": "nosniff",
+        "x-frame-options": "DENY",
+        "referrer-policy": "no-referrer",
+        "cross-origin-opener-policy": "same-origin",
+    };
+}
+
 async function serve(pathname, response) {
     const normalized = normalize(decodeURIComponent(pathname)).replace(
         /^(\.\.[/\\])+/,
@@ -55,9 +77,11 @@ async function serve(pathname, response) {
         }
         try {
             const body = await readFile(filePath);
+            const contentType =
+                contentTypes.get(extname(candidate)) ?? "application/octet-stream";
             response.writeHead(200, {
-                "content-type":
-                    contentTypes.get(extname(candidate)) ?? "application/octet-stream",
+                "content-type": contentType,
+                ...securityHeaders(contentType),
             });
             response.end(body);
             return true;

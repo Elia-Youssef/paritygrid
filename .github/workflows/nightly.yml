@@ -125,9 +125,20 @@ jobs:
           node-version-file: .nvmrc
           cache: npm
           cache-dependency-path: web/package-lock.json
+      - name: Install locked Python toolchain for notice verification
+        uses: astral-sh/setup-uv@20cfd1bf945f4377ade1205e4dbc17946fc9a30d # v10.0.1
+        with:
+          version: 0.12.0
+          python-version: "3.14.4"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+      - name: Synchronize locked Python dependencies
+        run: uv sync --locked --all-groups
       - name: Install locked frontend dependencies
         working-directory: web
         run: npm ci
+      - name: Verify third-party notices and distribution drift
+        run: uv run python scripts/verify_third_party_notices.py
       - name: Audit locked frontend dependencies
         working-directory: web
         run: npm audit --audit-level=high

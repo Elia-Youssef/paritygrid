@@ -7,8 +7,10 @@ ParityGrid is a local engineering demonstration, not an internet-facing producti
 ## Default network posture
 
 - Bind to `127.0.0.1` by default.
-- A non-loopback bind requires an explicit address and explicit acknowledgement option.
-- Startup must warn that the application is not designed for untrusted networks.
+- Non-loopback binds are refused by configuration validation: the
+  loopback-only posture is enforced by the accepted settings contract,
+  which is stricter than an opt-in acknowledgement, so the application
+  cannot be started on an interface it was not designed for.
 - Cross-origin access is disabled by default.
 - Synthetic source systems also bind to loopback.
 
@@ -20,6 +22,12 @@ ParityGrid is a local engineering demonstration, not an internet-facing producti
 - Demo cleanup operates only on the exact generated demo directory.
 - Artifact download routes resolve through manifest IDs, not arbitrary user paths.
 - Upload sizes, record counts, decompressed sizes, and artifact totals are bounded.
+
+The current product has no upload endpoint and no archive-extraction
+surface: the bounds above apply today to artifact writing, connector
+file readers, HTTP request bodies, and demo roots. They remain
+requirements for any future surface of those kinds. The
+[threat-model map](THREAT_MODEL.md) records each structural absence.
 
 ## Secrets
 
@@ -56,7 +64,10 @@ ParityGrid is a local engineering demonstration, not an internet-facing producti
 - Use secure response headers and a Content Security Policy for the packaged UI.
 - Prevent MIME sniffing.
 - Do not expose directory listings.
-- Keep API documentation local and configurable.
+- Keep API documentation local and configurable. The documentation page
+  currently loads FastAPI's pinned swagger assets from a CDN origin under
+  the narrow documentation policy recorded in the threat-model map;
+  self-hosting those assets is the recorded remediation direction.
 
 ## WebSocket and SSE protections
 
@@ -97,9 +108,16 @@ ParityGrid is a local engineering demonstration, not an internet-facing producti
 - Stale repair approval.
 - Concurrent repair application.
 - Slow SSE and WebSocket clients.
-- Non-loopback startup without acknowledgement.
+- Non-loopback startup attempt refused by configuration validation.
 - Untrusted strings in the browser.
 
 ## Reporting
 
 Before public release, add a responsible-disclosure contact appropriate to the repository owner. Do not claim formal security certification or production readiness.
+
+## Threat-model verification
+
+The threat/control/test map that binds each abuse case above to its
+owning control and reproducible verification is maintained in
+[the threat-model verification map](THREAT_MODEL.md). Missing evidence
+there is a blocking finding.

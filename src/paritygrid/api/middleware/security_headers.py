@@ -8,17 +8,21 @@ _API_SECURITY_HEADERS: tuple[tuple[bytes, bytes], ...] = (
     (b"referrer-policy", b"no-referrer"),
     (b"cross-origin-opener-policy", b"same-origin"),
 )
-_DENY_ALL_CSP = b"default-src 'none'; frame-ancestors 'none'"
+DENY_ALL_CSP = b"default-src 'none'; frame-ancestors 'none'"
 # The packaged application shell loads only same-origin script, style,
-# image, font, and connect targets; everything else stays denied.
-_FRONTEND_CSP = (
+# image, and font targets and connects only to its own origin for SSE and
+# WebSocket.  Objects and frames are denied outright, and there is no
+# remote origin anywhere: every script, style, font, and image ships in
+# the packaged assets.
+FRONTEND_CSP = (
     b"default-src 'none'; script-src 'self'; style-src 'self'; "
-    b"img-src 'self' data:; font-src 'self'; connect-src 'self'; "
-    b"frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    b"img-src 'self'; font-src 'self'; connect-src 'self'; "
+    b"object-src 'none'; frame-ancestors 'none'; base-uri 'none'; "
+    b"form-action 'self'"
 )
 # Swagger documentation is HTML+JS served from the CDN assets FastAPI
 # embeds; it gets the narrowest policy that keeps the local docs usable.
-_DOCUMENTATION_CSP = (
+DOCUMENTATION_CSP = (
     b"default-src 'none'; base-uri 'none'; form-action 'none'; "
     b"frame-ancestors 'none'; object-src 'none'; connect-src 'self'; "
     b"script-src https://cdn.jsdelivr.net 'unsafe-inline'; "
@@ -61,7 +65,7 @@ class SecurityHeadersMiddleware:
                 if b"content-security-policy" not in present:
                     if api_response:
                         content_security_policy = (
-                            _DOCUMENTATION_CSP if path in _DOCUMENTATION_PATHS else _DENY_ALL_CSP
+                            DOCUMENTATION_CSP if path in _DOCUMENTATION_PATHS else DENY_ALL_CSP
                         )
                         headers.append((b"content-security-policy", content_security_policy))
                     else:
@@ -82,6 +86,6 @@ def _apply_frontend_policy(message: Message, headers: list[tuple[bytes, bytes]])
             content_type = value
             break
     if content_type.startswith(b"text/html"):
-        headers.append((b"content-security-policy", _FRONTEND_CSP))
+        headers.append((b"content-security-policy", FRONTEND_CSP))
     else:
-        headers.append((b"content-security-policy", _DENY_ALL_CSP))
+        headers.append((b"content-security-policy", DENY_ALL_CSP))

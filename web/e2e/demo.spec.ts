@@ -426,3 +426,71 @@ test("10 unknown API routes answer 404 problem+json, never the SPA", async ({
   expect(problem.status).toBe(404);
   expect(typeof problem.title).toBe("string");
 });
+
+/** The exact production shell policy from `security_headers.py` (P22.3). */
+const PRODUCTION_SHELL_CSP =
+  "default-src 'none'; script-src 'self'; style-src 'self'; " +
+  "img-src 'self'; font-src 'self'; connect-src 'self'; " +
+  "object-src 'none'; frame-ancestors 'none'; base-uri 'none'; " +
+  "form-action 'self'";
+
+test("11 the real packaged app serves the production CSP on the wire", async ({
+  request,
+}) => {
+  const shell = await request.get(demoUrl("/"));
+  expect(shell.status()).toBe(200);
+  expect(shell.headers()["content-security-policy"]).toBe(PRODUCTION_SHELL_CSP);
+  expect(shell.headers()["x-content-type-options"]).toBe("nosniff");
+  expect(shell.headers()["x-frame-options"]).toBe("DENY");
+  expect(shell.headers()["referrer-policy"]).toBe("no-referrer");
+  const html = await shell.text();
+  expect(html).toMatch(/src="\/assets\/[^"]+\.js"/);
+  // The packaged shell references no remote origin anywhere.
+  expect(html).not.toContain("https://");
+  expect(html).not.toContain("http://");
+});
+
+test("12 inline script is blocked and never executes under the real packaged app", async ({
+  page,
+}) => {
+  await page.addInitScript(() => {
+    const recorded: { directive: string; blocked: string }[] = [];
+    (window as unknown as Record<string, unknown>).__cspViolations = recorded;
+    document.addEventListener("securitypolicyviolation", (event) => {
+      recorded.push({
+        directive: event.effectiveDirective,
+        blocked: event.blockedURI,
+      });
+    });
+  });
+  await page.goto(demoUrl("/"));
+  await expect(page.getByRole("banner")).toBeVisible();
+
+  await page.evaluate(() => {
+    const marker = document.createElement("script");
+    marker.textContent = "window.__inlineRan = true;";
+    document.body.append(marker);
+  });
+  await expect
+    .poll(() =>
+      page.evaluate(() =>
+        (
+          (window as unknown as Record<string, unknown>).__cspViolations as {
+            directive: string;
+            blocked: string;
+          }[]
+        ).some(
+          (entry) =>
+            (entry.directive === "script-src" ||
+              entry.directive === "script-src-elem") &&
+            entry.blocked !== "eval",
+        ),
+      ),
+    )
+    .toBe(true);
+  expect(
+    await page.evaluate(
+      () => (window as unknown as Record<string, unknown>).__inlineRan,
+    ),
+  ).toBeUndefined();
+});

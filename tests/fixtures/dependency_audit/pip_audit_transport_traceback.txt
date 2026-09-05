@@ -1,0 +1,9 @@
+Traceback (most recent call last):
+  File "urllib3/connection.py", line 204, in _new_conn
+    sock.connect(sa)
+urllib3.exceptions.NewConnectionError: <urllib3.connection.HTTPSConnection object>: Failed to establish a new connection
+The above exception was the direct cause of the following exception:
+Traceback (most recent call last):
+  File "requests/adapters.py", line 723, in send
+    raise ProxyError(e, request=request)
+requests.exceptions.ProxyError: HTTPSConnectionPool(host='pypi.org', port=443): Max retries exceeded with url: /pypi/pkg/1.0.0/json (Caused by ProxyError('Unable to connect to proxy', NewConnectionError('<urllib3.connection.HTTPSConnection object>: Failed to establish a new connection')))

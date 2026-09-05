@@ -7,6 +7,7 @@ name = "paritygrid"
 version = "0.1.0"
 description = "Verifiable data reconciliation and observable I/O execution."
 readme = "README.md"
+license = "MIT"
 requires-python = ">=3.14"
 authors = [
   { name = "ParityGrid contributors" },
@@ -59,6 +60,8 @@ include = [
   "scripts/verify_wheel_install.py",
   "scripts/verify_demo_no_node.py",
   "scripts/verify_platform_matrix.py",
+  "scripts/verify_frontend_dependencies.py",
+  "scripts/verify_third_party_notices.py",
 ]
 exclude = [".venv", "tests/fixtures"]
 pythonVersion = "3.14"
