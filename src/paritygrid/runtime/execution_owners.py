@@ -15,6 +15,7 @@ from time import monotonic
 
 from paritygrid.application.execution.concurrent_engine import (
     ConcurrentEngineError,
+    ConcurrentEngineStateError,
     ConcurrentRunEngine,
     ConcurrentRunReport,
     EngineStatus,
@@ -258,6 +259,18 @@ class RuntimeConcurrentRunOwner(ActiveRunControlOwner):
                 if not self._engine.cancellation.is_requested:
                     try:
                         self._engine.request_cancellation(correlation_id=None)
+                    except ConcurrentEngineStateError as error:
+                        # A terminal engine performs its own idempotent
+                        # cleanup before its owner thread publishes the
+                        # terminal report.  That report remains the only
+                        # authoritative outcome, so join it rather than
+                        # treating this narrow ownership handoff as a failed
+                        # cancellation.  Other state errors still fail
+                        # closed.
+                        if not self._engine.is_shutdown:
+                            raise ActiveRunControlEvidenceError(
+                                "accepted execution engine rejected shutdown cancellation"
+                            ) from error
                     except ConcurrentEngineError as error:
                         raise ActiveRunControlEvidenceError(
                             "accepted execution engine rejected shutdown cancellation"

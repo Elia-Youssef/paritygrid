@@ -415,6 +415,11 @@ class ConcurrentRunEngine:
         return RunId(self._run_id)
 
     @property
+    def is_shutdown(self) -> bool:
+        """Report whether terminal cleanup has begun for this engine."""
+        return self._shutdown_done
+
+    @property
     def last_lifecycle_report(self) -> ConcurrentLifecycleReport | None:
         """Return the latest durable lifecycle receipt from this owner."""
         return self._lifecycle.last_report
