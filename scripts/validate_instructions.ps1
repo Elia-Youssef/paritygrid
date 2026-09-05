@@ -174,7 +174,8 @@ $generatedFileInventory = @(
     'web/dist/assets/index-CoE9DoJ8.css',
     'web/dist/assets/index-Dy5BHT7q.js',
     'web/dist/assets/inter-latin-wght-normal-Dx4kXJAl.woff2',
-    'web/dist/assets/roboto-mono-latin-wght-normal-CZtBPCCa.woff2'
+    'web/dist/assets/roboto-mono-latin-wght-normal-CZtBPCCa.woff2',
+    'web/dist/THIRD_PARTY_NOTICES.txt'
 )
 $unsafeTrackedExtensions = @(
     '.cer', '.crt', '.db', '.der', '.duckdb', '.key', '.kdbx', '.log', '.parquet',

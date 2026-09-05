@@ -1,0 +1,15 @@
+{
+  "dependencies": [
+    {
+      "name": "fastapi",
+      "version": "0.141.1",
+      "vulns": []
+    },
+    {
+      "name": "sqlalchemy",
+      "version": "2.0.52",
+      "vulns": []
+    }
+  ],
+  "fixes": []
+}

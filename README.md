@@ -38,4 +38,6 @@ The packaged demonstration will start the synthetic source systems, initialize l
 
 ## License
 
-A license will be selected before the first public release. Until then, no permission to copy, modify, or redistribute the source is granted.
+ParityGrid is licensed under the [MIT License](LICENSE). The license covers
+the source tree, wheel, and packaged frontend. Third-party attribution and
+license texts for bundled assets are in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt).

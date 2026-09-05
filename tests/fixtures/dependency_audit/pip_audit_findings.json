@@ -1,0 +1,27 @@
+{
+  "dependencies": [
+    {
+      "name": "fastapi",
+      "version": "0.141.1",
+      "vulns": []
+    },
+    {
+      "name": "sqlalchemy",
+      "version": "2.0.52",
+      "vulns": []
+    },
+    {
+      "name": "synthetic-package",
+      "version": "1.0.0",
+      "vulns": [
+        {
+          "id": "PYSEC-2026-0001",
+          "fix_versions": ["1.0.1"],
+          "aliases": ["CVE-2026-10001", "GHSA-c4wx-2mqr-f35j"],
+          "description": "Synthetic advisory used only as a recorded classifier fixture."
+        }
+      ]
+    }
+  ],
+  "fixes": []
+}
