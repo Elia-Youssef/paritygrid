@@ -29,14 +29,16 @@ This document is the durable index of accepted phases, their integration commits
 | 19 — Canonical scenario and datasets | Accepted | [`6573f3e`](https://github.com/Elia-Youssef/paritygrid/commit/6573f3e8db16d41a6875841bb122119dce5189d7) | [Phase pull request #120](https://github.com/Elia-Youssef/paritygrid/pull/120) | Canonical deterministic showcase datasets, scenario catalog and runner, exact expected evidence, artifact safety fencing, and execution-manifest verification | The showcase is bounded synthetic evidence; it is not a production-data or external-service integration. |
 | 20 — Demo orchestration and smoke proof | Accepted | [`7c4827d`](https://github.com/Elia-Youssef/paritygrid/commit/7c4827dd11b241071171d0a0841de28bdbfe1fc0) | [Phase pull request #121](https://github.com/Elia-Youssef/paritygrid/pull/121) | Isolated demo CLI and public-run launcher, controlled faults and interruption recovery, safe ownership and reset, headless and browser smoke proof, and installed-package execution without Node.js | Run-control browser proof uses the product API; dedicated pause, resume, and cancel buttons are not claimed by this phase. The broader cross-platform performance and stress matrix remains Phase 21. |
 | 21 — Cross-platform performance and stress | Accepted | [`8d2772b`](https://github.com/Elia-Youssef/paritygrid/commit/8d2772be95e146a7b44cb2a648b53aeacd109e63) | [Phase pull request #124](https://github.com/Elia-Youssef/paritygrid/pull/124) | Windows and Linux installed-wheel matrices, closed runtime capabilities, correctness-gated diagnostic performance, bounded resource and orphan verification, and a scheduled/manual multi-browser nightly lane with manual exact-head and post-merge proof | Performance measurements are diagnostic rather than release thresholds; macOS and optional unavailable capabilities are not required first-release targets. |
+| 22 — Security, dependencies, and licensing | Accepted | [`2f614e4`](https://github.com/Elia-Youssef/paritygrid/commit/2f614e481e10e87bb4396cadd9dc737fe8759d98) | [Phase pull request #126](https://github.com/Elia-Youssef/paritygrid/pull/126) with [post-merge main CI](https://github.com/Elia-Youssef/paritygrid/actions/runs/33956476239) | Threat-model verification, deterministic dependency and license audits, restrictive packaged-UI CSP, and lockfile-derived third-party notices | Public release still requires the owner-authorized responsible-disclosure contact required by `docs/SECURITY.md`; packaging and release verification remain Phase 23 work. |
 
 ## Active boundary
 
-Phase 22 is the next delivery boundary. No Phase 22 implementation has been accepted.
+Phase 23 is the next delivery boundary. No Phase 23 implementation has been accepted.
 
 - Accepted Phase 20 integration: [`7c4827d`](https://github.com/Elia-Youssef/paritygrid/commit/7c4827dd11b241071171d0a0841de28bdbfe1fc0) through [pull request #121](https://github.com/Elia-Youssef/paritygrid/pull/121).
 - Accepted Phase 21 integration: [`8d2772b`](https://github.com/Elia-Youssef/paritygrid/commit/8d2772be95e146a7b44cb2a648b53aeacd109e63) through [pull request #124](https://github.com/Elia-Youssef/paritygrid/pull/124).
-- Phase 22 must begin from accepted Phase 21 and satisfy its own complete gate before acceptance.
+- Accepted Phase 22 integration: [`2f614e4`](https://github.com/Elia-Youssef/paritygrid/commit/2f614e481e10e87bb4396cadd9dc737fe8759d98) through [pull request #126](https://github.com/Elia-Youssef/paritygrid/pull/126), with green exact-head and post-merge CI evidence.
+- Phase 23 must begin from accepted Phase 22 and satisfy its own complete gate before acceptance.
 
 ## Phase 6 acceptance record
 
@@ -642,9 +644,15 @@ The accepted scope covers P21.1–P21.6: reproducible Windows and Linux installe
 
 Both post-merge workflow retries were limited to confirmed npm advisory-endpoint transport failures on the unchanged merge commit. The final attempts passed; no vulnerability result was suppressed or downgraded. Phase 22 owns durable dependency-audit transport semantics and must preserve the distinction between scan findings and registry availability.
 
+## Phase 22 acceptance record
+
+Phase 22 was accepted through [pull request #126](https://github.com/Elia-Youssef/paritygrid/pull/126) at merge commit [`2f614e4`](https://github.com/Elia-Youssef/paritygrid/commit/2f614e481e10e87bb4396cadd9dc737fe8759d98). Candidate `0dfd732a73bac8e32a9811f7072efffe42574b04` passed the exact-head [pull-request workflow](https://github.com/Elia-Youssef/paritygrid/actions/runs/33954446128); the merge commit then passed [main CI](https://github.com/Elia-Youssef/paritygrid/actions/runs/33956476239). Both matrices passed repository policy, Ubuntu and Windows Python, frontend, and the dependent Frontend API smoke job.
+
+The accepted scope covers P22.1–P22.4: reviewable threat-model control and test evidence; deterministic Python, frontend, Actions, and applicable-input dependency/license auditing; a restrictive packaged-UI Content Security Policy with real-browser proof; and lockfile-derived, fail-closed third-party notices. The final integration corrected platform-conditional `colorama` notice handling and stabilized a frontend conflict-state observer test without weakening the security or audit gates. Public release remains blocked pending an owner-authorized responsible-disclosure contact required by `docs/SECURITY.md`; packaging and release verification remain Phase 23 work.
+
 ## Advancement rule
 
-Phase 21 is accepted on top of accepted Phase 20. Phase 22 may begin from the
-accepted Phase 21 integration commit and may merge only after its own
+Phase 22 is accepted on top of accepted Phase 21. Phase 23 may begin from the
+accepted Phase 22 integration commit and may merge only after its own
 complete gate and remote CI pass; acceptance of a later phase does not bypass
 acceptance of its prerequisites.
