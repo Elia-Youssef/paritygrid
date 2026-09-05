@@ -252,6 +252,29 @@ class TestFailClosed:
         with pytest.raises(NoticeInventoryError, match="no installed dist-info"):
             build_inventory(inputs)
 
+    def test_verified_override_covers_platform_package_missing_from_the_environment(
+        self, tmp_path: Path
+    ) -> None:
+        inputs = _synthetic_inputs(
+            tmp_path,
+            lock_packages=[("colorama", "0.4.6")],
+            installed_packages=[],
+        )
+
+        inventory = build_inventory(inputs)
+
+        assert inventory["python"] == [
+            {
+                "name": "colorama",
+                "version": "0.4.6",
+                "role": "transitive",
+                "license": "BSD-3-Clause",
+                "license_source": "verified-override",
+                "compatibility": "compatible-with-notice-obligations",
+                "location": None,
+            }
+        ]
+
     def test_stale_environment_version_fails(self, tmp_path: Path) -> None:
         inputs = _synthetic_inputs(
             tmp_path,

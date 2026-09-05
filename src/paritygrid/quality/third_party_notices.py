@@ -17,8 +17,9 @@ bundled.  The final notice lists every actual bundled third-party asset;
 today that is the two frontend font binaries.  Every fail-closed rule below
 exists so notices and compatibility evidence cannot silently drift:
 
-- every non-project Python lock package must resolve to exactly one
-  installed dist-info at the identical version;
+- every non-project Python lock package must resolve to exactly one installed
+  dist-info at the identical version, except the committed name-and-version
+  record for a platform-conditional package unavailable on the current host;
 - every lock package must yield a license identifier through the closed
   fallback chain (PEP 639 expression, then the legacy license field via
   the committed normalization table, then the trove classifier via the
@@ -68,6 +69,13 @@ _PYTHON_LICENSE_OVERRIDES: dict[str, str] = {
     "sortedcontainers": "Apache-2.0",
     "tomli-w": "MIT",
 }
+
+# `uv.lock` is universal, while `uv sync` selects packages for the current
+# platform. colorama is a Windows-only dependency of click, pytest, and
+# typer, so a Linux environment correctly has no dist-info for it. Retain
+# full universal-lock coverage with this deliberately narrow, version-pinned
+# exception; its license identity comes from `_PYTHON_LICENSE_OVERRIDES`.
+_PLATFORM_CONDITIONAL_MISSING_DISTS = frozenset({("colorama", "0.4.6")})
 
 # Exact legacy license-field strings observed in the locked set, mapped to
 # SPDX identifiers.  An unmapped string fails closed.
@@ -221,9 +229,9 @@ def _python_entries(uv_lock_path: Path, site_packages: Path) -> list[dict[str, o
         if name == _PROJECT_PACKAGE_NAME:
             continue
         dist_info = installed.get(_normalize_name(name))
-        if dist_info is None:
+        if dist_info is None and (name, version) not in _PLATFORM_CONDITIONAL_MISSING_DISTS:
             raise NoticeInventoryError(f"locked package {name} has no installed dist-info metadata")
-        if dist_info["version"] != version:
+        if dist_info is not None and dist_info["version"] != version:
             raise NoticeInventoryError(
                 f"locked package {name} is installed at {dist_info['version']}, "
                 f"not at the locked {version}"
@@ -304,10 +312,16 @@ def _normalize_name(name: str) -> str:
     return re.sub(r"[-_.]+", "-", name).lower()
 
 
-def _python_license_identity(name: str, dist_info: dict[str, object]) -> _LicenseIdentity:
+def _python_license_identity(name: str, dist_info: dict[str, object] | None) -> _LicenseIdentity:
     override = _PYTHON_LICENSE_OVERRIDES.get(name)
     if override is not None:
-        return _LicenseIdentity(override, "verified-override", _home_page(dist_info))
+        return _LicenseIdentity(
+            override,
+            "verified-override",
+            _home_page(dist_info) if dist_info is not None else None,
+        )
+    if dist_info is None:
+        raise NoticeInventoryError(f"locked package {name} has no installed dist-info metadata")
     expression = dist_info["license_expression"]
     if isinstance(expression, str) and expression:
         _validate_spdx_expression(name, expression)
