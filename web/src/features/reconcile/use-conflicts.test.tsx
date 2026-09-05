@@ -218,14 +218,14 @@ describe("useConflicts", () => {
       expect(screen.getByTestId("resident-identity")).toHaveTextContent(
         `3:${FINGERPRINT_V1}`,
       );
+      expect(latestView?.state.identity).toEqual(IDENTITY_V1);
+      expect(latestView?.state.loadedPages).toBe(1);
+      expect(latestView?.state.nextCursor).toBe("KEY-000100");
     });
     expect(requests).toHaveLength(1);
     expect(requests[0]).toContain("/api/v1/runs/run-001/conflicts");
     expect(requests[0]).toContain("limit=100");
     expect(requests[0]).not.toContain("cursor=");
-    expect(latestView?.state.identity).toEqual(IDENTITY_V1);
-    expect(latestView?.state.loadedPages).toBe(1);
-    expect(latestView?.state.nextCursor).toBe("KEY-000100");
 
     // Settled queries do not trigger hidden follow-up requests.
     await waitFor(() => {
