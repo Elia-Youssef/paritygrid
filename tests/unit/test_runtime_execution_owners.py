@@ -191,6 +191,59 @@ def test_runtime_shutdown_joins_an_already_requested_cancellation(
     _wait_until(lambda: registry.active_count == 0)
 
 
+def test_runtime_shutdown_joins_engine_terminalizing_before_owner_reports(
+    harness: ConcurrentScenarioHarness,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Shutdown joins terminal cleanup rather than re-cancelling the finished engine."""
+    terminalizing = Event()
+    release_terminal_report = Event()
+    run_id = scenario_run_id(704)
+    bootstrap_scenario_run(harness, run_id)
+    engine = build_scenario_engine(
+        harness,
+        run_id,
+        strategy=SequentialFullPlanStrategy(),
+        executor=ScriptedConcurrentExecutor(harness),
+    )
+    original_shutdown = ConcurrentRunEngine._shutdown_owned  # pyright: ignore[reportPrivateUsage]
+
+    def hold_terminal_report(current: ConcurrentRunEngine) -> None:
+        original_shutdown(current)
+        if current is engine:
+            terminalizing.set()
+            assert release_terminal_report.wait(timeout=2.0)
+
+    monkeypatch.setattr(ConcurrentRunEngine, "_shutdown_owned", hold_terminal_report)
+    registry = RuntimeActiveRunControlRegistry()
+    ownership = RuntimeExecutionOwnership(
+        active_run_controls=registry,
+        read_run=lambda identity: _read_run(harness, identity),
+    )
+    owner = ownership.start_concurrent(engine)
+    assert terminalizing.wait(timeout=2.0)
+    assert engine.is_shutdown
+
+    close_errors: list[BaseException] = []
+
+    def close_owner() -> None:
+        try:
+            owner.close(timeout_seconds=2.0)
+        except BaseException as error:  # pragma: no cover - assertion owns evidence
+            close_errors.append(error)
+
+    close_thread = Thread(target=close_owner, daemon=False)
+    close_thread.start()
+    _wait_until(close_thread.is_alive)
+    release_terminal_report.set()
+    close_thread.join(timeout=2.0)
+
+    assert not close_thread.is_alive()
+    assert not close_errors
+    assert not engine.cancellation.is_requested
+    _wait_until(lambda: registry.active_count == 0)
+
+
 def _read_run(harness: ConcurrentScenarioHarness, run_id: RunId) -> RunRecord:
     with harness.database.transaction() as session:
         run = SqlAlchemyRunRepository(session).get(run_id)
